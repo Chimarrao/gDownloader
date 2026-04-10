@@ -88,6 +88,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import Button from 'primevue/button'
+import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadItem } from '../../../shared/types'
 
 type DownloadStatus = DownloadItem['status']
@@ -252,14 +253,18 @@ function onStatus(data: unknown): void {
 
 function onComplete(data: unknown): void {
   if (!isCompleteEvent(data)) return
-  upsertById(data.id, { status: 'complete', percent: 100, outputPath: data.outputPath })
+  upsertById(data.id, {
+    status: DownloadStatusEnum.Complete,
+    percent: 100,
+    outputPath: data.outputPath
+  })
   emit('download-complete', data)
   removeById(data.id)
 }
 
 function onError(data: unknown): void {
   if (!isErrorEvent(data)) return
-  upsertById(data.id, { status: 'error', error: data.error })
+  upsertById(data.id, { status: DownloadStatusEnum.Error, error: data.error })
   removeById(data.id)
 }
 

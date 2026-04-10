@@ -1,0 +1,41 @@
+:root, .theme-dark-purple {
+  --bg-primary: #0d0d1a;
+  --bg-secondary: #16162a;
+  --bg-hover: #1f1f3a;
+  --border-color: #2a2a4a;
+  --text-primary: #e0e0f0;
+  --text-secondary: #666;
+  --accent-color: #7c6fff;
+}
+.theme-dark-monokai {
+  --bg-primary: #1a1a1a;
+  --bg-secondary: #272822;
+  --bg-hover: #3e3d32;
+  --border-color: #3e3d32;
+  --text-primary: #f8f8f2;
+  --text-secondary: #75715e;
+  --accent-color: #a6e22e;
+}
+.theme-dark-default {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-hover: #2a2d2e;
+  --border-color: #3c3c3c;
+  --text-primary: #d4d4d4;
+  --text-secondary: #808080;
+  --accent-color: #569cd6;
+}
+.theme-light {
+  --bg-primary: #f5f5f5;
+  --bg-secondary: #ffffff;
+  --bg-hover: #e8e8e8;
+  --border-color: #ddd;
+  --text-primary: #333;
+  --text-secondary: #888;
+  --accent-color: #6750a4;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0; overflow: hidden; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
