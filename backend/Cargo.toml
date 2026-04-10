@@ -1,0 +1,48 @@
+[package]
+name = "gdownloader-backend"
+version = "0.1.0"
+# edition = "2021" significa que usamos a versão moderna do Rust
+edition = "2021"
+
+[[bin]]
+name = "gdownloader-backend"
+path = "src/main.rs"
+
+[dependencies]
+# Servidor HTTP assíncrono (equivalente a Express no Node.js)
+axum = { version = "0.7", features = ["ws"] }
+# Runtime assíncrono — permite usar async/await no Rust (equivalente a Node.js event loop)
+tokio = { version = "1", features = ["full"] }
+# Cliente HTTP para baixar arquivos (equivalente a axios/fetch)
+reqwest = { version = "0.12", features = ["stream", "json", "gzip"] }
+# Serialização/deserialização JSON (como JSON.parse/stringify)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# IDs únicos para cada download (como crypto.randomUUID())
+uuid = { version = "1", features = ["v4"] }
+# Logs estruturados no terminal
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Middleware de CORS para permitir que o Vue acesse a API
+tower-http = { version = "0.5", features = ["cors"] }
+# Tratamento de erros ergonômico (como try/catch melhorado)
+anyhow = "1"
+# Expressões regulares
+regex = "1"
+# Parser de HTML para extrair links (usado no MediaFire)
+scraper = "0.20"
+# Criptografia AES-128 para descriptografar arquivos do Mega
+aes = "0.8"
+# Modo de operação CTR para AES (Counter Mode — o Mega usa isso)
+ctr = "0.9"
+# Interface de cipher (necessária para usar aes + ctr juntos)
+cipher = "0.4"
+# Encode/decode Base64 (Mega usa base64 customizado)
+base64 = "0.22"
+# Utilitários para futures/streams assíncronos
+futures-util = "0.3"
+
+[dev-dependencies]
+# Para testes HTTP
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

@@ -1,0 +1,10 @@
+/Users/lucasreolon/Desktop/Código/gDownloader/.worktrees/phase0-foundation/backend/target/debug/deps/sha1-fdda38476eb1d37b.d: /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/lib.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/soft.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/x86.rs
+
+/Users/lucasreolon/Desktop/Código/gDownloader/.worktrees/phase0-foundation/backend/target/debug/deps/libsha1-fdda38476eb1d37b.rlib: /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/lib.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/soft.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/x86.rs
+
+/Users/lucasreolon/Desktop/Código/gDownloader/.worktrees/phase0-foundation/backend/target/debug/deps/libsha1-fdda38476eb1d37b.rmeta: /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/lib.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/soft.rs /Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/x86.rs
+
+/Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/lib.rs:
+/Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress.rs:
+/Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/soft.rs:
+/Users/lucasreolon/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sha1-0.10.6/src/compress/x86.rs:
