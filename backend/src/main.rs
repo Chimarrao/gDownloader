@@ -42,5 +42,6 @@ pub fn create_router(state: ws::AppState) -> axum::Router {
 
 // Declaração dos módulos — Rust exige declaração explícita de cada módulo
 mod models;
+mod providers;
 mod routes;
 mod ws;
