@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
 
 // Router separado em função para facilitar testes
 pub fn create_router(state: ws::AppState) -> axum::Router {
-    use axum::routing::get;
+    use axum::routing::{delete, get, post};
     use tower_http::cors::{Any, CorsLayer};
 
     let cors = CorsLayer::new()
@@ -36,6 +36,9 @@ pub fn create_router(state: ws::AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", get(routes::health::health))
         .route("/ws", get(ws::ws_handler))   // WebSocket endpoint para progresso em tempo real
+        .route("/downloads", post(routes::downloads::add_download))
+        .route("/downloads", get(routes::downloads::list_downloads))
+        .route("/downloads/:id", delete(routes::downloads::cancel_download))
         .with_state(state)                    // Injeta AppState em todos os handlers que precisam
         .layer(cors)
 }
