@@ -1,43 +1,33 @@
-// #[tokio::main] transforma a função main em assíncrona
-// Sem isso, não podemos usar .await dentro de main
+// #[tokio::main] transforma main em assíncrona — obrigatório para usar async/await
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Inicializa o sistema de logs — como configurar winston/pino no Node.js
-    // "info" significa: mostra logs de nível INFO, WARN e ERROR
+    // Inicializa o sistema de logs (como configurar winston/pino no Node.js)
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .init();
 
-    // Cria o router com todas as rotas registradas
-    let app = create_router();
+    // Cria o estado compartilhado com canal de broadcast e mapa de downloads
+    let state = ws::AppState::new();
 
-    // Porta 0 = o sistema operacional escolhe uma porta livre automaticamente
-    // Isso evita conflitos com outras aplicações rodando na máquina
+    let app = create_router(state);
+
+    // Porta 0 = o SO escolhe uma porta livre automaticamente
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
 
-    // Imprime a porta no stdout — o Electron vai ler isso para saber onde conectar
-    // Formato específico "PORT:XXXX" que o Electron procura com regex
+    // Imprime a porta para o Electron ler via stdout
     println!("PORT:{port}");
-
     tracing::info!("Backend rodando em 127.0.0.1:{port}");
 
-    // Inicia o servidor e fica em loop aguardando requisições
-    // Isso bloqueia o programa aqui (é o comportamento desejado — servidor deve rodar forever)
     axum::serve(listener, app).await?;
-
     Ok(())
 }
 
-// Função separada para criar o router — facilita testes unitários
-// Em testes, chamamos create_router() diretamente sem precisar de um servidor real
-pub fn create_router() -> axum::Router {
+// Router separado em função para facilitar testes
+pub fn create_router(state: ws::AppState) -> axum::Router {
     use axum::routing::get;
     use tower_http::cors::{Any, CorsLayer};
 
-    // CORS = Cross-Origin Resource Sharing
-    // Permite que o Vue (rodando em outra porta durante dev) acesse a API
-    // Any = aceita qualquer origem, método e header
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -45,11 +35,12 @@ pub fn create_router() -> axum::Router {
 
     axum::Router::new()
         .route("/health", get(routes::health::health))
-        // .layer() adiciona middleware — como app.use() no Express
+        .route("/ws", get(ws::ws_handler))   // WebSocket endpoint para progresso em tempo real
+        .with_state(state)                    // Injeta AppState em todos os handlers que precisam
         .layer(cors)
 }
 
-// Declaração dos módulos usados pelo main
-// Em Rust, todo módulo precisa ser declarado explicitamente no arquivo pai
+// Declaração dos módulos — Rust exige declaração explícita de cada módulo
 mod models;
 mod routes;
+mod ws;
