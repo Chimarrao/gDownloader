@@ -1,1 +1,0 @@
-/Users/lucasreolon/Desktop/Código/gDownloader/.worktrees/phase0-foundation/backend/target/debug/gdownloader-backend: /Users/lucasreolon/Desktop/Código/gDownloader/.worktrees/phase0-foundation/backend/src/main.rs
