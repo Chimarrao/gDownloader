@@ -44,7 +44,23 @@ impl MegaProvider {
     // Formatos suportados:
     //   Novo: https://mega.nz/file/HANDLE#KEY
     //   Antigo: https://mega.nz/#!HANDLE!KEY
+    //
+    // NÃO SUPORTADO:
+    //   Pastas: https://mega.nz/folder/HANDLE#KEY (requer API diferente)
     pub fn parse_url(url: &str) -> Option<(String, Vec<u8>)> {
+        // Verifica se é uma pasta (não suportada) e retorna erro útil
+        if url.contains("/folder/") {
+            eprintln!(
+                "❌ Mega: Links de PASTA (/folder/) não são suportados.\n\
+                 Use um link de ARQUIVO (/file/) em vez disso.\n\
+                 Para obter um link de arquivo de uma pasta:\n\
+                 1. Abra a pasta no Mega\n\
+                 2. Clique em um arquivo específico\n\
+                 3. Compartilhe aquele arquivo (não a pasta)"
+            );
+            return None;
+        }
+
         // Formato novo: /file/HANDLE#KEY
         if let Some(pos) = url.find("/file/") {
             let after = &url[pos + 6..];

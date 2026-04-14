@@ -20,11 +20,29 @@ pub async fn add_download(
 ) -> Result<Json<Download>, (StatusCode, Json<ApiError>)> {
     // Detecta qual provider trata essa URL
     let provider = providers::detect_provider(&req.url).ok_or_else(|| {
+        let error_msg = if req.url.contains("mega.nz/folder/") {
+            "❌ Links de PASTA do Mega (/folder/) não são suportados.\n\
+             Use um link de ARQUIVO (/file/) em vez disso.\n\
+             Para obter: abra a pasta no Mega > clique em um arquivo > compartilhe aquele arquivo"
+        } else if req.url.contains("mega.nz") {
+            "❌ URL do Mega inválida. Formatos suportados:\n\
+             • Novo: https://mega.nz/file/HANDLE#KEY\n\
+             • Antigo: https://mega.nz/#!HANDLE!KEY"
+        } else if req.url.contains("mediafire.com") {
+            "⚠️ URL do MediaFire não foi reconhecida.\n\
+             Verifique se o link é válido e acessível.\n\
+             O link pode estar expirado ou protegido."
+        } else {
+            "URL não reconhecida. Provedores suportados:\n\
+             • Mega (mega.nz) — arquivos diretos /file/ (não pastas /folder/)\n\
+             • MediaFire (mediafire.com)\n\
+             • Google Drive (drive.google.com)\n\
+             • PixelDrain (pixeldrain.com)"
+        };
+
         (
             StatusCode::BAD_REQUEST,
-            Json(ApiError::new(
-                "URL não reconhecida. Provedores suportados: Mega, MediaFire, Google Drive, PixelDrain",
-            )),
+            Json(ApiError::new(error_msg)),
         )
     })?;
 

@@ -73,38 +73,59 @@ impl Provider for MediaFireProvider {
             let direct_url = Self::extract_direct_link(&html)
                 .ok_or_else(|| anyhow!("Link de download não encontrado na página do MediaFire.\nVerifique se o link é público e está correto."))?;
 
-            // Passo 3: HEAD request para obter metadados sem baixar o arquivo
-            let resp = client.head(&direct_url).send().await?;
+            // Passo 3: Tenta obter metadados via HEAD request
+            // Se não funcionar, tenta GET (alguns servidores bloqueiam HEAD)
+            let resp = match client.head(&direct_url).send().await {
+                Ok(r) => Some(r),
+                Err(_) => {
+                    // HEAD falhou, tenta GET com Range para pegar só o header
+                    client
+                        .get(&direct_url)
+                        .header("Range", "bytes=0-0")
+                        .send()
+                        .await
+                        .ok()
+                }
+            };
+
+            let (size, mime_type) = if let Some(resp) = resp {
+                // Tenta obter Content-Length
+                let size = resp.content_length().unwrap_or_else(|| {
+                    // Se não conseguiu, tenta extrair do Content-Range (para requests com Range)
+                    resp.headers()
+                        .get("content-range")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| {
+                            // Formato: "bytes 0-0/TOTAL_SIZE"
+                            s.split('/').last().and_then(|size_str| size_str.parse::<u64>().ok())
+                        })
+                        .unwrap_or(0)
+                });
+
+                let mime = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+
+                (size, mime)
+            } else {
+                (0, None)
+            };
 
             // Tenta extrair o nome do arquivo do Content-Disposition
             // ou da última parte da URL como fallback
-            let filename = resp
-                .headers()
-                .get("content-disposition")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| {
-                    if let Some(pos) = s.find("filename=\"") {
-                        let start = pos + 10;
-                        let end = s[start..].find('"')? + start;
-                        Some(s[start..end].to_string())
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    // Fallback: usa o último segmento da URL original
-                    url.split('/').last().map(String::from)
-                })
+            let filename = url
+                .split('/')
+                .rev()
+                .find(|s| !s.is_empty() && !s.ends_with(".file"))
+                .map(String::from)
                 .unwrap_or_else(|| "arquivo_mediafire".to_string());
 
             Ok(FileInfo {
                 filename,
-                size: resp.content_length().unwrap_or(0),
-                mime_type: resp
-                    .headers()
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .map(String::from),
+                size,
+                mime_type,
             })
         })
     }

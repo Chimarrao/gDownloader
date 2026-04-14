@@ -4,6 +4,10 @@ version = "0.1.0"
 # edition = "2021" significa que usamos a versão moderna do Rust
 edition = "2021"
 
+[lib]
+name = "gdownloader_backend"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gdownloader-backend"
 path = "src/main.rs"
@@ -46,3 +50,5 @@ futures-util = "0.3"
 # Para testes HTTP
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
+http = "1"
+hyper = "1"

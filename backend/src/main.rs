@@ -1,3 +1,6 @@
+// Importa do lib.rs para reutilizar código
+use gdownloader_backend::{create_router, ws};
+
 // #[tokio::main] transforma main em assíncrona — obrigatório para usar async/await
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,29 +25,3 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
     Ok(())
 }
-
-// Router separado em função para facilitar testes
-pub fn create_router(state: ws::AppState) -> axum::Router {
-    use axum::routing::{delete, get, post};
-    use tower_http::cors::{Any, CorsLayer};
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    axum::Router::new()
-        .route("/health", get(routes::health::health))
-        .route("/ws", get(ws::ws_handler))   // WebSocket endpoint para progresso em tempo real
-        .route("/downloads", post(routes::downloads::add_download))
-        .route("/downloads", get(routes::downloads::list_downloads))
-        .route("/downloads/:id", delete(routes::downloads::cancel_download))
-        .with_state(state)                    // Injeta AppState em todos os handlers que precisam
-        .layer(cors)
-}
-
-// Declaração dos módulos — Rust exige declaração explícita de cada módulo
-mod models;
-mod providers;
-mod routes;
-mod ws;
