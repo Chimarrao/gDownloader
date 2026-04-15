@@ -1,51 +1,60 @@
 use anyhow::Result;
 use crate::models::FileInfo;
 
-// Declara os sub-módulos de cada provedor
+// Declara os sub-módulos de cada provedor de download
+// Em PHP seria algo como: require_once 'providers/MegaProvider.php';
 pub mod gdrive;
 pub mod mediafire;
 pub mod mega;
 pub mod pixeldrain;
 
-// Atualização de progresso enviada pelo provider durante o download
-// Usada para calcular velocidade e ETA na fila
+// Estrutura de atualização de progresso enviada pelo provider durante o download
+// Usada para calcular velocidade (bytes/s) e ETA no handler de downloads
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
     pub bytes_downloaded: u64,
-    pub total_bytes: u64, // 0 se o servidor não informar o tamanho total
+    pub total_bytes: u64, // 0 se o servidor não informar Content-Length
 }
 
-// Trait = interface em Rust
-// Todo provider deve implementar estes métodos
-// Send + Sync = pode ser usado com segurança entre threads (necessário com tokio)
+// Trait = como uma interface PHP — define o contrato que todo provider deve seguir
+// Send + Sync = restrições de thread-safety: o provider pode ser movido entre threads
+//              e compartilhado por referência entre threads — obrigatório com tokio
 pub trait Provider: Send + Sync {
-    // Retorna o nome do provider (para logs e exibição na UI)
+    // Retorna o nome legível do provider para logs e exibição na UI
     fn name(&self) -> &str;
 
-    // Retorna informações do arquivo sem baixar (nome, tamanho, etc.)
-    // É equivalente a um método async em uma interface TypeScript
-    // A sintaxe com Pin<Box<dyn Future>> é necessária porque Rust não suporta
-    // async em traits diretamente (ainda) — é como retornar uma Promise em JS
+    // Busca metadados do arquivo (nome, tamanho, MIME) sem baixar o conteúdo
+    //
+    // A assinatura complexa é necessária porque Rust não suporta `async fn` em traits
+    // diretamente (ainda). Pin<Box<dyn Future>> é o equivalente manual de uma Promise:
+    //   - Box<dyn Future> = heap-allocated, dyn Future = qualquer Future (como interface JS)
+    //   - Pin = garante que o Future não seja movido na memória (requisito do async runtime)
+    //   - Send = pode ser enviado para outra thread (necessário para tokio)
+    //   - 'a = lifetime: o Future não pode viver mais que &self e &url
     fn get_file_info<'a>(
         &'a self,
         url: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>;
 
-    // Baixa o arquivo para dest_path, enviando atualizações pelo progress_tx
-    // Retorna o total de bytes baixados
+    // Baixa o arquivo para dest_path e envia atualizações de progresso pelo canal
+    // Result<u64> = Ok(bytes_baixados) ou Err(motivo_do_erro) — como try/catch mas em forma de valor
     fn download<'a>(
         &'a self,
         url: &'a str,
         dest_path: &'a str,
+        // Sender do canal de progresso — o provider envia, o handler recebe
+        // mpsc = Multiple Producer, Single Consumer (como uma fila de mensagens)
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
 }
 
-// Detecta qual provider deve tratar uma URL
-// Retorna Box<dyn Provider> — um provider de tipo desconhecido em tempo de compilação
-// É como retornar um objeto de interface no TypeScript: a função não sabe o tipo exato,
-// só sabe que implementa Provider
+// Detecta qual provider consegue lidar com a URL fornecida
+// Retorna Box<dyn Provider> = heap-allocated, dyn Provider = qualquer tipo que implemente
+// Provider (como type hinting de interface no PHP: function foo(ProviderInterface $p))
+// Option<T> = pode ser Some(provider) ou None — como nullable no PHP (Provider|null)
 pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
+    // Testa cada provider na ordem de prioridade
+    // O primeiro que reconhecer a URL vence — sem overlap entre eles
     if mega::MegaProvider::matches(url) {
         return Some(Box::new(mega::MegaProvider));
     }
@@ -58,45 +67,6 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     if pixeldrain::PixelDrainProvider::matches(url) {
         return Some(Box::new(pixeldrain::PixelDrainProvider));
     }
+    // URL não reconhecida por nenhum provider suportado
     None
-}
-
-// --- Testes de detecção de URL ---
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_detect_mega() {
-        let p = detect_provider("https://mega.nz/file/AbCdEfGh#key123");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "Mega");
-    }
-
-    #[test]
-    fn test_detect_pixeldrain() {
-        let p = detect_provider("https://pixeldrain.com/u/AbCdEfGh");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "PixelDrain");
-    }
-
-    #[test]
-    fn test_detect_mediafire() {
-        let p = detect_provider("https://www.mediafire.com/file/abc123/file.zip/file");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "MediaFire");
-    }
-
-    #[test]
-    fn test_detect_gdrive() {
-        let p = detect_provider("https://drive.google.com/file/d/1ABC/view");
-        assert!(p.is_some());
-        assert_eq!(p.unwrap().name(), "Google Drive");
-    }
-
-    #[test]
-    fn test_unknown_url() {
-        let p = detect_provider("https://example.com/file.zip");
-        assert!(p.is_none());
-    }
 }

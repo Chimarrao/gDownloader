@@ -8,32 +8,37 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::models::{Download, WsEvent};
 
-// Capacidade máxima do canal de broadcast
-// Se a UI estiver lenta para processar, eventos mais antigos são descartados
+// Capacidade máxima do buffer do canal de broadcast
+// Se a UI estiver lenta para processar mensagens, eventos antigos são descartados
+// para não travar o servidor — como uma fila circular com limite
 const CHANNEL_CAPACITY: usize = 256;
 
-// AppState é o estado compartilhado entre todos os handlers HTTP e WebSocket
-// Arc = "Atomic Reference Counted" — permite compartilhar o mesmo dado entre threads
-// sem precisar copiar. É como um ponteiro shared em PHP ou uma referência em JS.
-// Clone aqui não copia o dado — copia o ponteiro (barato)
+// AppState = estado global compartilhado entre todos os handlers HTTP e WebSocket
+// Arc = "Atomic Reference Counted" — permite múltiplas referências ao mesmo dado
+//       entre threads sem copiar. É como passar um objeto por referência no PHP,
+//       mas thread-safe. O dado só é destruído quando todas as referências somem.
+// Clone aqui não copia o dado — só incrementa o contador de referências (barato)
 #[derive(Clone)]
 pub struct AppState {
-    // Transmissor do canal de broadcast
-    // Quando chamamos tx.send(evento), todos os clientes WebSocket conectados recebem
-    // É como EventEmitter do Node.js, mas thread-safe
+    // Canal de broadcast para eventos WebSocket
+    // Quando tx.send(evento) é chamado, TODOS os clientes WebSocket conectados recebem
+    // É como um EventEmitter do Node.js, mas thread-safe e sem callbacks
     pub tx: Arc<broadcast::Sender<WsEvent>>,
 
-    // Mapa de downloads ativos e recentes
-    // Mutex garante que só uma thread acessa o mapa por vez (como synchronized em Java)
+    // Mutex = trava de exclusão mútua — só uma thread acessa o HashMap por vez
+    // Arc<Mutex<...>> = Arc = referência contada entre threads (como passar um objeto
+    //                  por referência no PHP), Mutex = trava para acesso seguro
+    // Em PHP: como um $semaphore que protege leitura/escrita a dados compartilhados
     pub downloads: Arc<Mutex<HashMap<String, Download>>>,
 }
 
+// Como um class em PHP — agrupa métodos desta struct
 impl AppState {
-    // Cria um novo AppState — chamado uma vez ao iniciar o servidor
+    // Construtor — chamado uma única vez no main() ao iniciar o servidor
     pub fn new() -> Self {
-        // broadcast::channel(N) cria um canal onde múltiplos leitores podem receber
-        // o mesmo evento. É como um EventEmitter onde vários "listeners" ouvem o mesmo evento.
-        // _rx é o receptor inicial — descartamos porque cada WebSocket client cria o seu próprio
+        // broadcast::channel(N) cria um canal pub/sub com buffer de N mensagens
+        // Múltiplos receptores (um por cliente WebSocket) recebem todos os eventos
+        // _rx é o receptor inicial — descartamos porque cada WebSocket cria o seu próprio
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             tx: Arc::new(tx),
@@ -42,61 +47,67 @@ impl AppState {
     }
 
     // Envia um evento para todos os clientes WebSocket conectados
-    // O `_ =` ignora o erro caso não haja nenhum cliente conectado (situação normal)
+    // `let _ =` descarta o Result — se não há clientes, o erro é ignorado (situação normal)
     pub fn broadcast(&self, event: WsEvent) {
         let _ = self.tx.send(event);
     }
 }
 
-// Handler do WebSocket — chamado quando o Vue conecta em ws://localhost:PORT/ws
-// WebSocketUpgrade é injetado pelo axum quando detecta um "upgrade" HTTP→WebSocket
+// Handler de upgrade HTTP → WebSocket
+// Chamado pelo Axum quando o Vue conecta em ws://localhost:PORT/ws
+// WebSocketUpgrade é injetado automaticamente pelo Axum quando detecta o header "Upgrade: websocket"
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<AppState>, // State injeta o AppState (dependency injection do axum)
+    // State injeta o AppState — como injeção de dependência no Axum
+    // Equivalente a obter um service do container DI no Laravel
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
-    // on_upgrade aceita a conexão WebSocket e passa para handle_socket
+    // on_upgrade aceita o handshake e passa o socket para handle_socket
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
 // Gerencia uma conexão WebSocket individual
-// Cada cliente Vue que conectar terá sua própria instância desta função rodando
+// Cada cliente Vue que conectar terá sua própria execução desta função
+// rodando em paralelo — como processos independentes no PHP-FPM, mas dentro de uma task tokio
 async fn handle_socket(socket: WebSocket, state: AppState) {
     // split() divide o socket em duas metades independentes:
-    // sender = para enviar mensagens ao cliente
-    // receiver = para receber mensagens do cliente
-    // Equivalente a separar writable e readable no Node.js streams
+    //   sender   = para enviar mensagens ao cliente Vue
+    //   receiver = para receber mensagens do cliente Vue
+    // Equivalente a separar os streams readable/writable de uma conexão TCP no Node.js
     let (mut sender, mut receiver) = socket.split();
 
     // Cria um receptor dedicado para este cliente no canal de broadcast
-    // Cada subscribe() cria um novo receptor que recebe todos os eventos futuros
+    // Cada subscribe() cria uma nova "assinatura" — recebe todos os eventos futuros
+    // Eventos anteriores à conexão não são entregues (sem replay)
     let mut rx = state.tx.subscribe();
 
-    // tokio::select! aguarda múltiplas operações async simultaneamente
-    // Executa o primeiro bloco que completar — similar a Promise.race() no JS
+    // tokio::select! aguarda múltiplas operações async ao mesmo tempo
+    // Executa o primeiro bloco que completar — como Promise.race() no JavaScript
+    // O loop continua até o cliente desconectar ou o servidor encerrar
     loop {
         tokio::select! {
-            // Evento chegou do canal interno (ex: progresso de download)
+            // Evento interno chegou (ex: progresso de download de outra task)
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        // Serializa o evento para JSON e envia pelo WebSocket
+                        // Serializa o evento para JSON — como json_encode() no PHP
                         if let Ok(json) = serde_json::to_string(&event) {
-                            // Se o envio falhar (cliente desconectou), para o loop
+                            // Envia pelo WebSocket; se falhar, o cliente desconectou
                             if sender.send(Message::Text(json.into())).await.is_err() {
                                 break;
                             }
                         }
                     }
-                    // canal foi fechado (servidor parando) — encerra a conexão
+                    // Canal fechado (servidor sendo encerrado) — encerra o loop
                     Err(_) => break,
                 }
             }
-            // Cliente enviou algo (ex: ping do browser)
+            // Mensagem chegou do cliente (ex: ping automático do browser)
             msg = receiver.next() => {
                 match msg {
-                    // Cliente desconectou — None significa stream encerrado
+                    // None = stream encerrado = cliente desconectou
                     None => break,
-                    // Mensagem recebida — ignoramos por enquanto (não temos comandos do cliente)
+                    // Mensagem recebida — ignorada por enquanto (sem comandos do cliente)
                     Some(_) => {}
                 }
             }

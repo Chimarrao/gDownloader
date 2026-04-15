@@ -1,7 +1,12 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'path'
 import { spawn, ChildProcess } from 'child_process'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+
+// Caminho para os arquivos de dados persistidos
+const settingsPath = join(app.getPath('userData'), 'settings.json')
+const historyPath = join(app.getPath('userData'), 'history.json')
 
 // Processo filho do backend Rust
 let rustBackend: ChildProcess | null = null
@@ -111,15 +116,33 @@ app.whenReady().then(async () => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC: Vue renderer pede a porta do backend Rust
-  // window.api.getBackendPort() no Vue chama isso via preload
+  // IPC: porta do backend Rust
   ipcMain.handle('backend:getPort', () => rustPort)
 
-  // IPC: abrir arquivo/pasta no explorador do sistema operacional
-  ipcMain.handle('shell:openPath', (_e, targetPath: string) => shell.openPath(targetPath))
-  ipcMain.handle('shell:showInFolder', (_e, targetPath: string) =>
-    shell.showItemInFolder(targetPath)
-  )
+  // IPC: shell
+  ipcMain.handle('shell:openPath', (_e, p: string) => shell.openPath(p))
+  ipcMain.handle('shell:showInFolder', (_e, p: string) => shell.showItemInFolder(p))
+
+  // IPC: settings (lê/escreve JSON em userData)
+  ipcMain.handle('settings:load', () => {
+    if (!existsSync(settingsPath)) return null
+    try { return JSON.parse(readFileSync(settingsPath, 'utf8')) } catch { return null }
+  })
+  ipcMain.handle('settings:save', (_e, s: unknown) => {
+    writeFileSync(settingsPath, JSON.stringify(s, null, 2))
+  })
+
+  // IPC: histórico de downloads
+  ipcMain.handle('history:load', () => {
+    if (!existsSync(historyPath)) return []
+    try { return JSON.parse(readFileSync(historyPath, 'utf8')) } catch { return [] }
+  })
+  ipcMain.handle('history:save', (_e, items: unknown) => {
+    writeFileSync(historyPath, JSON.stringify(items, null, 2))
+  })
+  ipcMain.handle('history:clear', () => {
+    writeFileSync(historyPath, '[]')
+  })
 
   // Inicia o backend Rust antes de abrir a janela
   try {

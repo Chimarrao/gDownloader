@@ -1,93 +1,97 @@
 <template>
-  <div>
-    <!-- Cards de resumo -->
-    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px">
+  <div class="stats-view">
+    <!-- Summary cards -->
+    <div class="stat-cards">
       <div class="stat-card">
-        <div class="stat-value">{{ stats.total }}</div>
-        <div class="stat-label">Downloads totais</div>
+        <div class="stat-icon stat-icon-total">
+          <i class="pi pi-database"></i>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.total }}</div>
+          <div class="stat-label">Downloads totais</div>
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">{{ stats.last7Days }}</div>
-        <div class="stat-label">Últimos 7 dias</div>
+        <div class="stat-icon stat-icon-week">
+          <i class="pi pi-calendar"></i>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.last7Days }}</div>
+          <div class="stat-label">Últimos 7 dias</div>
+        </div>
       </div>
       <div class="stat-card">
-        <div class="stat-value">{{ stats.formatsCount }}</div>
-        <div class="stat-label">Formatos distintos</div>
+        <div class="stat-icon stat-icon-formats">
+          <i class="pi pi-file"></i>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.formatsCount }}</div>
+          <div class="stat-label">Formatos distintos</div>
+        </div>
       </div>
     </div>
 
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px">
-      <!-- Downloads por dia (últimos 7 dias) -->
-      <div class="stat-section">
-        <h3 class="stat-section-title">
-          <i class="pi pi-calendar" style="margin-right: 6px"></i>Últimos 7 dias
+    <!-- Charts grid -->
+    <div class="charts-grid">
+      <!-- Daily activity -->
+      <div class="chart-panel">
+        <h3 class="panel-title">
+          <i class="pi pi-chart-bar"></i>
+          Atividade — Últimos 7 dias
         </h3>
-        <div v-if="stats.total === 0" class="stat-empty">Sem dados ainda</div>
-        <div v-else style="display: flex; flex-direction: column; gap: 8px">
-          <div v-for="day in stats.dailySeries" :key="day.label" style="display: flex; align-items: center; gap: 10px">
-            <span style="font-size: 11px; color: var(--text-secondary); min-width: 36px; text-align: right">
-              {{ day.label }}
-            </span>
-            <div style="flex: 1; height: 18px; background: var(--surface-section); border-radius: 4px; overflow: hidden">
+
+        <div v-if="stats.total === 0" class="chart-empty">
+          <i class="pi pi-chart-bar" style="font-size: 24px; opacity: 0.3;"></i>
+          <span>Sem dados ainda</span>
+        </div>
+
+        <div v-else class="bar-chart">
+          <div
+            v-for="day in stats.dailySeries"
+            :key="day.label"
+            class="bar-row"
+          >
+            <span class="bar-label">{{ day.label }}</span>
+            <div class="bar-track">
               <div
-                :style="{
-                  height: '100%',
-                  width: day.pct + '%',
-                  background: 'var(--accent-gradient)',
-                  borderRadius: '4px',
-                  transition: 'width 0.4s ease',
-                  minWidth: day.count > 0 ? '4px' : '0'
-                }"
+                class="bar-fill"
+                :style="{ width: day.pct + '%' }"
               ></div>
             </div>
-            <span style="font-size: 11px; color: var(--text-secondary); min-width: 20px; text-align: right">
-              {{ day.count }}
-            </span>
+            <span class="bar-count">{{ day.count }}</span>
           </div>
         </div>
       </div>
 
-      <!-- Top formatos -->
-      <div class="stat-section">
-        <h3 class="stat-section-title">
-          <i class="pi pi-list" style="margin-right: 6px"></i>Formatos mais usados
+      <!-- Top formats -->
+      <div class="chart-panel">
+        <h3 class="panel-title">
+          <i class="pi pi-list"></i>
+          Formatos mais usados
         </h3>
-        <div v-if="stats.topFormats.length === 0" class="stat-empty">Sem dados ainda</div>
-        <div v-else style="display: flex; flex-direction: column; gap: 8px">
+
+        <div v-if="stats.topFormats.length === 0" class="chart-empty">
+          <i class="pi pi-list" style="font-size: 24px; opacity: 0.3;"></i>
+          <span>Sem dados ainda</span>
+        </div>
+
+        <div v-else class="bar-chart">
           <div
-            v-for="fmt in stats.topFormats"
+            v-for="(fmt, idx) in stats.topFormats"
             :key="fmt.label"
-            style="display: flex; align-items: center; gap: 10px"
+            class="bar-row"
           >
-            <span
-              style="
-                font-size: 11px;
-                font-family: monospace;
-                color: var(--text-primary);
-                min-width: 110px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-              "
-              :title="fmt.label"
-            >
-              {{ fmt.label }}
-            </span>
-            <div style="flex: 1; height: 18px; background: var(--surface-section); border-radius: 4px; overflow: hidden">
+            <span class="bar-label bar-label-fmt" :title="fmt.label">{{ fmt.label }}</span>
+            <div class="bar-track">
               <div
+                class="bar-fill bar-fill-alt"
                 :style="{
-                  height: '100%',
                   width: fmt.pct + '%',
-                  background: 'linear-gradient(90deg, var(--accent-color), #a78bfa)',
-                  borderRadius: '4px',
-                  transition: 'width 0.4s ease',
-                  minWidth: '4px'
+                  opacity: 1 - idx * 0.1
                 }"
               ></div>
             </div>
-            <span style="font-size: 11px; color: var(--text-secondary); min-width: 20px; text-align: right">
-              {{ fmt.count }}
-            </span>
+            <span class="bar-count">{{ fmt.count }}</span>
           </div>
         </div>
       </div>
@@ -176,48 +180,188 @@ const stats = computed(() => {
 </script>
 
 <style scoped>
+/* ── Layout ─────────────────────────────────────────────────── */
+.stats-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Summary cards ──────────────────────────────────────────── */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
 .stat-card {
-  background: var(--surface-card);
-  border: 1px solid var(--surface-border);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
-  padding: 16px 20px;
-  text-align: center;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.stat-card:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
+  box-shadow: var(--shadow-card);
+}
+
+.stat-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.stat-icon-total {
+  background: rgba(124, 111, 255, 0.15);
+  color: var(--accent-color);
+  border: 1px solid rgba(124, 111, 255, 0.2);
+}
+
+.stat-icon-week {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.stat-icon-formats {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.stat-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .stat-value {
-  font-size: 32px;
-  font-weight: 700;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.1;
   background: var(--accent-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  line-height: 1.1;
 }
 
 .stat-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  white-space: nowrap;
 }
 
-.stat-section {
-  background: var(--surface-card);
-  border: 1px solid var(--surface-border);
+/* ── Charts grid ────────────────────────────────────────────── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* ── Chart panel ────────────────────────────────────────────── */
+.chart-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
   border-radius: 12px;
   padding: 16px;
 }
 
-.stat-section-title {
-  font-size: 13px;
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 14px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 16px;
 }
 
-.stat-empty {
+.panel-title i {
+  color: var(--accent-color);
   font-size: 12px;
-  color: var(--text-secondary);
-  text-align: center;
-  padding: 24px 0;
+}
+
+/* ── Chart empty ────────────────────────────────────────────── */
+.chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 120px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ── Bar chart ──────────────────────────────────────────────── */
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bar-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 36px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bar-label-fmt {
+  min-width: 80px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Courier New', monospace;
+  font-size: 10.5px;
+  color: var(--text-primary);
+}
+
+.bar-track {
+  flex: 1;
+  height: 16px;
+  background: var(--surface-section);
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent-gradient);
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 0;
+}
+
+.bar-fill-alt {
+  background: linear-gradient(90deg, var(--accent-color), var(--accent-light));
+}
+
+.bar-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 20px;
+  text-align: right;
+  font-weight: 600;
 }
 </style>

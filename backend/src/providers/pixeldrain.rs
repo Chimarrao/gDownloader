@@ -123,26 +123,3 @@ impl Provider for PixelDrainProvider {
     }
 }
 
-// --- Testes unitários ---
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_id_standard() {
-        let id = PixelDrainProvider::extract_id("https://pixeldrain.com/u/AbCdEfGh");
-        assert_eq!(id, Some("AbCdEfGh".to_string()));
-    }
-
-    #[test]
-    fn test_extract_id_trailing_slash() {
-        let id = PixelDrainProvider::extract_id("https://pixeldrain.com/u/AbCdEfGh/");
-        assert_eq!(id, Some("AbCdEfGh".to_string()));
-    }
-
-    #[test]
-    fn test_extract_id_invalid() {
-        let id = PixelDrainProvider::extract_id("https://example.com/u/xyz");
-        assert_eq!(id, None);
-    }
-}

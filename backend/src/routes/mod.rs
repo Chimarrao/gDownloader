@@ -2,3 +2,4 @@
 // Cada sub-módulo precisa ser declarado aqui
 pub mod downloads;
 pub mod health;
+pub mod providers;
