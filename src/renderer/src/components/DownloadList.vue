@@ -612,9 +612,10 @@ function childStatusText(status?: DownloadChild['status']): string {
   flex: 1;
   width: 100%;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
   gap: 0;
   align-self: stretch;
+  overflow: hidden;
 }
 
 /* ── Empty state ────────────────────────────────────────────── */
@@ -655,8 +656,11 @@ function childStatusText(status?: DownloadChild['status']): string {
   flex-direction: column;
   width: 100%;
   min-width: 0;
-  align-self: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   gap: 10px;
+  padding-right: 2px;
 }
 
 .list-toolbar {

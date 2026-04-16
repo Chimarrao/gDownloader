@@ -121,11 +121,12 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 
 <style scoped>
 .app-root {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   background: var(--bg-primary);
   color: var(--text-primary);
+  overflow: hidden;
 }
 
 .topbar {
@@ -210,7 +211,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   flex: 1;
   min-height: 0;
   display: flex;
-  overflow: auto;
+  overflow: hidden;
   padding: 18px;
 }
 
@@ -220,13 +221,17 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   min-height: 0;
   display: flex;
   align-items: stretch;
+  overflow: hidden;
 }
 
 .downloads-panel {
   width: 100%;
   max-width: 1040px;
   margin: 0 auto;
-  align-self: flex-start;
+  align-self: stretch;
   min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 </style>

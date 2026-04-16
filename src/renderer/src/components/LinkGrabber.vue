@@ -431,6 +431,9 @@ function fmtBytes(n: number): string {
   max-width: 980px;
   width: 100%;
   min-width: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .grabber-header {
@@ -573,6 +576,9 @@ function fmtBytes(n: number): string {
 .captured-list {
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .captured-row + .captured-row {
