@@ -272,8 +272,11 @@ const items = ref<DownloadItem[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const unsubs: Array<() => void> = []
+// Mutex: at most one hydrate() runs at a time; hydrateQueued ensures one follow-up
+// run executes after the in-flight one finishes.
 let hydrateQueued = false
 let hydrateInFlight = false
+let isMounted = false
 
 // ── Computed ───────────────────────────────────────────────
 const orderedItems = computed(() => [...items.value].sort((a, b) => b.addedAt - a.addedAt))
@@ -283,6 +286,7 @@ const finishedCount = computed(() =>
 
 // ── Lifecycle ──────────────────────────────────────────────
 onMounted(async () => {
+  isMounted = true
   // Load module metadata for labels
   const modules = await window.api.modules.list().catch(() => [])
   modulesById.value = modules.reduce<Record<string, ModuleSummary>>((acc, mod) => {
@@ -408,6 +412,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  isMounted = false
   for (const unsub of unsubs) unsub()
 })
 
@@ -419,8 +424,9 @@ async function hydrate(): Promise<void> {
   }
   hydrateInFlight = true
   try {
+    if (!isMounted) return
     const fresh: DownloadItem[] = await window.api.downloads.list().catch(() => [])
-    const freshById = new Map<string, DownloadItem>(fresh.map((item) => [item.id, item] as const))
+    const freshById = new Map<string, DownloadItem>(fresh.map((item) => [item.id, item]))
 
     for (let i = items.value.length - 1; i >= 0; i--) {
       if (!freshById.has(items.value[i].id)) {
@@ -442,7 +448,7 @@ async function hydrate(): Promise<void> {
     hydrateInFlight = false
     if (hydrateQueued) {
       hydrateQueued = false
-      void hydrate()
+      if (isMounted) void hydrate()
     }
   }
 }
