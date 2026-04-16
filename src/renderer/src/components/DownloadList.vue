@@ -606,9 +606,14 @@ function formatSpeed(bps: number): string {
 function formatEta(secs: number): string {
   if (!secs || secs <= 0) return '--'
   if (secs < 60) return `${Math.round(secs)}s`
-  const m = Math.floor(secs / 60)
-  const s = Math.round(secs % 60)
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  if (secs < 3600) {
+    const m = Math.floor(secs / 60)
+    const s = Math.round(secs % 60)
+    return `${m}m ${s}s`
+  }
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return `${h}h ${m}m`
 }
 
 function childPercent(child: DownloadChild): number {
