@@ -504,10 +504,14 @@ function fmtBytes(n: number): string {
 }
 
 .captured-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--bg-card);
-  overflow: hidden;
 }
 
 .captured-toolbar {

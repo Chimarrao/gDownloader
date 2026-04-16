@@ -625,7 +625,7 @@ function childStatusText(status?: DownloadChild['status']): string {
   align-items: center;
   justify-content: center;
   flex: 1;
-  min-height: 100%;
+  min-height: 0;
   gap: 10px;
   color: var(--text-muted);
   text-align: center;
