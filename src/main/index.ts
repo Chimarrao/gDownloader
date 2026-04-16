@@ -69,6 +69,77 @@ function getArchiveOutputDir(archivePath: string): string {
   return join(dir, name || `${base}-extraido`)
 }
 
+function toArrayBuffer(buffer: Buffer): ArrayBuffer {
+  const view = new Uint8Array(buffer)
+  const copy = new Uint8Array(view.byteLength)
+  copy.set(view)
+  return copy.buffer
+}
+
+async function extractRarEmbedded(archivePath: string, outputDir: string): Promise<string> {
+  const unrar = require('node-unrar-js') as {
+    createExtractorFromFile: (options: {
+      filepath: string
+      targetPath: string
+      wasmBinary: ArrayBuffer
+    }) => Promise<{ extract: (options?: Record<string, never>) => { files: Iterable<unknown> } }>
+  }
+
+  const wasmBinary = toArrayBuffer(readFileSync(require.resolve('node-unrar-js/dist/js/unrar.wasm')))
+  const extractor = await unrar.createExtractorFromFile({
+    filepath: archivePath,
+    targetPath: outputDir,
+    wasmBinary
+  })
+  const extracted = extractor.extract()
+  for (const _entry of extracted.files) {
+    // percorre até o fim para garantir liberação dos recursos internos
+  }
+  return outputDir
+}
+
+async function extractWith7zWasm(archivePath: string, outputDir: string): Promise<string> {
+  const { default: SevenZip } = await import('7z-wasm')
+  const wasmBinary = toArrayBuffer(readFileSync(require.resolve('7z-wasm/7zz.wasm')))
+  const logs: string[] = []
+  const errors: string[] = []
+  const sevenZip = await SevenZip({
+    wasmBinary,
+    print: (line: string) => logs.push(line),
+    printErr: (line: string) => errors.push(line)
+  })
+
+  const mountRoot = '/nodefs'
+  const realRoot = dirname(archivePath)
+  const archiveName = basename(archivePath)
+  const outputName = basename(outputDir)
+
+  try {
+    sevenZip.FS.mkdir(mountRoot)
+  } catch {
+    // já existe
+  }
+
+  sevenZip.FS.mount(sevenZip.NODEFS, { root: realRoot }, mountRoot)
+  sevenZip.FS.chdir(mountRoot)
+
+  try {
+    sevenZip.callMain(['x', archiveName, `-o${outputName}`, '-y'])
+  } catch (error) {
+    const detail = [...errors, ...logs].filter(Boolean).join('\n').trim()
+    throw new Error(detail || (error instanceof Error ? error.message : String(error)))
+  } finally {
+    try {
+      sevenZip.FS.chdir('/')
+      sevenZip.FS.unmount(mountRoot)
+    } catch {
+      // ignora desmontagem
+    }
+  }
+
+  return outputDir
+}
+
 async function extractArchive(archivePath: string): Promise<string> {
   if (!existsSync(archivePath)) {
     throw new Error('Arquivo não encontrado para extração')
@@ -106,9 +177,23 @@ async function extractArchive(archivePath: string): Promise<string> {
   }
 
   if (lower.endsWith('.rar') || lower.endsWith('.7z')) {
+    if (lower.endsWith('.rar')) {
+      try {
+        return await extractRarEmbedded(archivePath, outputDir)
+      } catch (error) {
+        console.warn('[Electron] Falha no extrator embutido de RAR, tentando fallback:', error)
+      }
+    }
+
+    try {
+      return await extractWith7zWasm(archivePath, outputDir)
+    } catch (error) {
+      console.warn('[Electron] Falha no extrator embutido de 7z/RAR, tentando fallback:', error)
+    }
+
     const tool = await findFirstCommand(['7z', '7za', 'unar'])
     if (!tool) {
-      throw new Error('RAR/7Z exige 7z, 7za ou unar instalado no sistema')
+      throw new Error('Não foi possível extrair este arquivo com os extratores embutidos e nenhuma ferramenta externa foi encontrada')
     }
 
     if (tool === 'unar') {

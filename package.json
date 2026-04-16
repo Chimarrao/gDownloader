@@ -27,8 +27,10 @@
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@primeuix/themes": "^2.0.3",
+    "7z-wasm": "^1.2.0",
     "googleapis": "^144.0.0",
     "megajs": "^1.1.2",
+    "node-unrar-js": "^2.0.2",
     "primeicons": "^7.0.0",
     "primevue": "^4.5.4"
   },

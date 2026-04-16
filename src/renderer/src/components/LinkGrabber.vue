@@ -37,6 +37,10 @@
           Arquivos
           <strong>{{ fileCount }}</strong>
         </span>
+        <span class="status-chip is-duplicate">
+          Duplicados
+          <strong>{{ duplicateCount }}</strong>
+        </span>
         <span class="status-chip is-error">
           Indisponível
           <strong>{{ errorCount }}</strong>
@@ -118,7 +122,7 @@
             </div>
 
             <button
-              v-if="row.info?.isFolder && (row.info.children?.length ?? 0) > 0"
+              v-if="(row.info?.isFolder && (row.info.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
               class="expand-btn"
               @click="row.expanded = !row.expanded"
             >
@@ -126,18 +130,32 @@
             </button>
           </div>
 
-          <div v-if="row.expanded && row.info?.isFolder && row.info.children?.length" class="child-panel">
-            <div v-for="child in row.info.children" :key="`${row.url}:${child.filename}`" class="child-row">
-              <div class="child-name">
-                <img
-                  class="child-icon"
-                  :src="getFileIcon(child.filename, child.mimeType, child.isFolder).src"
-                  :alt="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
-                  draggable="false"
-                />
-                <span>{{ child.filename }}</span>
+          <div v-if="row.expanded && ((row.info?.isFolder && row.info.children?.length) || row.sourceUrls.length > 1)" class="child-panel">
+            <div v-if="row.sourceUrls.length > 1" class="source-panel">
+              <div class="source-heading">Fontes disponíveis</div>
+              <div
+                v-for="(sourceUrl, idx) in row.sourceUrls"
+                :key="`${row.url}:source:${sourceUrl}`"
+                class="source-row"
+              >
+                <span class="source-provider">{{ row.sourceLabels[idx] ?? 'Servidor' }}</span>
+                <span class="source-url" :title="sourceUrl">{{ truncateUrl(sourceUrl) }}</span>
               </div>
-              <span>{{ fmtBytes(child.size) }}</span>
+            </div>
+
+            <div v-if="row.info?.isFolder && row.info.children?.length" class="children-list">
+              <div v-for="child in row.info.children" :key="`${row.url}:${child.filename}`" class="child-row">
+                <div class="child-name">
+                  <img
+                    class="child-icon"
+                    :src="getFileIcon(child.filename, child.mimeType, child.isFolder).src"
+                    :alt="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
+                    draggable="false"
+                  />
+                  <span>{{ child.filename }}</span>
+                </div>
+                <span>{{ fmtBytes(child.size) }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -211,6 +229,7 @@ const onlineCount = computed(() => rows.value.filter((row) => row.module && !row
 const errorCount = computed(() => rows.value.filter((row) => !!row.error).length)
 const folderCount = computed(() => rows.value.filter((row) => row.info?.isFolder).length)
 const fileCount = computed(() => rows.value.filter((row) => row.info && !row.info.isFolder).length)
+const duplicateCount = computed(() => rows.value.filter((row) => row.sourceUrls.length > 1).length)
 
 onMounted(async () => {
   await window.api.settings.load().catch(() => null)
@@ -530,6 +549,10 @@ function fmtBytes(n: number): string {
   background: rgba(59, 130, 246, 0.12);
 }
 
+.status-chip.is-duplicate {
+  background: rgba(124, 111, 255, 0.12);
+}
+
 .status-chip.is-error {
   background: rgba(239, 83, 80, 0.12);
 }
@@ -647,6 +670,45 @@ function fmtBytes(n: number): string {
 
 .child-panel {
   padding: 0 14px 12px 52px;
+}
+
+.source-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+
+.source-heading {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 26px;
+}
+
+.source-provider {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.source-url {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.children-list {
+  display: flex;
+  flex-direction: column;
 }
 
 .child-row {
