@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { spawn, ChildProcess } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -280,6 +280,14 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('archive:extract', async (_e, archivePath: string) => {
     return extractArchive(archivePath)
+  })
+  ipcMain.handle('dialog:chooseDirectory', async () => {
+    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return ''
+    return result.filePaths[0]
   })
 
   // IPC: settings (lê/escreve JSON em userData)

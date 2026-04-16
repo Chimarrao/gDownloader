@@ -14,12 +14,15 @@
           <span class="setting-label">{{ t('outputFolder') }}</span>
           <span class="setting-desc">{{ t('outputFolderDesc') }}</span>
         </div>
-        <input
-          v-model="settings.outputDir"
-          class="setting-input setting-input-wide"
-          placeholder="~/Downloads"
-          @change="save"
-        />
+        <div class="output-folder-actions">
+          <input
+            v-model="settings.outputDir"
+            class="setting-input setting-input-wide"
+            placeholder="~/Downloads"
+            @change="save"
+          />
+          <button class="browse-btn" @click="chooseDirectory">Escolher</button>
+        </div>
       </div>
 
       <div class="setting-row">
@@ -170,6 +173,13 @@ async function save(): Promise<void> {
   await window.api.settings.save({ ...settings }).catch(() => null)
 }
 
+async function chooseDirectory(): Promise<void> {
+  const chosen = await window.api.settings.chooseDirectory().catch(() => '')
+  if (!chosen) return
+  settings.outputDir = chosen
+  await save()
+}
+
 function onThemeChange(): void {
   setTheme(settings.theme as ThemeId)
   void save()
@@ -271,6 +281,24 @@ function onLocaleChange(): void {
   outline: none;
   transition: border-color 0.15s;
   flex-shrink: 0;
+}
+
+.output-folder-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 320px;
+}
+
+.browse-btn {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .setting-input:focus,

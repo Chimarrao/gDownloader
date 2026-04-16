@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use std::env;
 use std::path::Path as FsPath;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -12,6 +13,23 @@ use crate::{
     providers,
     ws::AppState,
 };
+
+fn expand_home(path: &str) -> String {
+    if path == "~" {
+        return env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .unwrap_or_else(|_| path.to_string());
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "~".to_string());
+        return format!("{home}/{rest}");
+    }
+
+    path.to_string()
+}
 
 // Adiciona um novo download à fila e inicia o processo em background
 // POST /downloads — body: { "url": "...", "dest_dir": "..." }
@@ -55,12 +73,31 @@ pub async fn add_download(
         )
     })?;
 
+    let dest_dir = expand_home(&req.dest_dir);
+    tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(format!("Falha ao preparar a pasta de destino: {e}"))),
+        )
+    })?;
+
     // Monta o caminho completo do arquivo de destino
     let dest_path = format!(
         "{}/{}",
-        req.dest_dir.trim_end_matches('/'),
+        dest_dir.trim_end_matches('/'),
         file_info.filename
     );
+
+    {
+        let map = state.downloads.lock().await;
+        if let Some(existing) = map.values().find(|download| {
+            download.dest_path == dest_path
+                && download.size == file_info.size
+                && download.is_folder == file_info.is_folder
+        }) {
+            return Ok(Json(existing.clone()));
+        }
+    }
 
     // Gera um ID único para este download (como crypto.randomUUID() no JS)
     let id = Uuid::new_v4().to_string();

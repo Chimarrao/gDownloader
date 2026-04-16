@@ -159,6 +159,7 @@ const api = {
   settings: {
     load: () => ipcRenderer.invoke('settings:load'),
     save: (s: unknown) => ipcRenderer.invoke('settings:save', s),
+    chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
   // --- Histórico ---

@@ -106,6 +106,10 @@
               </div>
               <div class="row-sub">
                 <span>{{ row.module?.name ?? 'Não suportado' }}</span>
+                <template v-if="row.sourceLabels.length > 1">
+                  <span>·</span>
+                  <span>{{ row.sourceLabels.length }} fontes: {{ row.sourceLabels.join(', ') }}</span>
+                </template>
                 <span>·</span>
                 <span v-if="row.loading">Lendo metadados...</span>
                 <span v-else-if="row.error">{{ row.error }}</span>
@@ -140,18 +144,6 @@
       </div>
     </div>
 
-    <div class="url-field">
-      <label class="field-label">
-        <i class="pi pi-folder" style="font-size: 12px;"></i>
-        Pasta de destino
-      </label>
-      <input
-        v-model="outputDir"
-        class="dir-input"
-        placeholder="~/Downloads"
-      />
-    </div>
-
     <p v-if="lastError" class="error-msg">
       <i class="pi pi-exclamation-triangle"></i>
       {{ lastError }}
@@ -178,7 +170,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { getFileIcon } from '../assets/file-icons'
-import type { FileInfo, PersistedSettings } from '../../../shared/types'
+import type { FileInfo } from '../../../shared/types'
 
 interface ModuleSummary {
   id: string
@@ -196,6 +188,8 @@ interface CapturedRow {
   error: string
   selected: boolean
   expanded: boolean
+  sourceUrls: string[]
+  sourceLabels: string[]
 }
 
 const emit = defineEmits<{ (e: 'added'): void }>()
@@ -204,7 +198,6 @@ const urlsInput = ref('')
 const rows = ref<CapturedRow[]>([])
 const adding = ref(false)
 const lastError = ref('')
-const outputDir = ref('~/Downloads')
 const detectToken = ref(0)
 const actionsRef = ref<HTMLElement | null>(null)
 
@@ -220,8 +213,7 @@ const folderCount = computed(() => rows.value.filter((row) => row.info?.isFolder
 const fileCount = computed(() => rows.value.filter((row) => row.info && !row.info.isFolder).length)
 
 onMounted(async () => {
-  const settings = await window.api.settings.load().catch(() => null)
-  if (settings?.outputDir) outputDir.value = settings.outputDir
+  await window.api.settings.load().catch(() => null)
 })
 
 watch(urlsInput, () => void detectProviders())
@@ -271,6 +263,8 @@ async function detectProviders(): Promise<void> {
     error: '',
     selected: true,
     expanded: false,
+    sourceUrls: [url],
+    sourceLabels: [],
   }))
 
   await Promise.all(
@@ -300,6 +294,10 @@ async function detectProviders(): Promise<void> {
       }
     })
   )
+
+  if (token === detectToken.value) {
+    rows.value = groupDuplicateRows(rows.value)
+  }
 }
 
 async function addAll(): Promise<void> {
@@ -307,32 +305,18 @@ async function addAll(): Promise<void> {
   adding.value = true
   lastError.value = ''
   let addedCount = 0
+  const current = await window.api.settings.load().catch(() => null)
+  const outputDir = current?.outputDir ?? '~/Downloads'
 
   for (const row of selectedRows.value) {
     if (!row.module || !row.info) continue
     try {
-      await window.api.downloads.add(row.url, row.module.id, row.info.name, row.info.size, outputDir.value)
+      await window.api.downloads.add(row.url, row.module.id, row.info.name, row.info.size, outputDir)
       addedCount += 1
     } catch (err) {
       lastError.value = `Erro ao adicionar: ${truncateUrl(row.url)} — ${err instanceof Error ? err.message : String(err)}`
     }
   }
-
-  const current = await window.api.settings.load().catch(() => null)
-  const settings: PersistedSettings = {
-    theme: current?.theme ?? 'dark-purple',
-    locale: current?.locale ?? 'pt-BR',
-    outputDir: outputDir.value,
-    maxConcurrentDownloads: current?.maxConcurrentDownloads ?? 4,
-    maxRetriesPerDownload: current?.maxRetriesPerDownload ?? 3,
-    speedLimitKib: current?.speedLimitKib ?? 5000,
-    parallelPartsPerDownload: current?.parallelPartsPerDownload ?? 4,
-    fontSize: current?.fontSize ?? 13,
-    fontFamily: current?.fontFamily ?? 'Inter',
-    uiZoom: current?.uiZoom ?? 1,
-    nativeNotification: current?.nativeNotification ?? true,
-  }
-  await window.api.settings.save(settings).catch(() => null)
 
   adding.value = false
   if (addedCount > 0) {
@@ -370,6 +354,44 @@ function truncateUrl(url: string): string {
   } catch {
     return url.length > 50 ? url.slice(0, 47) + '...' : url
   }
+}
+
+function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
+  const grouped = new Map<string, CapturedRow>()
+
+  for (const row of inputRows) {
+    const info = row.info
+    const key = info
+      ? `${(info.name ?? row.displayName).toLowerCase()}::${info.size}::${info.isFolder ? 'folder' : 'file'}`
+      : `url::${row.url}`
+
+    const existing = grouped.get(key)
+    const sourceLabel = row.module?.name ?? 'Não suportado'
+
+    if (!existing) {
+      grouped.set(key, {
+        ...row,
+        sourceUrls: [row.url],
+        sourceLabels: [sourceLabel],
+      })
+      continue
+    }
+
+    existing.sourceUrls.push(row.url)
+    existing.sourceLabels.push(sourceLabel)
+    existing.expanded = existing.expanded || row.expanded
+    existing.selected = existing.selected || row.selected
+
+    if (!existing.module && row.module) existing.module = row.module
+    if ((!existing.info || !existing.info.children?.length) && row.info) existing.info = row.info
+    if (!existing.error && row.error) existing.error = row.error
+  }
+
+  for (const row of grouped.values()) {
+    row.url = row.sourceUrls[0]
+  }
+
+  return [...grouped.values()]
 }
 
 function fmtBytes(n: number): string {
@@ -441,8 +463,7 @@ function fmtBytes(n: number): string {
   pointer-events: none;
 }
 
-.url-textarea,
-.dir-input {
+.url-textarea {
   width: 100%;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -458,10 +479,6 @@ function fmtBytes(n: number): string {
   padding: 12px 14px 12px 36px;
   resize: none;
   line-height: 1.6;
-}
-
-.dir-input {
-  padding: 10px 12px;
 }
 
 .captured-panel {

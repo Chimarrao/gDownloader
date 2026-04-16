@@ -30,6 +30,7 @@ interface RendererApi {
   settings: {
     load: () => Promise<PersistedSettings>
     save: (s: PersistedSettings) => Promise<void>
+    chooseDirectory: () => Promise<string>
   }
   modules: {
     list: () => Promise<ModuleSummary[]>
