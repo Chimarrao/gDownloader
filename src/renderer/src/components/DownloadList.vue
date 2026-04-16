@@ -272,6 +272,8 @@ const items = ref<DownloadItem[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const unsubs: Array<() => void> = []
+let hydrateQueued = false
+let hydrateInFlight = false
 
 // ── Computed ───────────────────────────────────────────────
 const orderedItems = computed(() => [...items.value].sort((a, b) => b.addedAt - a.addedAt))
@@ -411,27 +413,38 @@ onUnmounted(() => {
 
 // ── Data methods ───────────────────────────────────────────
 async function hydrate(): Promise<void> {
-  const fresh: DownloadItem[] = await window.api.downloads.list().catch(() => [])
-  const freshById = new Map<string, DownloadItem>(fresh.map((item) => [item.id, item] as const))
+  if (hydrateInFlight) {
+    hydrateQueued = true
+    return
+  }
+  hydrateInFlight = true
+  try {
+    const fresh: DownloadItem[] = await window.api.downloads.list().catch(() => [])
+    const freshById = new Map<string, DownloadItem>(fresh.map((item) => [item.id, item] as const))
 
-  // Remove items no longer present (reverse to avoid index shift)
-  for (let i = items.value.length - 1; i >= 0; i--) {
-    if (!freshById.has(items.value[i].id)) {
-      items.value.splice(i, 1)
+    for (let i = items.value.length - 1; i >= 0; i--) {
+      if (!freshById.has(items.value[i].id)) {
+        items.value.splice(i, 1)
+      }
+    }
+
+    for (const freshItem of fresh) {
+      const idx = items.value.findIndex((i) => i.id === freshItem.id)
+      if (idx >= 0) {
+        Object.assign(items.value[idx], freshItem)
+      } else {
+        items.value.push(freshItem)
+      }
+    }
+
+    emit('count-change', items.value.length)
+  } finally {
+    hydrateInFlight = false
+    if (hydrateQueued) {
+      hydrateQueued = false
+      void hydrate()
     }
   }
-
-  // Update existing in-place or push new — avoids full-array replace that triggers flicker
-  for (const freshItem of fresh) {
-    const idx = items.value.findIndex((i) => i.id === freshItem.id)
-    if (idx >= 0) {
-      Object.assign(items.value[idx], freshItem)
-    } else {
-      items.value.push(freshItem)
-    }
-  }
-
-  emit('count-change', items.value.length)
 }
 
 function upsertById(id: string, patch: Partial<DownloadItem>): void {
