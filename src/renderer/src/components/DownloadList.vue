@@ -200,7 +200,7 @@
             </div>
 
             <div
-              v-if="item.isFolder && isExpanded(item.id) && (item.children?.length ?? 0) > 0"
+              v-show="item.isFolder && isExpanded(item.id) && (item.children?.length ?? 0) > 0"
               class="folder-children"
             >
               <div
@@ -731,6 +731,8 @@ function childStatusText(status?: DownloadChild['status']): string {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
   position: relative;
   overflow: hidden;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .download-card::before {
@@ -1041,6 +1043,8 @@ function childStatusText(status?: DownloadChild['status']): string {
   border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  overflow: hidden;
+  transition: opacity 0.2s ease;
 }
 
 .child-row {
