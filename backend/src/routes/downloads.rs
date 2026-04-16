@@ -412,6 +412,10 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     d.bytes_downloaded = update.bytes_downloaded;
                     d.speed_bps = speed;
                     d.eta_secs = eta;
+                    // Update total size if it wasn't set yet (can happen with some providers)
+                    if update.total_bytes > 0 && d.size == 0 {
+                        d.size = update.total_bytes;
+                    }
                     if let Some(children) = d.children.as_mut() {
                         if let Some(child_filename) = update.child_filename.as_deref() {
                             for child in children.iter_mut() {
