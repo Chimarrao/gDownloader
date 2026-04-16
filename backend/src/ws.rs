@@ -5,6 +5,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
+use tokio::task::AbortHandle;
 
 use crate::models::{Download, WsEvent};
 
@@ -30,6 +31,8 @@ pub struct AppState {
     //                  por referência no PHP), Mutex = trava para acesso seguro
     // Em PHP: como um $semaphore que protege leitura/escrita a dados compartilhados
     pub downloads: Arc<Mutex<HashMap<String, Download>>>,
+    pub active_tasks: Arc<Mutex<HashMap<String, AbortHandle>>>,
+    pub max_concurrent_downloads: Arc<Mutex<usize>>,
 }
 
 // Como um class em PHP — agrupa métodos desta struct
@@ -43,6 +46,8 @@ impl AppState {
         Self {
             tx: Arc::new(tx),
             downloads: Arc::new(Mutex::new(HashMap::new())),
+            active_tasks: Arc::new(Mutex::new(HashMap::new())),
+            max_concurrent_downloads: Arc::new(Mutex::new(3)),
         }
     }
 

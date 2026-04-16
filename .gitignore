@@ -5,5 +5,9 @@ dist/
 *.log
 logs.txt
 .worktrees/
+.idea/
+docs/
+tsconfig.web.tsbuildinfo
+backend/.env.test.local
 # Artefatos compilados do Rust — gerados pelo cargo build
 backend/target/

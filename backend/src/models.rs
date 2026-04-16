@@ -36,8 +36,30 @@ pub struct Download {
     pub bytes_downloaded: u64,   // Quantidade de bytes já transferidos
     pub speed_bps: u64,          // Velocidade atual em bytes por segundo
     pub eta_secs: u64,           // Tempo estimado para concluir, em segundos
+    pub is_folder: bool,
+    pub children: Option<Vec<FileChildInfo>>,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub speed_limit_kib: u64,
+    pub parallel_parts: u32,
     pub error: Option<String>,   // Option = pode ser Some("mensagem") ou None — como string|null no PHP
     pub created_at: u64,         // Timestamp Unix em segundos (como time() no PHP)
+}
+
+// --- Informações de um arquivo antes de iniciar o download ---
+// Retornado pelo GET /file-info e usado internamente para nomear o arquivo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChildInfo {
+    pub filename: String,
+    pub size: u64,
+    pub mime_type: Option<String>,
+    pub is_folder: bool,
+    pub source_url: Option<String>,
+    pub bytes_downloaded: Option<u64>,
+    pub speed_bps: Option<u64>,
+    pub eta_secs: Option<u64>,
+    pub status: Option<DownloadStatus>,
 }
 
 // --- Informações de um arquivo antes de iniciar o download ---
@@ -47,6 +69,8 @@ pub struct FileInfo {
     pub filename: String,
     pub size: u64,                    // 0 se o servidor não informar Content-Length
     pub mime_type: Option<String>,    // Option = Some("video/mp4") ou None — como ?string no PHP
+    pub is_folder: bool,
+    pub children: Option<Vec<FileChildInfo>>,
 }
 
 // --- Evento enviado pelo WebSocket para a UI ---
@@ -64,11 +88,20 @@ pub enum WsEvent {
         speed: u64,
         eta: u64,
         status: DownloadStatus,
+        child_filename: Option<String>,
+        child_bytes: Option<u64>,
+        child_total: Option<u64>,
+        child_speed: Option<u64>,
+        child_eta: Option<u64>,
     },
     // Download finalizado com sucesso
     Complete {
         id: String,
         path: String,  // Caminho do arquivo salvo no disco
+    },
+    Status {
+        id: String,
+        status: DownloadStatus,
     },
     // Erro durante o download ou cancelamento
     Error {
@@ -89,6 +122,9 @@ pub enum WsEvent {
 pub struct AddDownloadRequest {
     pub url: String,
     pub dest_dir: String,  // Diretório de destino (sem o nome do arquivo)
+    pub max_retries: Option<u32>,
+    pub speed_limit_kib: Option<u64>,
+    pub parallel_parts: Option<u32>,
 }
 
 // --- Resposta padrão de erro da API ---

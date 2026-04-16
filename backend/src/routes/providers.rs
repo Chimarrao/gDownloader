@@ -54,6 +54,8 @@ pub async fn get_file_info(
         "name": info.filename,
         "size": info.size,
         "mimeType": info.mime_type,
+        "isFolder": info.is_folder,
+        "children": info.children,
     })))
 }
 

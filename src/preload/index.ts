@@ -60,10 +60,17 @@ const api = {
   downloads: {
     // Adiciona download à fila do backend
     add: async (url: string, _moduleId: string, _title: string, _size: number, destDir: string) => {
+      const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, dest_dir: destDir }),
+        body: JSON.stringify({
+          url,
+          dest_dir: destDir,
+          max_retries: settings?.maxRetriesPerDownload ?? 0,
+          speed_limit_kib: settings?.speedLimitKib ?? 0,
+          parallel_parts: settings?.parallelPartsPerDownload ?? 1,
+        }),
       })
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({ error: 'Erro desconhecido' }))
@@ -90,6 +97,30 @@ const api = {
       await fetchBackend(`/downloads/${id}`, { method: 'DELETE' })
     },
 
+    pause: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/pause`, { method: 'POST' })
+    },
+
+    resume: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/resume`, { method: 'POST' })
+    },
+
+    retry: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/retry`, { method: 'POST' })
+    },
+
+    restart: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/restart`, { method: 'POST' })
+    },
+
+    remove: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/remove`, { method: 'DELETE' })
+    },
+
+    clearFinished: async () => {
+      await fetchBackend('/downloads/finished', { method: 'DELETE' })
+    },
+
     // Subscreve a eventos de progresso via WebSocket
     on: (channel: string, cb: (data: unknown) => void) => {
       let ws: WebSocket | null = null
@@ -102,9 +133,13 @@ const api = {
             // Mapeamos os eventos do backend para os canais esperados pelo renderer
             if (channel === 'download:progress' && event.type === 'progress') {
               cb(event)
+            } else if (channel === 'download:status' && event.type === 'status') {
+              cb(event)
             } else if (channel === 'download:complete' && event.type === 'complete') {
               cb(event)
             } else if (channel === 'download:error' && event.type === 'error') {
+              cb(event)
+            } else if (channel === 'download:cancelled' && event.type === 'status' && event.status === 'cancelled') {
               cb(event)
             }
           } catch {
@@ -134,6 +169,15 @@ const api = {
   // --- Shell ---
   openPath: (path: string): Promise<string> => ipcRenderer.invoke('shell:openPath', path),
   showInFolder: (path: string): Promise<void> => ipcRenderer.invoke('shell:showInFolder', path),
+  clipboard: {
+    writeText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:writeText', text),
+  },
+  system: {
+    notify: (title: string, body?: string): Promise<boolean> => ipcRenderer.invoke('system:notify', title, body),
+  },
+  archive: {
+    extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
+  },
 
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
@@ -149,10 +193,14 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     moduleId: d.provider,
     title: d.filename,
     size,
+    isFolder: d.is_folder ?? false,
+    children: d.children ?? [],
     status: d.status,
     percent: size > 0 ? Math.floor((bytes / size) * 100) : 0,
     speedBps: d.speed_bps ?? 0,
     etaSec: d.eta_secs ?? 0,
+    retryCount: d.retry_count ?? 0,
+    maxRetries: d.max_retries ?? 0,
     error: d.error ?? '',
     outputPath: d.dest_path,
     addedAt: ((d.created_at as number) ?? 0) * 1000,

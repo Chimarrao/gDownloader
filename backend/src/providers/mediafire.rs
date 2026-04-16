@@ -1,33 +1,60 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use scraper::{Html, Selector};
+use serde_json::Value;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
-use crate::models::FileInfo;
-use super::{Provider, ProgressUpdate};
+use crate::models::{FileChildInfo, FileInfo};
+use super::{apply_speed_limit, try_parallel_download, ProgressUpdate, Provider};
 
 pub struct MediaFireProvider;
 
-// Como um class em PHP — agrupa os métodos estáticos e de instância do provider
 impl MediaFireProvider {
-    // Verifica se a URL pertence ao MediaFire
     pub fn matches(url: &str) -> bool {
         url.contains("mediafire.com")
     }
 
-    // Extrai o link direto de download do HTML da página do MediaFire
-    //
-    // O MediaFire não expõe a URL de download diretamente — renderiza uma página HTML
-    // com um botão que aponta para o CDN real. Precisamos fazer scraping dessa página.
-    // É o mesmo que usar DOMDocument + XPath no PHP para buscar um elemento no HTML.
+    pub fn is_folder_url(url: &str) -> bool {
+        url.contains("/folder/")
+    }
+
+    pub fn extract_folder_key(url: &str) -> Option<String> {
+        let pos = url.find("/folder/")?;
+        let after = &url[pos + 8..];
+        let folder_key = after
+            .split('/')
+            .next()?
+            .split('?')
+            .next()?
+            .split('#')
+            .next()?
+            .trim();
+
+        if folder_key.is_empty() {
+            return None;
+        }
+
+        Some(folder_key.to_string())
+    }
+
+    pub fn extract_filename_from_url(url: &str) -> Option<String> {
+        let pos = url.find("/file/")?;
+        let after = &url[pos + 6..];
+        let mut parts = after.split('/').filter(|segment| !segment.is_empty());
+        let _quickkey = parts.next()?;
+        let filename = parts.next()?.trim();
+
+        if filename.is_empty() {
+            return None;
+        }
+
+        Some(filename.to_string())
+    }
+
     pub fn extract_direct_link(html: &str) -> Option<String> {
-        // Html::parse_document analisa o HTML como uma árvore DOM
-        // Equivalente a $dom = new DOMDocument(); $dom->loadHTML($html); no PHP
         let document = Html::parse_document(html);
 
-        // Estratégia 1: botão com id="downloadButton" (layout padrão do MediaFire)
-        // Selector::parse("#downloadButton") funciona como CSS selector — igual ao JS:
-        //   document.querySelector('#downloadButton')
         if let Ok(selector) = Selector::parse("#downloadButton") {
             if let Some(el) = document.select(&selector).next() {
                 if let Some(href) = el.value().attr("href") {
@@ -38,8 +65,6 @@ impl MediaFireProvider {
             }
         }
 
-        // Estratégia 2 (fallback): qualquer <a> apontando para o CDN do MediaFire
-        // Padrões reconhecidos: download*.mediafire.com/get/ ou /download/
         if let Ok(selector) = Selector::parse("a[href]") {
             for el in document.select(&selector) {
                 if let Some(href) = el.value().attr("href") {
@@ -53,52 +78,186 @@ impl MediaFireProvider {
             }
         }
 
-        // Nenhuma estratégia encontrou um link — arquivo pode estar expirado ou protegido
         None
     }
 
-    // Cria um cliente HTTP com User-Agent de browser real
-    // O MediaFire bloqueia requisições sem User-Agent ou com User-Agent de bot
-    // É como passar um header Accept ou User-Agent no curl_setopt() do PHP
+    fn safe_filename(name: &str, fallback: &str) -> String {
+        let trimmed = name.trim();
+        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
+        candidate
+            .chars()
+            .map(|ch| match ch {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                _ => ch,
+            })
+            .collect()
+    }
+
     fn http_client() -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            // Segue até 5 redirects automaticamente (o MediaFire redireciona para o CDN)
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()?)
     }
+
+    async fn resolve_direct_download_url(client: &reqwest::Client, page_url: &str) -> Result<String> {
+        let html = client.get(page_url).send().await?.text().await?;
+        Self::extract_direct_link(&html)
+            .ok_or_else(|| anyhow!("Link de download não encontrado na página do MediaFire"))
+    }
+
+    async fn fetch_folder_info(client: &reqwest::Client, folder_key: &str) -> Result<Value> {
+        Ok(client
+            .get("https://www.mediafire.com/api/1.4/folder/get_info.php")
+            .query(&[
+                ("folder_key", folder_key),
+                ("response_format", "json"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    async fn fetch_folder_files(client: &reqwest::Client, folder_key: &str) -> Result<Vec<Value>> {
+        let mut chunk = 1usize;
+        let mut files = Vec::new();
+
+        loop {
+            let chunk_str = chunk.to_string();
+            let json: Value = client
+                .get("https://www.mediafire.com/api/1.4/folder/get_content.php")
+                .query(&[
+                    ("folder_key", folder_key),
+                    ("content_type", "files"),
+                    ("response_format", "json"),
+                    ("chunk", chunk_str.as_str()),
+                ])
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+
+            let folder_content = &json["response"]["folder_content"];
+
+            if let Some(page_files) = folder_content["files"].as_array() {
+                files.extend(page_files.iter().cloned());
+            }
+
+            if folder_content["more_chunks"].as_str().unwrap_or("no") != "yes" {
+                break;
+            }
+
+            chunk += 1;
+        }
+
+        Ok(files)
+    }
+
+    fn mediafire_file_size(file: &Value) -> u64 {
+        file["size"]
+            .as_str()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
+    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
+        resp.headers()
+            .get("content-range")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split('/').last())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
+            .unwrap_or(0)
+    }
+
+    async fn send_with_resume_fallback(
+        client: &reqwest::Client,
+        url: &str,
+        dest_path: &str,
+        existing_bytes: u64,
+    ) -> Result<(reqwest::Response, bool)> {
+        if existing_bytes == 0 {
+            return Ok((client.get(url).send().await?.error_for_status()?, false));
+        }
+
+        let ranged = client
+            .get(url)
+            .header("Range", format!("bytes={existing_bytes}-"))
+            .send()
+            .await?;
+
+        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            return Ok((ranged, true));
+        }
+
+        if matches!(
+            ranged.status(),
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+        ) {
+            let _ = tokio::fs::remove_file(dest_path).await;
+            let fresh = client.get(url).send().await?.error_for_status()?;
+            return Ok((fresh, false));
+        }
+
+        Ok((ranged.error_for_status()?, false))
+    }
 }
 
-// Como uma interface PHP implementada por MediaFireProvider
 impl Provider for MediaFireProvider {
     fn name(&self) -> &str { "MediaFire" }
 
-    // async fn = retorna uma Promise implícita (como no JS/PHP async)
     fn get_file_info<'a>(&'a self, url: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>
     {
         Box::pin(async move {
             let client = Self::http_client()?;
 
-            // Passo 1: baixa a página HTML do arquivo (a página de compartilhamento)
-            let html = client.get(url).send().await?.text().await?;
+            if Self::is_folder_url(url) {
+                let folder_key = Self::extract_folder_key(url)
+                    .ok_or_else(|| anyhow!("URL de pasta do MediaFire inválida: {url}"))?;
+                let folder_info = Self::fetch_folder_info(&client, &folder_key).await?;
+                let files = Self::fetch_folder_files(&client, &folder_key).await?;
 
-            // Passo 2: faz scraping do HTML para encontrar o link de download direto
-            // ? = se der erro, propaga automaticamente (como throw no PHP)
-            let direct_url = Self::extract_direct_link(&html)
-                .ok_or_else(|| anyhow!(
-                    "Link de download não encontrado na página do MediaFire.\n\
-                     Verifique se o link é público e está correto."
-                ))?;
+                let folder_name = folder_info["response"]["folder_info"]["name"]
+                    .as_str()
+                    .unwrap_or("pasta_mediafire");
 
-            // Passo 3: consulta os metadados do arquivo via HEAD request
-            // HEAD = como GET mas sem body — só os headers (Content-Length, Content-Type)
-            // É eficiente: não baixa o arquivo, só verifica tamanho e tipo
+                let children = files
+                    .iter()
+                    .map(|file| FileChildInfo {
+                        filename: file["filename"]
+                            .as_str()
+                            .unwrap_or("arquivo_mediafire")
+                            .to_string(),
+                        size: Self::mediafire_file_size(file),
+                        mime_type: file["mimetype"].as_str().map(String::from),
+                        is_folder: false,
+                        source_url: file["links"]["normal_download"].as_str().map(String::from),
+                        bytes_downloaded: None,
+                        speed_bps: None,
+                        eta_secs: None,
+                        status: None,
+                    })
+                    .collect::<Vec<_>>();
+
+                let total_size = children.iter().map(|child| child.size).sum();
+
+                return Ok(FileInfo {
+                    filename: Self::safe_filename(folder_name, "pasta_mediafire"),
+                    size: total_size,
+                    mime_type: None,
+                    is_folder: true,
+                    children: Some(children),
+                });
+            }
+
+            let direct_url = Self::resolve_direct_download_url(&client, url).await?;
             let resp = match client.head(&direct_url).send().await {
-                Ok(r) => Some(r),
+                Ok(resp) => Some(resp),
                 Err(_) => {
-                    // Alguns servidores CDN bloqueiam HEAD — tenta GET com Range como fallback
-                    // Range: bytes=0-0 = baixa só 1 byte para obter os headers
                     client
                         .get(&direct_url)
                         .header("Range", "bytes=0-0")
@@ -109,46 +268,34 @@ impl Provider for MediaFireProvider {
             };
 
             let (size, mime_type) = if let Some(resp) = resp {
-                // Tenta obter o tamanho total do arquivo
                 let size = resp.content_length().unwrap_or_else(|| {
-                    // Se Content-Length não veio, tenta extrair do Content-Range
-                    // Formato do header: "bytes 0-0/TOTAL_SIZE"
-                    // O total fica depois da '/' — parseamos com split e parse
                     resp.headers()
                         .get("content-range")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| {
-                            s.split('/').last()
-                                .and_then(|size_str| size_str.parse::<u64>().ok())
-                        })
-                        // Se for None/Err, retorna o valor padrão do tipo (0 para u64)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.split('/').last())
+                        .and_then(|value| value.parse::<u64>().ok())
                         .unwrap_or(0)
                 });
 
-                // Lê o Content-Type para determinar o MIME type do arquivo
-                let mime = resp
+                let mime_type = resp
                     .headers()
                     .get("content-type")
-                    .and_then(|v| v.to_str().ok())
+                    .and_then(|value| value.to_str().ok())
                     .map(String::from);
 
-                (size, mime)
+                (size, mime_type)
             } else {
-                // Nenhuma requisição funcionou — retorna tamanho 0 e sem MIME
                 (0, None)
             };
 
-            // Tenta extrair o nome do arquivo da URL
-            // URLs do MediaFire têm formato: .../file/ID/NOME_DO_ARQUIVO/file
-            // Pega o último segmento não vazio que não termine em ".file"
-            let filename = url
-                .split('/')
-                .rev() // Reverte a ordem — começa do último segmento
-                .find(|s| !s.is_empty() && !s.ends_with(".file"))
-                .map(String::from)
-                .unwrap_or_else(|| "arquivo_mediafire".to_string());
-
-            Ok(FileInfo { filename, size, mime_type })
+            Ok(FileInfo {
+                filename: Self::extract_filename_from_url(url)
+                    .unwrap_or_else(|| "arquivo_mediafire".to_string()),
+                size,
+                mime_type,
+                is_folder: false,
+                children: None,
+            })
         })
     }
 
@@ -156,42 +303,177 @@ impl Provider for MediaFireProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
+        speed_limit_bps: Option<u64>,
+        parallel_parts: usize,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
         Box::pin(async move {
             let client = Self::http_client()?;
 
-            // Passo 1: scraping da página para obter o link de download direto
-            let html = client.get(url).send().await?.text().await?;
-            let direct_url = Self::extract_direct_link(&html)
-                .ok_or_else(|| anyhow!("Link de download não encontrado na página do MediaFire"))?;
+            if Self::is_folder_url(url) {
+                let folder_key = Self::extract_folder_key(url)
+                    .ok_or_else(|| anyhow!("URL de pasta do MediaFire inválida: {url}"))?;
+                let files = Self::fetch_folder_files(&client, &folder_key).await?;
 
-            // Passo 2: baixa o arquivo do CDN em streaming
-            // error_for_status() = lança erro se HTTP status != 2xx (como verificar $http_code no PHP)
-            let resp = client.get(&direct_url).send().await?.error_for_status()?;
+                if files.is_empty() {
+                    return Err(anyhow!("Pasta do MediaFire vazia ou sem arquivos acessíveis"));
+                }
 
-            let total = resp.content_length().unwrap_or(0);
-            let mut file = tokio::fs::File::create(dest_path).await?;
+                tokio::fs::create_dir_all(dest_path).await?;
 
-            // bytes_stream() = stream de chunks de bytes (sem carregar tudo na memória)
-            // Equivalente a ler um arquivo em chunks com fread() no PHP
+                let total_size: u64 = files.iter().map(Self::mediafire_file_size).sum();
+                let started_at = tokio::time::Instant::now();
+                let mut downloaded_total = 0u64;
+                let mut session_downloaded = 0u64;
+
+                for (index, file) in files.iter().enumerate() {
+                    let fallback_name = format!("arquivo_mediafire_{index}");
+                    let filename = Self::safe_filename(
+                        file["filename"].as_str().unwrap_or(&fallback_name),
+                        &fallback_name,
+                    );
+                    let page_url = file["links"]["normal_download"]
+                        .as_str()
+                        .ok_or_else(|| anyhow!("Item da pasta do MediaFire sem link de download"))?;
+
+                    let direct_url = Self::resolve_direct_download_url(&client, page_url).await?;
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), filename);
+                    let file_total = Self::mediafire_file_size(file);
+                    let existing_bytes = tokio::fs::metadata(&output_path)
+                        .await
+                        .ok()
+                        .filter(|meta| meta.is_file())
+                        .map(|meta| meta.len())
+                        .unwrap_or(0);
+
+                    if file_total > 0 && existing_bytes >= file_total {
+                        downloaded_total += file_total;
+                        continue;
+                    }
+
+                    let mut request = client.get(&direct_url);
+                    if existing_bytes > 0 {
+                        request = request.header("Range", format!("bytes={existing_bytes}-"));
+                    }
+                    let resp = request.send().await?.error_for_status()?;
+                    let resumed = existing_bytes > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+                    if resumed {
+                        downloaded_total += existing_bytes;
+                    }
+
+                    let mut file_handle = if resumed {
+                        OpenOptions::new().create(true).append(true).open(&output_path).await?
+                    } else {
+                        tokio::fs::File::create(&output_path).await?
+                    };
+                    let mut stream = resp.bytes_stream();
+                    let mut child_session_downloaded = 0u64;
+                    let child_started_at = tokio::time::Instant::now();
+
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk?;
+                        file_handle.write_all(&chunk).await?;
+                        let chunk_len = chunk.len() as u64;
+                        downloaded_total += chunk_len;
+                        session_downloaded += chunk_len;
+                        child_session_downloaded += chunk_len;
+
+                        let child_elapsed = child_started_at.elapsed().as_secs_f64();
+                        let child_speed = if child_elapsed > 0.0 {
+                            (child_session_downloaded as f64 / child_elapsed) as u64
+                        } else {
+                            0
+                        };
+                        let child_downloaded = if resumed { existing_bytes } else { 0 } + child_session_downloaded;
+                        let child_eta = if child_speed > 0 && file_total > child_downloaded {
+                            (file_total - child_downloaded) / child_speed
+                        } else {
+                            0
+                        };
+
+                        let _ = progress_tx
+                            .send(ProgressUpdate {
+                                bytes_downloaded: downloaded_total,
+                                total_bytes: total_size,
+                                child_filename: Some(filename.clone()),
+                                child_bytes_downloaded: Some(child_downloaded),
+                                child_total_bytes: Some(file_total),
+                                child_speed_bps: Some(child_speed),
+                                child_eta_secs: Some(child_eta),
+                            })
+                            .await;
+                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                    }
+
+                    file_handle.flush().await?;
+                }
+
+                return Ok(downloaded_total);
+            }
+
+                let direct_url = Self::resolve_direct_download_url(&client, url).await?;
+                let existing_bytes = tokio::fs::metadata(dest_path)
+                    .await
+                .ok()
+                .filter(|meta| meta.is_file())
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+
+                if existing_bytes == 0 {
+                    if let Some(downloaded) = try_parallel_download(
+                        &client,
+                        &direct_url,
+                        dest_path,
+                        speed_limit_bps,
+                        parallel_parts,
+                        progress_tx.clone(),
+                    )
+                    .await?
+                    {
+                        return Ok(downloaded);
+                    }
+                }
+
+                let (resp, resumed) =
+                    Self::send_with_resume_fallback(&client, &direct_url, dest_path, existing_bytes).await?;
+            let total = if resumed {
+                Self::response_total_bytes(&resp, existing_bytes)
+            } else {
+                resp.content_length().unwrap_or(0)
+            };
+
+            let mut file = if resumed {
+                OpenOptions::new().create(true).append(true).open(dest_path).await?
+            } else {
+                tokio::fs::File::create(dest_path).await?
+            };
             let mut stream = resp.bytes_stream();
-            let mut downloaded: u64 = 0;
+            let mut downloaded = if resumed { existing_bytes } else { 0 };
+            let mut session_downloaded = 0u64;
+            let started_at = tokio::time::Instant::now();
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
                 file.write_all(&chunk).await?;
-                downloaded += chunk.len() as u64;
+                let chunk_len = chunk.len() as u64;
+                downloaded += chunk_len;
+                session_downloaded += chunk_len;
 
-                // Envia atualização de progresso para o handler de downloads
-                // Se o receptor foi dropado (download cancelado), ignora o erro
                 let _ = progress_tx
-                    .send(ProgressUpdate { bytes_downloaded: downloaded, total_bytes: total })
+                    .send(ProgressUpdate {
+                        bytes_downloaded: downloaded,
+                        total_bytes: total,
+                        child_filename: None,
+                        child_bytes_downloaded: None,
+                        child_total_bytes: None,
+                        child_speed_bps: None,
+                        child_eta_secs: None,
+                    })
                     .await;
+                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
             }
 
-            // Garante que todos os bytes foram escritos no disco antes de retornar
             file.flush().await?;
             Ok(downloaded)
         })

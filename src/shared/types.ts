@@ -16,6 +16,20 @@ export interface FileInfo {
   name: string
   size: number
   mimeType?: string
+  isFolder?: boolean
+  children?: DownloadChild[]
+}
+
+export interface DownloadChild {
+  filename: string
+  size: number
+  mimeType?: string
+  isFolder: boolean
+  sourceUrl?: string
+  bytesDownloaded?: number
+  speedBps?: number
+  etaSec?: number
+  status?: DownloadStatus
 }
 
 export interface DownloadOpts {
@@ -48,10 +62,14 @@ export interface DownloadItem {
   moduleId: string
   title: string
   size: number
+  isFolder?: boolean
+  children?: DownloadChild[]
   status: DownloadStatus
   percent: number
   speedBps: number
   etaSec: number
+  retryCount?: number
+  maxRetries?: number
   error: string
   outputPath?: string
   addedAt: number
@@ -75,6 +93,9 @@ export interface PersistedSettings {
   locale: string
   outputDir: string
   maxConcurrentDownloads: number
+  maxRetriesPerDownload?: number
+  speedLimitKib?: number
+  parallelPartsPerDownload?: number
   fontSize: number
   fontFamily: string
   uiZoom: number

@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{Provider, ProgressUpdate};
+use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate};
 
 pub struct GDriveProvider;
 
@@ -53,6 +54,48 @@ impl GDriveProvider {
             .redirect(reqwest::redirect::Policy::limited(10)) // Segue até 10 redirects
             .build()?)
     }
+
+    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
+        resp.headers()
+            .get("content-range")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split('/').last())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
+            .unwrap_or(0)
+    }
+
+    async fn send_with_resume_fallback(
+        client: &reqwest::Client,
+        url: &str,
+        dest_path: &str,
+        existing_bytes: u64,
+    ) -> Result<(reqwest::Response, bool)> {
+        if existing_bytes == 0 {
+            return Ok((client.get(url).send().await?.error_for_status()?, false));
+        }
+
+        let ranged = client
+            .get(url)
+            .header("Range", format!("bytes={existing_bytes}-"))
+            .send()
+            .await?;
+
+        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            return Ok((ranged, true));
+        }
+
+        if matches!(
+            ranged.status(),
+            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+        ) {
+            let _ = tokio::fs::remove_file(dest_path).await;
+            let fresh = client.get(url).send().await?.error_for_status()?;
+            return Ok((fresh, false));
+        }
+
+        Ok((ranged.error_for_status()?, false))
+    }
 }
 
 impl Provider for GDriveProvider {
@@ -100,6 +143,8 @@ impl Provider for GDriveProvider {
                     .get("content-type")
                     .and_then(|v| v.to_str().ok())
                     .map(String::from),
+                is_folder: false,
+                children: None,
             })
         })
     }
@@ -108,6 +153,8 @@ impl Provider for GDriveProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
+        speed_limit_bps: Option<u64>,
+        parallel_parts: usize,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
@@ -118,24 +165,63 @@ impl Provider for GDriveProvider {
             let client = Self::http_client()?;
             let download_url = Self::download_url(&id);
 
-            let resp = client
-                .get(&download_url)
-                .send()
-                .await?
-                .error_for_status()?;
+            let existing_bytes = tokio::fs::metadata(dest_path)
+                .await
+                .ok()
+                .filter(|meta| meta.is_file())
+                .map(|meta| meta.len())
+                .unwrap_or(0);
 
-            let total = resp.content_length().unwrap_or(0);
-            let mut file = tokio::fs::File::create(dest_path).await?;
+            if existing_bytes == 0 {
+                if let Some(downloaded) = try_parallel_download(
+                    &client,
+                    &download_url,
+                    dest_path,
+                    speed_limit_bps,
+                    parallel_parts,
+                    progress_tx.clone(),
+                )
+                .await?
+                {
+                    return Ok(downloaded);
+                }
+            }
+
+            let (resp, resumed) =
+                Self::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
+            let total = if resumed {
+                Self::response_total_bytes(&resp, existing_bytes)
+            } else {
+                resp.content_length().unwrap_or(0)
+            };
+            let mut file = if resumed {
+                OpenOptions::new().create(true).append(true).open(dest_path).await?
+            } else {
+                tokio::fs::File::create(dest_path).await?
+            };
             let mut stream = resp.bytes_stream();
-            let mut downloaded: u64 = 0;
+            let mut downloaded: u64 = if resumed { existing_bytes } else { 0 };
+            let mut session_downloaded: u64 = 0;
+            let started_at = tokio::time::Instant::now();
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
                 file.write_all(&chunk).await?;
-                downloaded += chunk.len() as u64;
+                let chunk_len = chunk.len() as u64;
+                downloaded += chunk_len;
+                session_downloaded += chunk_len;
                 let _ = progress_tx
-                    .send(ProgressUpdate { bytes_downloaded: downloaded, total_bytes: total })
+                    .send(ProgressUpdate {
+                        bytes_downloaded: downloaded,
+                        total_bytes: total,
+                        child_filename: None,
+                        child_bytes_downloaded: None,
+                        child_total_bytes: None,
+                        child_speed_bps: None,
+                        child_eta_secs: None,
+                    })
                     .await;
+                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
             }
 
             file.flush().await?;
@@ -143,4 +229,3 @@ impl Provider for GDriveProvider {
         })
     }
 }
-

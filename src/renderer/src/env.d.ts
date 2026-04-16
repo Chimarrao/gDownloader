@@ -51,6 +51,12 @@ interface RendererApi {
       destDir: string
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
+    pause: (id: string) => Promise<void>
+    resume: (id: string) => Promise<void>
+    retry: (id: string) => Promise<void>
+    restart: (id: string) => Promise<void>
+    remove: (id: string) => Promise<void>
+    clearFinished: () => Promise<void>
     list: () => Promise<DownloadItem[]>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }
@@ -59,6 +65,15 @@ interface RendererApi {
   clearHistory: () => Promise<void>
   openPath: (path: string) => Promise<void>
   showInFolder: (path: string) => Promise<void>
+  clipboard: {
+    writeText: (text: string) => Promise<boolean>
+  }
+  system: {
+    notify: (title: string, body?: string) => Promise<boolean>
+  }
+  archive: {
+    extract: (archivePath: string) => Promise<string>
+  }
 }
 
 declare global {
@@ -66,4 +81,3 @@ declare global {
     api: RendererApi
   }
 }
-

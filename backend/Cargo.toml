@@ -39,6 +39,8 @@ scraper = "0.20"
 aes = "0.8"
 # Modo de operação CTR para AES (Counter Mode — o Mega usa isso)
 ctr = "0.9"
+# Modo CBC para descriptografar os atributos públicos do Mega
+cbc = "0.1"
 # Interface de cipher (necessária para usar aes + ctr juntos)
 cipher = "0.4"
 # Encode/decode Base64 (Mega usa base64 customizado)
@@ -52,3 +54,4 @@ tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
 http = "1"
 hyper = "1"
+dotenvy = "0.15"

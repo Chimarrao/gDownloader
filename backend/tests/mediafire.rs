@@ -13,6 +13,13 @@ fn matches_standard_mediafire_url() {
 }
 
 #[test]
+fn matches_mediafire_folder_url() {
+    assert!(MediaFireProvider::matches(
+        "https://www.mediafire.com/folder/sf8smp0qmm0hr/dbz"
+    ));
+}
+
+#[test]
 fn does_not_match_non_mediafire_url() {
     assert!(!MediaFireProvider::matches("https://mega.nz/file/abc"));
 }
@@ -40,6 +47,25 @@ fn extract_link_from_fallback_anchor() {
 fn returns_none_when_no_download_link_found() {
     let html = r#"<html><body><p>Nenhum link</p></body></html>"#;
     assert!(MediaFireProvider::extract_direct_link(html).is_none());
+}
+
+#[test]
+fn extracts_filename_from_standard_file_url() {
+    let filename = MediaFireProvider::extract_filename_from_url(
+        "https://www.mediafire.com/file/rzr1u8ba62xksi0/DBZ.161.BD1080p.MemoriadaTV.Menor.mkv/file"
+    );
+    assert_eq!(
+        filename,
+        Some("DBZ.161.BD1080p.MemoriadaTV.Menor.mkv".to_string())
+    );
+}
+
+#[test]
+fn extracts_folder_key_from_folder_url() {
+    let folder_key = MediaFireProvider::extract_folder_key(
+        "https://www.mediafire.com/folder/sf8smp0qmm0hr/dbz"
+    );
+    assert_eq!(folder_key, Some("sf8smp0qmm0hr".to_string()));
 }
 
 // --- detect_provider ---

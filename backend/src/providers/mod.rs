@@ -1,5 +1,13 @@
 use anyhow::Result;
 use crate::models::FileInfo;
+use futures_util::StreamExt;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
+use tokio::time::{sleep, Duration, Instant};
 
 // Declara os sub-módulos de cada provedor de download
 // Em PHP seria algo como: require_once 'providers/MegaProvider.php';
@@ -14,6 +22,154 @@ pub mod pixeldrain;
 pub struct ProgressUpdate {
     pub bytes_downloaded: u64,
     pub total_bytes: u64, // 0 se o servidor não informar Content-Length
+    pub child_filename: Option<String>,
+    pub child_bytes_downloaded: Option<u64>,
+    pub child_total_bytes: Option<u64>,
+    pub child_speed_bps: Option<u64>,
+    pub child_eta_secs: Option<u64>,
+}
+
+pub async fn apply_speed_limit(
+    started_at: Instant,
+    bytes_downloaded: u64,
+    speed_limit_bps: Option<u64>,
+) {
+    let Some(limit) = speed_limit_bps else {
+        return;
+    };
+    if limit == 0 {
+        return;
+    }
+
+    let expected_elapsed = bytes_downloaded as f64 / limit as f64;
+    let actual_elapsed = started_at.elapsed().as_secs_f64();
+    if expected_elapsed > actual_elapsed {
+        sleep(Duration::from_secs_f64(expected_elapsed - actual_elapsed)).await;
+    }
+}
+
+fn parse_content_range_total(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get("content-range")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split('/').last())
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+pub async fn try_parallel_download(
+    client: &reqwest::Client,
+    url: &str,
+    dest_path: &str,
+    speed_limit_bps: Option<u64>,
+    parallel_parts: usize,
+    progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+) -> Result<Option<u64>> {
+    if parallel_parts <= 1 {
+        return Ok(None);
+    }
+
+    let probe = client
+        .get(url)
+        .header("Range", "bytes=0-0")
+        .send()
+        .await?;
+
+    if probe.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Ok(None);
+    }
+
+    let total_bytes = parse_content_range_total(&probe).unwrap_or(0);
+    if total_bytes == 0 {
+        return Ok(None);
+    }
+
+    const MIN_PART_SIZE: u64 = 2 * 1024 * 1024;
+    let max_useful_parts = (total_bytes / MIN_PART_SIZE).max(1) as usize;
+    let part_count = parallel_parts.min(max_useful_parts).max(1);
+    if part_count <= 1 {
+        return Ok(None);
+    }
+
+    let part_dir = format!("{dest_path}.parts");
+    let _ = tokio::fs::remove_dir_all(&part_dir).await;
+    tokio::fs::create_dir_all(&part_dir).await?;
+
+    let started_at = Instant::now();
+    let total_downloaded = Arc::new(AtomicU64::new(0));
+    let mut tasks = Vec::with_capacity(part_count);
+
+    for part_index in 0..part_count {
+        let client = client.clone();
+        let url = url.to_string();
+        let part_dir = part_dir.clone();
+        let progress_tx = progress_tx.clone();
+        let total_downloaded = Arc::clone(&total_downloaded);
+        let start = (total_bytes * part_index as u64) / part_count as u64;
+        let end = ((total_bytes * (part_index as u64 + 1)) / part_count as u64).saturating_sub(1);
+
+        tasks.push(tokio::spawn(async move {
+            let part_path = format!("{part_dir}/part-{part_index:03}");
+            let resp = client
+                .get(&url)
+                .header("Range", format!("bytes={start}-{end}"))
+                .send()
+                .await?
+                .error_for_status()?;
+
+            if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                return Err(anyhow::anyhow!("Servidor não aceitou download em partes"));
+            }
+
+            let mut file = tokio::fs::File::create(&part_path).await?;
+            let mut stream = resp.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                file.write_all(&chunk).await?;
+
+                let downloaded = total_downloaded.fetch_add(chunk.len() as u64, Ordering::SeqCst)
+                    + chunk.len() as u64;
+
+                let _ = progress_tx
+                    .send(ProgressUpdate {
+                        bytes_downloaded: downloaded,
+                        total_bytes,
+                        child_filename: None,
+                        child_bytes_downloaded: None,
+                        child_total_bytes: None,
+                        child_speed_bps: None,
+                        child_eta_secs: None,
+                    })
+                    .await;
+
+                apply_speed_limit(
+                    started_at,
+                    total_downloaded.load(Ordering::SeqCst),
+                    speed_limit_bps,
+                )
+                .await;
+            }
+
+            file.flush().await?;
+            Ok::<(), anyhow::Error>(())
+        }));
+    }
+
+    for task in tasks {
+        task.await??;
+    }
+
+    let _ = tokio::fs::remove_file(dest_path).await;
+    let mut output = tokio::fs::File::create(dest_path).await?;
+    for part_index in 0..part_count {
+        let part_path = format!("{part_dir}/part-{part_index:03}");
+        let mut part = OpenOptions::new().read(true).open(&part_path).await?;
+        tokio::io::copy(&mut part, &mut output).await?;
+    }
+    output.flush().await?;
+    let _ = tokio::fs::remove_dir_all(&part_dir).await;
+
+    Ok(Some(total_bytes))
 }
 
 // Trait = como uma interface PHP — define o contrato que todo provider deve seguir
@@ -42,6 +198,8 @@ pub trait Provider: Send + Sync {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
+        speed_limit_bps: Option<u64>,
+        parallel_parts: usize,
         // Sender do canal de progresso — o provider envia, o handler recebe
         // mpsc = Multiple Producer, Single Consumer (como uma fila de mensagens)
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,

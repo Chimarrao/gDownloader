@@ -11,6 +11,11 @@ fn matches_standard_pixeldrain_url() {
 }
 
 #[test]
+fn matches_pixeldrain_list_url() {
+    assert!(PixelDrainProvider::matches("https://pixeldrain.com/l/B5LnKF1N#item=0"));
+}
+
+#[test]
 fn does_not_match_non_pixeldrain_url() {
     assert!(!PixelDrainProvider::matches("https://mega.nz/file/abc"));
 }
@@ -20,6 +25,13 @@ fn does_not_match_non_pixeldrain_url() {
 #[test]
 fn detect_provider_recognizes_pixeldrain_url() {
     let provider = detect_provider("https://pixeldrain.com/u/AbCdEfGh");
+    assert!(provider.is_some());
+    assert_eq!(provider.unwrap().name(), "PixelDrain");
+}
+
+#[test]
+fn detect_provider_recognizes_pixeldrain_list_url() {
+    let provider = detect_provider("https://pixeldrain.com/l/B5LnKF1N#item=0");
     assert!(provider.is_some());
     assert_eq!(provider.unwrap().name(), "PixelDrain");
 }
