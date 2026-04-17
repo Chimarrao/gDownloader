@@ -327,10 +327,9 @@ async function addAll(): Promise<void> {
   adding.value = true
   lastError.value = ''
   let addedCount = 0
+  emit('adding-urls', selectedRows.value.length)
   const current = await window.api.settings.load().catch(() => null)
   const outputDir = current?.outputDir ?? '~/Downloads'
-
-  emit('adding-urls', selectedRows.value.length)
   for (const row of selectedRows.value) {
     if (!row.module || !row.info) continue
     try {

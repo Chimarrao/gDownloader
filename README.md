@@ -40,7 +40,7 @@
 | <img src="src/renderer/src/assets/provider-icons/mega.svg" alt="Mega" width="18" /> | **Mega** | Arquivo único, pasta pública | 🟢 Estável | Download sequencial de pastas; suporte a links `/file/` e formato legado `#!` |
 | <img src="src/renderer/src/assets/provider-icons/mediafire.svg" alt="MediaFire" width="18" /> | **MediaFire** | Arquivo único, pasta pública | 🟢 Estável | Usa API pública `folder/get_content` para listagem de pastas |
 | <img src="src/renderer/src/assets/provider-icons/googledrive.svg" alt="Google Drive" width="18" /> | **Google Drive** | Arquivo único público | 🟡 Parcial | Requer arquivo compartilhado publicamente; falta suporte a arquivos grandes com confirmação |
-| <img src="src/renderer/src/assets/provider-icons/pixeldrain.png" alt="PixelDrain" width="18" /> | **PixelDrain** | Arquivo único, lista | 🟢 Estável | Suporte a fragmento `#item=N` para listas; sem fragmento usa o primeiro arquivo |
+| 🟠 | **PixelDrain** | Arquivo único, lista | 🟢 Estável | Suporte a fragmento `#item=N` para listas; sem fragmento usa o primeiro arquivo |
 | <img src="src/renderer/src/assets/provider-icons/onedrive.svg" alt="OneDrive" width="18" /> | OneDrive | — | ⚪ Planejado | Alto valor como mirror em sites de download |
 | <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | Terabox | — | ⚪ Planejado | Requer tratamento de tokens e cookies |
 | ☁️ | GoFile | — | ⚪ Planejado | API razoável, mas com mudanças frequentes |
