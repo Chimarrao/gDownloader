@@ -373,37 +373,39 @@ impl Provider for MediaFireProvider {
 
                     while let Some(chunk) = stream.next().await {
                         let chunk = chunk?;
-                        file_handle.write_all(&chunk).await?;
-                        let chunk_len = chunk.len() as u64;
-                        downloaded_total += chunk_len;
-                        session_downloaded += chunk_len;
-                        child_session_downloaded += chunk_len;
+                        for piece in chunk.chunks(65_536) {
+                            file_handle.write_all(piece).await?;
+                            let piece_len = piece.len() as u64;
+                            downloaded_total += piece_len;
+                            session_downloaded += piece_len;
+                            child_session_downloaded += piece_len;
 
-                        let child_elapsed = child_started_at.elapsed().as_secs_f64();
-                        let child_speed = if child_elapsed > 0.0 {
-                            (child_session_downloaded as f64 / child_elapsed) as u64
-                        } else {
-                            0
-                        };
-                        let child_downloaded = if resumed { existing_bytes } else { 0 } + child_session_downloaded;
-                        let child_eta = if child_speed > 0 && file_total > child_downloaded {
-                            (file_total - child_downloaded) / child_speed
-                        } else {
-                            0
-                        };
+                            let child_elapsed = child_started_at.elapsed().as_secs_f64();
+                            let child_speed = if child_elapsed > 0.0 {
+                                (child_session_downloaded as f64 / child_elapsed) as u64
+                            } else {
+                                0
+                            };
+                            let child_downloaded = if resumed { existing_bytes } else { 0 } + child_session_downloaded;
+                            let child_eta = if child_speed > 0 && file_total > child_downloaded {
+                                (file_total - child_downloaded) / child_speed
+                            } else {
+                                0
+                            };
 
-                        let _ = progress_tx
-                            .send(ProgressUpdate {
-                                bytes_downloaded: downloaded_total,
-                                total_bytes: total_size,
-                                child_filename: Some(filename.clone()),
-                                child_bytes_downloaded: Some(child_downloaded),
-                                child_total_bytes: Some(file_total),
-                                child_speed_bps: Some(child_speed),
-                                child_eta_secs: Some(child_eta),
-                            })
-                            .await;
-                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                            let _ = progress_tx
+                                .send(ProgressUpdate {
+                                    bytes_downloaded: downloaded_total,
+                                    total_bytes: total_size,
+                                    child_filename: Some(filename.clone()),
+                                    child_bytes_downloaded: Some(child_downloaded),
+                                    child_total_bytes: Some(file_total),
+                                    child_speed_bps: Some(child_speed),
+                                    child_eta_secs: Some(child_eta),
+                                })
+                                .await;
+                            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                        }
                     }
 
                     file_handle.flush().await?;
@@ -455,23 +457,25 @@ impl Provider for MediaFireProvider {
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
-                file.write_all(&chunk).await?;
-                let chunk_len = chunk.len() as u64;
-                downloaded += chunk_len;
-                session_downloaded += chunk_len;
+                for piece in chunk.chunks(65_536) {
+                    file.write_all(piece).await?;
+                    let piece_len = piece.len() as u64;
+                    downloaded += piece_len;
+                    session_downloaded += piece_len;
 
-                let _ = progress_tx
-                    .send(ProgressUpdate {
-                        bytes_downloaded: downloaded,
-                        total_bytes: total,
-                        child_filename: None,
-                        child_bytes_downloaded: None,
-                        child_total_bytes: None,
-                        child_speed_bps: None,
-                        child_eta_secs: None,
-                    })
-                    .await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                    let _ = progress_tx
+                        .send(ProgressUpdate {
+                            bytes_downloaded: downloaded,
+                            total_bytes: total,
+                            child_filename: None,
+                            child_bytes_downloaded: None,
+                            child_total_bytes: None,
+                            child_speed_bps: None,
+                            child_eta_secs: None,
+                        })
+                        .await;
+                    apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                }
             }
 
             file.flush().await?;

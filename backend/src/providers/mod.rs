@@ -98,6 +98,8 @@ pub async fn try_parallel_download(
     let total_downloaded = Arc::new(AtomicU64::new(0));
     let mut tasks = Vec::with_capacity(part_count);
 
+    let task_limit = speed_limit_bps.map(|l| l / part_count as u64);
+
     for part_index in 0..part_count {
         let client = client.clone();
         let url = url.to_string();
@@ -122,32 +124,32 @@ pub async fn try_parallel_download(
 
             let mut file = tokio::fs::File::create(&part_path).await?;
             let mut stream = resp.bytes_stream();
+            let mut task_session_downloaded = 0u64;
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
-                file.write_all(&chunk).await?;
+                for piece in chunk.chunks(65_536) {
+                    file.write_all(piece).await?;
+                    let piece_len = piece.len() as u64;
+                    task_session_downloaded += piece_len;
 
-                let downloaded = total_downloaded.fetch_add(chunk.len() as u64, Ordering::SeqCst)
-                    + chunk.len() as u64;
+                    let downloaded = total_downloaded.fetch_add(piece_len, Ordering::SeqCst)
+                        + piece_len;
 
-                let _ = progress_tx
-                    .send(ProgressUpdate {
-                        bytes_downloaded: downloaded,
-                        total_bytes,
-                        child_filename: None,
-                        child_bytes_downloaded: None,
-                        child_total_bytes: None,
-                        child_speed_bps: None,
-                        child_eta_secs: None,
-                    })
-                    .await;
+                    let _ = progress_tx
+                        .send(ProgressUpdate {
+                            bytes_downloaded: downloaded,
+                            total_bytes,
+                            child_filename: None,
+                            child_bytes_downloaded: None,
+                            child_total_bytes: None,
+                            child_speed_bps: None,
+                            child_eta_secs: None,
+                        })
+                        .await;
 
-                apply_speed_limit(
-                    started_at,
-                    total_downloaded.load(Ordering::SeqCst),
-                    speed_limit_bps,
-                )
-                .await;
+                    apply_speed_limit(started_at, task_session_downloaded, task_limit).await;
+                }
             }
 
             file.flush().await?;
