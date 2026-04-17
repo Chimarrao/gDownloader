@@ -265,6 +265,7 @@ interface ModuleSummary {
 const emit = defineEmits<{
   (e: 'count-change', count: number): void
   (e: 'download-complete', payload: { id: string; outputPath: string }): void
+  (e: 'global-speed', bps: number): void
 }>()
 
 // ── State ──────────────────────────────────────────────────
@@ -353,6 +354,11 @@ onMounted(async () => {
           size: total > 0 ? total : items.value[idx].size,
           children: nextChildren
         }
+        // Somar speed de todos os itens ativos
+        const totalSpeed = items.value
+          .filter((i) => i.status === 'downloading')
+          .reduce((sum, i) => sum + (i.speedBps ?? 0), 0)
+        emit('global-speed', totalSpeed)
       } else {
         // Unknown item — refresh list
         void hydrate()

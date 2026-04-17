@@ -10,6 +10,10 @@
         </div>
         <strong>{{ t('appName') }}</strong>
       </div>
+      <SpeedWidget
+        :speed-history="speedHistory"
+        :current-speed="currentSpeed"
+      />
     </header>
 
     <nav class="tab-bar">
@@ -34,7 +38,7 @@
 
     <main class="app-main">
       <section v-show="activeTab === 'downloads'" class="panel downloads-panel">
-        <DownloadList @count-change="downloadCount = $event" @download-complete="onDownloadComplete" />
+        <DownloadList @count-change="downloadCount = $event" @download-complete="onDownloadComplete" @global-speed="onGlobalSpeed" />
       </section>
 
       <section v-show="activeTab === 'grabber'" class="panel">
@@ -49,10 +53,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import DownloadList from './components/DownloadList.vue'
 import LinkGrabber from './components/LinkGrabber.vue'
 import AppSettings from './components/AppSettings.vue'
+import SpeedWidget from './components/SpeedWidget.vue'
 import { setLocale, useI18n } from './i18n'
 import { useTheme, type ThemeId } from './themes'
 
@@ -75,6 +80,17 @@ interface DownloadCompletePayload {
 
 const activeTab = ref<AppTab>('downloads')
 const downloadCount = ref(0)
+const speedHistory = ref<number[]>(new Array(60).fill(0))
+const currentSpeed = ref(0)
+let speedTicker: ReturnType<typeof setInterval> | null = null
+
+function onGlobalSpeed(bps: number): void {
+  currentSpeed.value = bps
+}
+
+onUnmounted(() => {
+  if (speedTicker) clearInterval(speedTicker)
+})
 const { t } = useI18n()
 const { initTheme, setTheme, themeOptions } = useTheme()
 
@@ -88,6 +104,9 @@ onMounted(async () => {
   if (themeOptions.some((option) => option.id === settings.theme)) {
     setTheme(settings.theme as ThemeId)
   }
+  speedTicker = setInterval(() => {
+    speedHistory.value = [...speedHistory.value.slice(1), currentSpeed.value]
+  }, 1000)
 })
 
 function handleAddedToQueue(): void {
