@@ -1,7 +1,7 @@
 <template>
   <div class="download-list">
     <!-- Empty state -->
-    <div v-if="items.length === 0" class="empty-state">
+    <div v-if="items.length === 0 && (skeletonCount ?? 0) === 0" class="empty-state">
       <div class="empty-icon">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" width="48" height="48">
           <circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
@@ -14,8 +14,18 @@
     </div>
 
     <!-- Download items -->
-    <div v-else class="items-container">
-      <div class="list-toolbar">
+    <div v-if="items.length > 0 || (skeletonCount ?? 0) > 0" class="items-container">
+      <div
+        v-for="i in (skeletonCount ?? 0)"
+        :key="`skeleton-${i}`"
+        class="download-card skeleton-card"
+      >
+        <div class="skeleton-line skeleton-title"></div>
+        <div class="skeleton-line skeleton-progress"></div>
+        <div class="skeleton-line skeleton-meta"></div>
+      </div>
+
+      <div v-if="items.length > 0" class="list-toolbar">
         <span class="list-count">{{ items.length }} item(ns) na sessão</span>
         <button
           class="toolbar-btn"
@@ -44,12 +54,12 @@
             <!-- Row 1: filename + status + actions -->
             <div class="item-header">
               <div class="item-title-wrap">
-                <img
+                <span
                   class="type-icon"
-                  :src="getFileIcon(item.title || item.url, undefined, item.isFolder).src"
-                  :alt="getFileIcon(item.title || item.url, undefined, item.isFolder).alt"
-                  draggable="false"
-                />
+                  :class="getFileIcon(item.title || item.url, undefined, item.isFolder).className"
+                  :aria-label="getFileIcon(item.title || item.url, undefined, item.isFolder).alt"
+                  role="img"
+                ></span>
                 <span class="item-title" :title="item.title">{{ item.title || item.url }}</span>
               </div>
               <div class="item-actions">
@@ -210,12 +220,12 @@
               >
                 <div class="child-main">
                   <div class="child-name">
-                    <img
+                    <span
                       class="child-icon"
-                      :src="getFileIcon(child.filename, child.mimeType, child.isFolder).src"
-                      :alt="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
-                      draggable="false"
-                    />
+                      :class="getFileIcon(child.filename, child.mimeType, child.isFolder).className"
+                      :aria-label="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
+                      role="img"
+                    ></span>
                     <span>{{ child.filename }}</span>
                   </div>
                   <div class="child-meta">
@@ -261,11 +271,18 @@ interface ModuleSummary {
   color: string
 }
 
+// ── Props ──────────────────────────────────────────────────
+const props = withDefaults(defineProps<{ skeletonCount?: number }>(), {
+  skeletonCount: 0
+})
+const skeletonCount = computed(() => props.skeletonCount)
+
 // ── Emits ──────────────────────────────────────────────────
 const emit = defineEmits<{
   (e: 'count-change', count: number): void
   (e: 'download-complete', payload: { id: string; outputPath: string }): void
   (e: 'global-speed', bps: number): void
+  (e: 'skeleton-done'): void
 }>()
 
 // ── State ──────────────────────────────────────────────────
@@ -346,13 +363,29 @@ onMounted(async () => {
             }
           })
         }
+
+        const isFolder = items.value[idx].isFolder && (nextChildren?.length ?? 0) > 0
+        const aggregatedChildBytes = isFolder
+          ? nextChildren!.reduce((sum, child) => sum + (child.bytesDownloaded ?? 0), 0)
+          : bytes
+        const aggregatedChildSpeed = isFolder
+          ? nextChildren!.reduce((sum, child) => sum + (child.speedBps ?? 0), 0)
+          : (ev.speed ?? 0)
+        const aggregatedPercent = total > 0
+          ? Math.min(100, Math.floor((aggregatedChildBytes / total) * 100))
+          : items.value[idx].percent
+        const aggregatedEta = aggregatedChildSpeed > 0 && total > aggregatedChildBytes
+          ? Math.floor((total - aggregatedChildBytes) / aggregatedChildSpeed)
+          : 0
+
         items.value[idx] = {
           ...items.value[idx],
-          percent: total > 0 ? Math.min(100, Math.floor((bytes / total) * 100)) : items.value[idx].percent,
-          speedBps: ev.speed ?? 0,
-          etaSec: ev.eta ?? 0,
+          percent: aggregatedPercent,
+          speedBps: aggregatedChildSpeed,
+          etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0),
           status: (ev.status as DownloadItem['status']) ?? items.value[idx].status,
           size: total > 0 ? total : items.value[idx].size,
+          // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.
           children: nextChildren
         }
         // Somar speed de todos os itens ativos (throttled a 200ms para não sobrecarregar)
@@ -455,6 +488,7 @@ async function hydrate(): Promise<void> {
     }
 
     emit('count-change', items.value.length)
+    emit('skeleton-done')
   } finally {
     hydrateInFlight = false
     if (hydrateQueued) {
@@ -839,7 +873,10 @@ function childStatusText(status?: DownloadChild['status']): string {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
-  object-fit: contain;
+  display: inline-block;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .item-actions {
@@ -1125,7 +1162,10 @@ function childStatusText(status?: DownloadChild['status']): string {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  object-fit: contain;
+  display: inline-block;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .child-size {
@@ -1162,4 +1202,32 @@ function childStatusText(status?: DownloadChild['status']): string {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* ── Skeleton cards ─────────────────────────────────────────── */
+@keyframes shimmer-skeleton {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+.skeleton-card {
+  pointer-events: none;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-card) 25%,
+    color-mix(in srgb, var(--bg-card) 70%, var(--text-muted)) 50%,
+    var(--bg-card) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-skeleton 1.4s infinite;
+}
+
+.skeleton-title    { height: 14px; width: 55%; }
+.skeleton-progress { height: 8px;  width: 100%; }
+.skeleton-meta     { height: 10px; width: 35%; }
 </style>

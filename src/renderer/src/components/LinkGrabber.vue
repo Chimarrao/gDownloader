@@ -78,12 +78,12 @@
               />
             </label>
 
-            <img
+            <span
               class="row-icon"
-              :src="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).src"
-              :alt="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).alt"
-              draggable="false"
-            />
+              :class="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).className"
+              :aria-label="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).alt"
+              role="img"
+            ></span>
 
             <div class="row-copy">
               <div class="row-title-line">
@@ -146,12 +146,12 @@
             <div v-if="row.info?.isFolder && row.info.children?.length" class="children-list">
               <div v-for="child in row.info.children" :key="`${row.url}:${child.filename}`" class="child-row">
                 <div class="child-name">
-                  <img
+                  <span
                     class="child-icon"
-                    :src="getFileIcon(child.filename, child.mimeType, child.isFolder).src"
-                    :alt="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
-                    draggable="false"
-                  />
+                    :class="getFileIcon(child.filename, child.mimeType, child.isFolder).className"
+                    :aria-label="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
+                    role="img"
+                  ></span>
                   <span>{{ child.filename }}</span>
                 </div>
                 <span>{{ fmtBytes(child.size) }}</span>
@@ -210,7 +210,10 @@ interface CapturedRow {
   sourceLabels: string[]
 }
 
-const emit = defineEmits<{ (e: 'added'): void }>()
+const emit = defineEmits<{
+  (e: 'added'): void
+  (e: 'adding-urls', count: number): void
+}>()
 
 const urlsInput = ref('')
 const rows = ref<CapturedRow[]>([])
@@ -327,6 +330,7 @@ async function addAll(): Promise<void> {
   const current = await window.api.settings.load().catch(() => null)
   const outputDir = current?.outputDir ?? '~/Downloads'
 
+  emit('adding-urls', selectedRows.value.length)
   for (const row of selectedRows.value) {
     if (!row.module || !row.info) continue
     try {
@@ -607,6 +611,11 @@ function fmtBytes(n: number): string {
 .row-icon {
   width: 26px;
   height: 26px;
+  display: inline-block;
+  flex-shrink: 0;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .row-copy {
@@ -742,6 +751,11 @@ function fmtBytes(n: number): string {
 .child-icon {
   width: 17px;
   height: 17px;
+  display: inline-block;
+  flex-shrink: 0;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .error-msg {

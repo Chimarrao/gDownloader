@@ -38,11 +38,17 @@
 
     <main class="app-main">
       <section v-show="activeTab === 'downloads'" class="panel downloads-panel">
-        <DownloadList @count-change="downloadCount = $event" @download-complete="onDownloadComplete" @global-speed="onGlobalSpeed" />
+        <DownloadList
+          :skeleton-count="skeletonCount"
+          @count-change="downloadCount = $event"
+          @download-complete="onDownloadComplete"
+          @global-speed="onGlobalSpeed"
+          @skeleton-done="skeletonCount = 0"
+        />
       </section>
 
       <section v-show="activeTab === 'grabber'" class="panel">
-        <LinkGrabber @added="handleAddedToQueue" />
+        <LinkGrabber @added="handleAddedToQueue" @adding-urls="onAddingUrls" />
       </section>
 
       <section v-show="activeTab === 'settings'" class="panel">
@@ -80,6 +86,7 @@ interface DownloadCompletePayload {
 
 const activeTab = ref<AppTab>('downloads')
 const downloadCount = ref(0)
+const skeletonCount = ref(0)
 const speedHistory = ref<number[]>(new Array(60).fill(0))
 const currentSpeed = ref(0)
 let speedTicker: ReturnType<typeof setInterval> | null = null
@@ -112,6 +119,10 @@ onMounted(async () => {
     setTheme(settings.theme as ThemeId)
   }
 })
+
+function onAddingUrls(count: number): void {
+  skeletonCount.value = count
+}
 
 function handleAddedToQueue(): void {
   activeTab.value = 'downloads'
