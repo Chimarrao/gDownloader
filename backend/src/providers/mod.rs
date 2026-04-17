@@ -98,7 +98,10 @@ pub async fn try_parallel_download(
     let total_downloaded = Arc::new(AtomicU64::new(0));
     let mut tasks = Vec::with_capacity(part_count);
 
-    let task_limit = speed_limit_bps.map(|l| l / part_count as u64);
+    // Each task gets an equal share of the global limit.
+    // If the share would be smaller than one 64KB piece/s, cap it at 65_536 to avoid
+    // second-long stalls inside each task at very low speeds.
+    let task_limit = speed_limit_bps.map(|l| (l / part_count as u64).max(65_536));
 
     for part_index in 0..part_count {
         let client = client.clone();
@@ -133,7 +136,7 @@ pub async fn try_parallel_download(
                     let piece_len = piece.len() as u64;
                     task_session_downloaded += piece_len;
 
-                    let downloaded = total_downloaded.fetch_add(piece_len, Ordering::SeqCst)
+                    let downloaded = total_downloaded.fetch_add(piece_len, Ordering::Relaxed)
                         + piece_len;
 
                     let _ = progress_tx
