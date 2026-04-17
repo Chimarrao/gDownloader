@@ -681,7 +681,7 @@ function fmtBytes(n: number): string {
   height: 28px;
   border: 1px solid rgba(126, 139, 164, 0.22);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-card);
   color: #66758a;
   cursor: pointer;
 }
