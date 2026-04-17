@@ -1,6 +1,7 @@
 import megaSvg from './provider-icons/mega.svg?raw'
 import mediafireSvg from './provider-icons/mediafire.svg?raw'
 import googledriveSvg from './provider-icons/googledrive.svg?raw'
+import anonfilesSvg from './provider-icons/anonfiles.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -19,6 +20,10 @@ const ICONS: Record<string, ProviderIcon> = {
   googledrive: {
     color: '#4285F4',
     svg: googledriveSvg,
+  },
+  anonfiles: {
+    color: '#00d4ff',
+    svg: anonfilesSvg,
   },
   pixeldrain: {
     color: '#ff7b00',
