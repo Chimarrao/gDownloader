@@ -152,7 +152,7 @@ const settings = reactive<AppSettings>({
   maxConcurrentDownloads: 3,
   maxRetriesPerDownload: 3,
   parallelPartsPerDownload: 4,
-  speedLimitKib: 5000,
+  speedLimitKib: 0,
   theme: 'dark-purple',
   nativeNotification: true,
   locale: 'pt-BR',

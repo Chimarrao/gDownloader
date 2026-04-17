@@ -98,7 +98,15 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   const settings = await window.api.settings.load().catch(() => null)
   if (settings?.nativeNotification) {
     const title = payload.outputPath.split('/').pop() || payload.outputPath
-    await window.api.system.notify('Download concluído', title).catch(() => null)
+    const shown = await window.api.system.notify('Download concluído', title).catch((e: unknown) => {
+      console.warn('[notify] erro ao mostrar notificação:', e)
+      return false
+    })
+    if (!shown) {
+      console.warn('[notify] Notificação não foi exibida (isSupported=false ou permissão bloqueada)')
+    }
+  } else {
+    console.log('[notify] nativeNotification desabilitado nas settings')
   }
 
   const history = await window.api.loadHistory().catch(() => [])
