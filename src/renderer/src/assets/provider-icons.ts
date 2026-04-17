@@ -1,7 +1,6 @@
 import megaSvg from './provider-icons/mega.svg?raw'
 import mediafireSvg from './provider-icons/mediafire.svg?raw'
 import googledriveSvg from './provider-icons/googledrive.svg?raw'
-import pixeldrainPng from './provider-icons/pixeldrain.png'
 
 export interface ProviderIcon {
   svg: string
@@ -23,7 +22,11 @@ const ICONS: Record<string, ProviderIcon> = {
   },
   pixeldrain: {
     color: '#ff7b00',
-    svg: `<img src="${pixeldrainPng}" style="width:100%;height:100%;object-fit:contain;" />`,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+    <rect width="36" height="36" rx="8" fill="#ff7b00"/>
+    <path d="M18 8 C18 8, 10 17, 10 22 C10 26.4 13.6 30 18 30 C22.4 30 26 26.4 26 22 C26 17 18 8 18 8Z" fill="white"/>
+    <text x="18" y="24" text-anchor="middle" font-size="10" font-weight="bold" fill="#ff7b00" font-family="sans-serif">P</text>
+  </svg>`,
   },
   default: {
     color: '#7c6fff',
