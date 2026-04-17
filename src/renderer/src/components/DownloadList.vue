@@ -278,6 +278,7 @@ const unsubs: Array<() => void> = []
 let hydrateQueued = false
 let hydrateInFlight = false
 let isMounted = false
+let lastSpeedEmit = 0
 
 // ── Computed ───────────────────────────────────────────────
 const orderedItems = computed(() => [...items.value].sort((a, b) => b.addedAt - a.addedAt))
@@ -354,11 +355,15 @@ onMounted(async () => {
           size: total > 0 ? total : items.value[idx].size,
           children: nextChildren
         }
-        // Somar speed de todos os itens ativos
-        const totalSpeed = items.value
-          .filter((i) => i.status === 'downloading')
-          .reduce((sum, i) => sum + (i.speedBps ?? 0), 0)
-        emit('global-speed', totalSpeed)
+        // Somar speed de todos os itens ativos (throttled a 200ms para não sobrecarregar)
+        const now = Date.now()
+        if (now - lastSpeedEmit >= 200) {
+          lastSpeedEmit = now
+          const totalSpeed = items.value
+            .filter((i) => i.status === 'downloading')
+            .reduce((sum, i) => sum + (i.speedBps ?? 0), 0)
+          emit('global-speed', totalSpeed)
+        }
       } else {
         // Unknown item — refresh list
         void hydrate()

@@ -83,12 +83,14 @@ const downloadCount = ref(0)
 const speedHistory = ref<number[]>(new Array(60).fill(0))
 const currentSpeed = ref(0)
 let speedTicker: ReturnType<typeof setInterval> | null = null
+let appMounted = true
 
 function onGlobalSpeed(bps: number): void {
   currentSpeed.value = bps
 }
 
 onUnmounted(() => {
+  appMounted = false
   if (speedTicker) clearInterval(speedTicker)
 })
 const { t } = useI18n()
@@ -96,6 +98,11 @@ const { initTheme, setTheme, themeOptions } = useTheme()
 
 onMounted(async () => {
   initTheme()
+  // Start speed ticker regardless of settings availability
+  speedTicker = setInterval(() => {
+    if (!appMounted) return
+    speedHistory.value = [...speedHistory.value.slice(1), currentSpeed.value]
+  }, 1000)
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
   if (settings.locale) {
@@ -104,9 +111,6 @@ onMounted(async () => {
   if (themeOptions.some((option) => option.id === settings.theme)) {
     setTheme(settings.theme as ThemeId)
   }
-  speedTicker = setInterval(() => {
-    speedHistory.value = [...speedHistory.value.slice(1), currentSpeed.value]
-  }, 1000)
 })
 
 function handleAddedToQueue(): void {
