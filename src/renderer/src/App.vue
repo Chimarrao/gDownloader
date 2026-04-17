@@ -95,6 +95,7 @@ function handleAddedToQueue(): void {
 }
 
 async function onDownloadComplete(payload: DownloadCompletePayload): Promise<void> {
+  console.log('[notify] onDownloadComplete triggered', payload)
   const settings = await window.api.settings.load().catch(() => null)
   if (settings?.nativeNotification) {
     const title = payload.outputPath.split('/').pop() || payload.outputPath
@@ -102,6 +103,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
       console.warn('[notify] erro ao mostrar notificação:', e)
       return false
     })
+    console.log('[notify] notify() returned:', shown)
     if (!shown) {
       console.warn('[notify] Notificação não foi exibida (isSupported=false ou permissão bloqueada)')
     }
