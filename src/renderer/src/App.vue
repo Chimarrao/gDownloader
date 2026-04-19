@@ -123,6 +123,9 @@ onMounted(async () => {
   if (themeOptions.some((option) => option.id === settings.theme)) {
     setTheme(settings.theme as ThemeId)
   }
+  if (settings.accentColor) {
+    document.documentElement.style.setProperty('--accent-color', settings.accentColor)
+  }
 })
 
 function onAddingUrls(count: number): void {

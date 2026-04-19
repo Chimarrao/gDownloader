@@ -98,6 +98,46 @@
           <option value="light">{{ t('themeLight') }}</option>
         </select>
       </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Cor de destaque</span>
+          <span class="setting-desc">Personaliza a cor principal do app</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input
+            type="color"
+            :value="settings.accentColor || '#a855f7'"
+            class="color-picker"
+            @change="onAccentColorChange"
+          />
+          <button
+            v-if="settings.accentColor"
+            class="browse-btn"
+            style="padding:6px 10px;font-size:12px;"
+            @click="resetAccentColor"
+          >Resetar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Integrations section -->
+    <div class="settings-section">
+      <h3 class="section-title">Integrações</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">NoPecha API Key</span>
+          <span class="setting-desc">Resolve captchas automaticamente</span>
+        </div>
+        <input
+          v-model="settings.nopechaApiKey"
+          type="password"
+          class="setting-input setting-input-wide"
+          placeholder="nopecha_xxxxxxxxx"
+          @change="save"
+        />
+      </div>
     </div>
 
     <!-- Notifications section -->
@@ -145,6 +185,8 @@ interface AppSettings {
   fontSize: number
   fontFamily: string
   uiZoom: number
+  accentColor?: string
+  nopechaApiKey?: string
 }
 
 const settings = reactive<AppSettings>({
@@ -159,6 +201,8 @@ const settings = reactive<AppSettings>({
   fontSize: 14,
   fontFamily: 'Inter',
   uiZoom: 1,
+  accentColor: undefined,
+  nopechaApiKey: undefined,
 })
 
 onMounted(async () => {
@@ -166,6 +210,7 @@ onMounted(async () => {
   if (saved) {
     Object.assign(settings, saved)
     setLocale(saved.locale)
+    if (saved.accentColor) applyAccentColor(saved.accentColor)
   }
 })
 
@@ -188,6 +233,27 @@ function onThemeChange(): void {
 function onLocaleChange(): void {
   setLocale(settings.locale)
   void save()
+}
+
+function onAccentColorChange(e: Event): void {
+  const color = (e.target as HTMLInputElement).value
+  settings.accentColor = color
+  applyAccentColor(color)
+  void save()
+}
+
+function resetAccentColor(): void {
+  settings.accentColor = undefined
+  document.documentElement.style.removeProperty('--accent-color')
+  void save()
+}
+
+function applyAccentColor(color: string | undefined): void {
+  if (color) {
+    document.documentElement.style.setProperty('--accent-color', color)
+  } else {
+    document.documentElement.style.removeProperty('--accent-color')
+  }
 }
 </script>
 
@@ -371,5 +437,15 @@ function onLocaleChange(): void {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+.color-picker {
+  width: 40px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  cursor: pointer;
+  padding: 2px;
 }
 </style>

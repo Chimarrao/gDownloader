@@ -72,6 +72,9 @@ export interface DownloadItem {
   retryCount?: number
   maxRetries?: number
   retryAt?: number
+  captchaType?: string
+  captchaSitekey?: string
+  captchaPageUrl?: string
   error: string
   outputPath?: string
   addedAt: number
@@ -102,6 +105,8 @@ export interface PersistedSettings {
   fontFamily: string
   uiZoom: number
   nativeNotification: boolean
+  accentColor?: string
+  nopechaApiKey?: string
   accounts?: {
     terabox?: {
       email: string
@@ -111,3 +116,13 @@ export interface PersistedSettings {
     }
   }
 }
+
+export type DownloadStatusExtended =
+  | 'pending'
+  | 'downloading'
+  | 'paused'
+  | 'complete'
+  | 'error'
+  | 'cancelled'
+  | 'rate_limited'
+  | 'waiting_captcha'
