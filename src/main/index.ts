@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell, net, session } from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { spawn, ChildProcess } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -448,6 +448,71 @@ async function verifyTeraboxAccount(email: string, password: string): Promise<Te
 }
 
 /**
+ * Faz uma requisição HTTP usando a sessão persist:terabox do Electron.
+ * Isso garante que todos os cookies e fingerprint do browser sejam usados,
+ * contornando a proteção anti-scraping do Terabox na API share/list.
+ */
+async function teraboxNetRequest(params: {
+  url: string
+  method?: string
+  headers?: Record<string, string>
+  body?: string
+}): Promise<unknown> {
+  const tbSession = session.fromPartition('persist:terabox')
+  return new Promise<unknown>((resolve, reject) => {
+    const request = net.request({ url: params.url, method: params.method ?? 'GET', session: tbSession })
+    request.setHeader('User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+    request.setHeader('Accept', 'application/json, */*')
+    request.setHeader('Accept-Language', 'pt-BR,pt;q=0.9,en-US;q=0.8')
+    if (params.headers) {
+      for (const [k, v] of Object.entries(params.headers)) request.setHeader(k, v)
+    }
+    const chunks: Buffer[] = []
+    request.on('response', (response) => {
+      response.on('data', (chunk) => chunks.push(chunk as Buffer))
+      response.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
+        catch { resolve({ _raw: Buffer.concat(chunks).toString('utf8') }) }
+      })
+      response.on('error', reject)
+    })
+    request.on('error', reject)
+    if (params.body) request.write(params.body)
+    request.end()
+  })
+}
+
+/** Local HTTP proxy para o backend Rust chamar requisições Terabox via sessão Electron */
+let teraboxProxyPort = 0
+function startTeraboxProxy(): number {
+  const http = require('http') as typeof import('http')
+  const server = http.createServer(async (req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', async () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          url: string; method?: string; headers?: Record<string, string>
+        }
+        const result = await teraboxNetRequest(body)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(result))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: String(e) }))
+      }
+    })
+  })
+  server.listen(0, '127.0.0.1', () => {
+    const addr = server.address() as { port: number }
+    teraboxProxyPort = addr.port
+    console.log(`[terabox-proxy] listening on port ${teraboxProxyPort}`)
+  })
+  return 0 // will be set async
+}
+
+/**
  * Abre um BrowserWindow modal com o site de login do Terabox.
  * Injeta CSS para mostrar apenas o formulário de login.
  * Quando detectar os cookies de sessão, fecha a janela e retorna os cookies.
@@ -553,7 +618,8 @@ function startRustBackend(): Promise<number> {
     // stdio: 'pipe' captura stdout/stderr para podermos ler
     const dbPath = join(app.getPath('userData'), 'downloads.db')
     rustBackend = spawn(binaryPath, [dbPath], {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, TERABOX_PROXY_PORT: String(teraboxProxyPort) },
     })
 
     // Lê a porta do stdout do Rust
@@ -636,6 +702,7 @@ app.whenReady().then(async () => {
 
   // IPC: porta do backend Rust
   ipcMain.handle('backend:getPort', () => rustPort)
+  ipcMain.handle('terabox:getProxyPort', () => teraboxProxyPort)
 
   // IPC: shell
   ipcMain.handle('shell:openPath', (_e, p: string) => shell.openPath(p))
@@ -661,6 +728,16 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('archive:extract', async (_e, archivePath: string) => {
     return extractArchive(archivePath)
+  })
+
+  // Proxy HTTP via sessão persist:terabox — usa cookies reais do browser, bypass fingerprint
+  ipcMain.handle('terabox:net-request', async (_e, reqParams: {
+    url: string
+    method?: string
+    headers?: Record<string, string>
+    body?: string
+  }) => {
+    return teraboxNetRequest(reqParams)
   })
   ipcMain.handle('dialog:chooseDirectory', async () => {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -792,6 +869,35 @@ app.whenReady().then(async () => {
     } catch {
       return null
     }
+  })
+
+  // Inicia o proxy local do Terabox (usa sessão browser com cookies reais)
+  await new Promise<void>((resolve) => {
+    const http = require('http') as typeof import('http')
+    const server = http.createServer(async (req, res) => {
+      if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', async () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+            url: string; method?: string; headers?: Record<string, string>
+          }
+          const result = await teraboxNetRequest(body)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify(result))
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: String(e) }))
+        }
+      })
+    })
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number }
+      teraboxProxyPort = addr.port
+      console.log(`[terabox-proxy] porta ${teraboxProxyPort}`)
+      resolve()
+    })
   })
 
   // Inicia o backend Rust antes de abrir a janela

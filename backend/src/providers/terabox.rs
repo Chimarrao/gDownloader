@@ -9,6 +9,29 @@ use tokio::io::AsyncWriteExt;
 use crate::models::{FileChildInfo, FileInfo};
 use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
 
+/// Porta do proxy local Electron para chamadas Terabox com cookies de sessão browser.
+fn electron_proxy_port() -> Option<u16> {
+    std::env::var("TERABOX_PROXY_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|&p| p > 0)
+}
+
+/// Faz GET via proxy Electron (usa sessão persist:terabox com cookies reais).
+/// Se o proxy não estiver disponível, retorna None e o caller usa reqwest diretamente.
+async fn proxy_get(url: &str, referer: &str) -> Option<Value> {
+    let port = electron_proxy_port()?;
+    let proxy_url = format!("http://127.0.0.1:{port}/");
+    let body = serde_json::json!({
+        "url": url,
+        "method": "GET",
+        "headers": { "Referer": referer }
+    });
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().ok()?;
+    let resp = client.post(&proxy_url).json(&body).send().await.ok()?;
+    resp.json::<Value>().await.ok()
+}
+
 const APP_ID: &str = "250528";
 const CHANNEL: &str = "dubox";
 
@@ -22,6 +45,7 @@ struct ShareContext {
     uk: i64,
     sign: String,
     timestamp: i64,
+    sekey: String,       // randsk from shorturlinfo — used as sekey in share/list
     host: &'static str,  // "https://www.terabox.com" ou "https://www.1024tera.com"
 }
 
@@ -176,6 +200,10 @@ impl TeraboxProvider {
             .ok_or_else(|| anyhow!("URL do TeraBox sem parâmetro surl"))?;
 
         let info = Self::fetch_shorturl_info(client, &js_token, &surl, url).await?;
+        // randsk (URL-encoded) from shorturlinfo is used as sekey in share/list
+        let sekey = info["randsk"].as_str()
+            .map(|s| urlencoding::decode(s).unwrap_or(std::borrow::Cow::Borrowed(s)).into_owned())
+            .unwrap_or_default();
         Ok(ShareContext {
             js_token,
             surl,
@@ -183,6 +211,7 @@ impl TeraboxProvider {
             uk: info["uk"].as_i64().ok_or_else(|| anyhow!("Resposta do TeraBox sem uk"))?,
             sign: info["sign"].as_str().unwrap_or_default().to_string(),
             timestamp: info["timestamp"].as_i64().ok_or_else(|| anyhow!("Resposta do TeraBox sem timestamp"))?,
+            sekey,
             host: Self::api_host(url),
         })
     }
@@ -243,6 +272,18 @@ impl TeraboxProvider {
         Ok(json)
     }
 
+    fn build_share_list_url(ctx: &ShareContext, dir: Option<&str>, fid: Option<&str>, page: usize, sekey: Option<&str>) -> String {
+        let mut params = format!(
+            "app_id={APP_ID}&web=1&channel={CHANNEL}&clienttype=0&jsToken={}&dp-logid={}&page={page}&num=100&by=name&order=asc&site_referer=&shorturl={}",
+            ctx.js_token, Self::make_logid(), ctx.surl
+        );
+        if let Some(d) = dir { params.push_str(&format!("&dir={}", urlencoding::encode(d))); }
+        if let Some(f) = fid { params.push_str(&format!("&fid={f}")); }
+        if dir.is_none() && fid.is_none() { params.push_str("&root=1"); }
+        if let Some(sk) = sekey { params.push_str(&format!("&sekey={}", urlencoding::encode(sk))); }
+        format!("{}/share/list?{}", ctx.host, params)
+    }
+
     async fn fetch_share_list(
         client: &reqwest::Client,
         ctx: &ShareContext,
@@ -250,41 +291,35 @@ impl TeraboxProvider {
         fid: Option<&str>,
         page: usize,
     ) -> Result<Vec<ShareEntry>> {
-        let logid = Self::make_logid();
-        let mut req = client
-            .get(format!("{}/share/list", ctx.host))
-            .query(&[
-                ("app_id", APP_ID),
-                ("web", "1"),
-                ("channel", CHANNEL),
-                ("clienttype", "0"),
-                ("jsToken", ctx.js_token.as_str()),
-                ("dp-logid", logid.as_str()),
-                ("page", &page.to_string()),
-                ("num", "100"),
-                ("by", "name"),
-                ("order", "asc"),
-                ("site_referer", ""),
-                ("shorturl", ctx.surl.as_str()),
-            ]);
+        let referer = format!("{}/sharing/link?surl={}", ctx.host, ctx.surl);
+        let url = Self::build_share_list_url(ctx, dir, fid, page, Some(&ctx.sekey));
 
-        if let Some(fid) = fid {
-            req = req.query(&[("fid", fid)]);
-        }
-        if let Some(dir) = dir {
-            req = req.query(&[("dir", dir)]);
+        // 1st try: via Electron proxy (browser session with real cookies)
+        let json = if let Some(proxied) = proxy_get(&url, &referer).await {
+            proxied
         } else {
-            req = req.query(&[("root", "1")]);
-        }
+            // Fallback: direct reqwest
+            let mut req = client
+                .get(format!("{}/share/list", ctx.host))
+                .query(&[
+                    ("app_id", APP_ID), ("web", "1"), ("channel", CHANNEL), ("clienttype", "0"),
+                    ("jsToken", ctx.js_token.as_str()), ("dp-logid", &Self::make_logid()),
+                    ("page", &page.to_string()), ("num", "100"), ("by", "name"),
+                    ("order", "asc"), ("site_referer", ""), ("shorturl", ctx.surl.as_str()),
+                    ("sekey", ctx.sekey.as_str()),
+                ]);
+            if let Some(f) = fid { req = req.query(&[("fid", f)]); }
+            if let Some(d) = dir { req = req.query(&[("dir", d)]); } else { req = req.query(&[("root", "1")]); }
+            Self::with_saved_cookies(req).send().await?.error_for_status()?.json().await?
+        };
 
-        let json: Value = Self::with_saved_cookies(req).send().await?.error_for_status()?.json().await?;
         let errno = json["errno"]
             .as_i64()
             .or_else(|| json["code"].as_i64())
             .unwrap_or(-1);
         let errmsg = json["errmsg"].as_str().unwrap_or("");
         if errno != 0 {
-            if errno == 460020 || errmsg.contains("need verify") {
+            if errno == 460020 || errno == 400141 || errmsg.contains("need verify") {
                 return Err(anyhow!(
                     "O TeraBox exigiu verificação pública ou código de extração para abrir esta pasta."
                 ));

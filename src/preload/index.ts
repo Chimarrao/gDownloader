@@ -195,6 +195,10 @@ const api = {
   archive: {
     extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
   },
+  terabox: {
+    netRequest: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<unknown> =>
+      ipcRenderer.invoke('terabox:net-request', params),
+  },
   captcha: {
     nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }): Promise<string> =>
       ipcRenderer.invoke('captcha:nopecha-solve', params),

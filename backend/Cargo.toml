@@ -49,6 +49,8 @@ cipher = "0.4"
 base64 = "0.22"
 # Utilitários para futures/streams assíncronos
 futures-util = "0.3"
+# URL encoding/decoding (para sekey/randsk do Terabox)
+urlencoding = "2"
 
 [dev-dependencies]
 # Para testes HTTP
