@@ -24,26 +24,18 @@
         </span>
       </div>
 
-      <div class="field-grid">
-        <label class="field">
-          <span>{{ t('accountEmail') }}</span>
-          <input v-model="email" type="email" class="field-input" placeholder="email@exemplo.com" />
-        </label>
-
-        <label class="field">
-          <span>{{ t('accountPassword') }}</span>
-          <input v-model="password" type="password" class="field-input" placeholder="••••••••" />
-        </label>
-      </div>
-
-      <p class="account-note">{{ t('accountStorageNote') }}</p>
-      <p v-if="feedback" class="account-feedback" :class="{ success: loggedIn, error: !loggedIn }">
+      <p class="account-note">
+        Conecte-se via browser integrado — não armazenamos sua senha.
+      </p>
+      <p v-if="feedback" class="account-feedback" :class="{ success: loggedIn, error: !loggedIn && !!feedback }">
         {{ feedback }}
       </p>
 
       <div class="actions">
-        <button class="primary-btn" @click="saveAccount">{{ t('accountVerify') }}</button>
-        <button class="ghost-btn" :disabled="!loggedIn" @click="disconnect">{{ t('accountDisconnect') }}</button>
+        <button v-if="!loggedIn" class="primary-btn" :disabled="loading" @click="saveAccount">
+          {{ loading ? 'Abrindo login...' : 'Conectar Terabox' }}
+        </button>
+        <button v-if="loggedIn" class="ghost-btn" @click="disconnect">{{ t('accountDisconnect') }}</button>
       </div>
     </section>
   </div>
@@ -55,42 +47,39 @@ import { useI18n } from '../i18n'
 
 const { t } = useI18n()
 
-const email = ref('')
-const password = ref('')
 const loggedIn = ref(false)
+const loading = ref(false)
 const feedback = ref('')
 
 onMounted(async () => {
-  const account = await window.api.auth.accountInfo('terabox').catch(() => null)
   const isLogged = await window.api.auth.isLoggedIn('terabox').catch(() => false)
   loggedIn.value = isLogged
-  if (account?.email) {
-    email.value = account.email
-  }
-  if (isLogged && account && 'verifiedAt' in account && account.verifiedAt) {
-    feedback.value = `Conta verificada em ${new Date(String(account.verifiedAt)).toLocaleString()}`
+  if (isLogged) {
+    const account = await window.api.auth.accountInfo('terabox').catch(() => null)
+    if (account && 'verifiedAt' in account && account.verifiedAt) {
+      feedback.value = `Conectado em ${new Date(String(account.verifiedAt)).toLocaleString()}`
+    }
   }
 })
 
 async function saveAccount(): Promise<void> {
   feedback.value = ''
+  loading.value = true
   try {
-    await window.api.auth.login('terabox', {
-      email: email.value.trim(),
-      password: password.value,
-    })
+    await window.api.auth.login('terabox', {})
     loggedIn.value = true
-    feedback.value = 'Conta verificada e sessão local salva.'
+    feedback.value = 'Conta conectada com sucesso!'
   } catch (error) {
     loggedIn.value = false
     feedback.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    loading.value = false
   }
 }
 
 async function disconnect(): Promise<void> {
   await window.api.auth.logout('terabox')
   loggedIn.value = false
-  password.value = ''
   feedback.value = ''
 }
 </script>

@@ -447,6 +447,66 @@ async function verifyTeraboxAccount(email: string, password: string): Promise<Te
   throw new Error(errmsg || `Falha ao verificar a conta do Terabox (code ${code})`)
 }
 
+/**
+ * Abre um BrowserWindow modal com o site de login do Terabox.
+ * Injeta CSS para mostrar apenas o formulário de login.
+ * Quando detectar os cookies de sessão, fecha a janela e retorna os cookies.
+ */
+function loginTeraboxWithBrowser(parentWin: BrowserWindow): Promise<string[]> {
+  const { session } = require('electron') as typeof import('electron')
+  return new Promise((resolve, reject) => {
+    const loginWin = new BrowserWindow({
+      parent: parentWin,
+      modal: true,
+      width: 480,
+      height: 580,
+      title: 'Entrar no Terabox',
+      autoHideMenuBar: true,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        partition: 'persist:terabox',
+      },
+    })
+
+    // Esconde tudo exceto o formulário de login
+    loginWin.webContents.on('dom-ready', () => {
+      loginWin.webContents.insertCSS(`
+        header, footer, nav, .nav, .sidebar, .banner, .ad-wrap,
+        [class*="header"]:not([class*="login"]),
+        [class*="footer"], [class*="navbar"], [class*="banner"],
+        [class*="promotion"], [class*="download-app"], [class*="top-bar"] {
+          display: none !important;
+        }
+        body { background: #14131f !important; }
+      `).catch(() => {})
+    })
+
+    // Poll de cookies a cada 800ms
+    const tbSession = session.fromPartition('persist:terabox')
+    const pollInterval = setInterval(async () => {
+      const cookies = await tbSession.cookies.get({ domain: '.terabox.com' })
+        .catch(() => tbSession.cookies.get({ domain: '.1024tera.com' }).catch(() => []))
+      const sessionCookies = cookies.filter(c =>
+        ['ndus', 'ndut', 'BDUSS', 'STOKEN', 'csrfToken'].includes(c.name)
+      )
+      if (sessionCookies.length >= 2) {
+        clearInterval(pollInterval)
+        const cookieHeader = sessionCookies.map(c => `${c.name}=${c.value}`).join('; ')
+        if (!loginWin.isDestroyed()) loginWin.close()
+        resolve([cookieHeader])
+      }
+    }, 800)
+
+    loginWin.on('closed', () => {
+      clearInterval(pollInterval)
+      reject(new Error('Login cancelado pelo usuário'))
+    })
+
+    loginWin.loadURL('https://www.terabox.com/login')
+  })
+}
+
 function getRustBinaryName(): string {
   return process.platform === 'win32' ? 'gdownloader-backend.exe' : 'gdownloader-backend'
 }
@@ -648,20 +708,21 @@ app.whenReady().then(async () => {
       verifiedAt: account.verifiedAt,
     }
   })
-  ipcMain.handle('auth:login', async (_e, moduleId: string, params: Record<string, string>) => {
-    const settings = readSettingsFromDisk()
+  ipcMain.handle('auth:login', async (_e, moduleId: string, _params: Record<string, string>) => {
     if (moduleId.toLowerCase() !== 'terabox') {
       throw new Error('Módulo sem suporte a conta')
     }
-    const email = (params.email ?? '').trim()
-    const password = params.password ?? ''
-    const verified = await verifyTeraboxAccount(email, password)
+
+    const parentWin = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const cookies = await loginTeraboxWithBrowser(parentWin)
+
+    const settings = readSettingsFromDisk()
     settings.accounts = settings.accounts ?? {}
     settings.accounts.terabox = {
-      email,
-      password,
-      cookies: verified.cookies,
-      verifiedAt: verified.verifiedAt,
+      email: '',
+      password: '',
+      cookies,
+      verifiedAt: new Date().toISOString(),
     }
     mkdirSync(dirname(settingsPath), { recursive: true })
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
