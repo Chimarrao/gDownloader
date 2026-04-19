@@ -94,16 +94,74 @@ impl FichierProvider {
     }
 
     fn extract_wait_seconds(html: &str) -> Option<u64> {
+        // JS countdown: var ct = 60;
         let marker = "var ct = ";
-        let start = html.find(marker)? + marker.len();
-        let rest = &html[start..];
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        digits.parse::<u64>().ok()
+        if let Some(start) = html.find(marker) {
+            let rest = &html[start + marker.len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(s) = digits.parse::<u64>() {
+                return Some(s);
+            }
+        }
+        // English text: "wait X minutes/hours"
+        let lower = html.to_lowercase();
+        if let Some(pos) = lower.find("wait ") {
+            let rest = &lower[pos + 5..];
+            let n: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = n.parse::<u64>() {
+                let after = rest[n.to_string().len()..].trim_start();
+                if after.starts_with("hour") { return Some(n * 3600); }
+                if after.starts_with("minute") { return Some(n * 60); }
+                if after.starts_with("second") { return Some(n); }
+            }
+        }
+        None
     }
 
     fn has_free_slot_error(html: &str) -> bool {
         html.contains("All free guest slots are currently in use")
             || html.contains("Sign in instantly to continue your download")
+    }
+
+    fn is_folder_page(url: &str, html: &str) -> bool {
+        url.contains("/dir/") || html.contains("liste des fichiers") || html.contains("file list")
+    }
+
+    /// Extrai links de arquivos de uma página de pasta do 1fichier.
+    fn extract_folder_children(html: &str) -> Vec<crate::models::FileChildInfo> {
+        let mut children = Vec::new();
+        let mut cursor = html;
+        while let Some(href_pos) = cursor.find("href=\"https://1fichier.com/?") {
+            let rest = &cursor[href_pos + 6..];
+            let end = match rest.find('"') {
+                Some(e) => e,
+                None => break,
+            };
+            let url = rest[..end].to_string();
+            // Extract the link text (filename)
+            let after_quote = &rest[end..];
+            if let Some(text_start) = after_quote.find('>') {
+                let after = &after_quote[text_start + 1..];
+                let name_end = after.find('<').unwrap_or(after.len());
+                let filename = after[..name_end].trim().to_string();
+                if !filename.is_empty() && filename.len() < 256 {
+                    children.push(crate::models::FileChildInfo {
+                        filename,
+                        size: 0,
+                        mime_type: None,
+                        is_folder: false,
+                        path: None,
+                        source_url: Some(url),
+                        bytes_downloaded: None,
+                        speed_bps: None,
+                        eta_secs: None,
+                        status: None,
+                    });
+                }
+            }
+            cursor = &rest[end + 1..];
+        }
+        children
     }
 
     fn extract_direct_link(html: &str) -> Option<String> {
@@ -158,6 +216,28 @@ impl Provider for FichierProvider {
                 .ok_or_else(|| anyhow!("URL do 1fichier inválida: {url}"))?;
             let client = <Self as ProviderDefaults>::http_client()?;
             let html = client.get(&page_url).send().await?.error_for_status()?.text().await?;
+
+            // Rate limit
+            if let Some(secs) = Self::extract_wait_seconds(&html) {
+                if secs > 90 {
+                    return Err(anyhow!("RATE_LIMIT:{}:1Fichier: aguarde {} minutos", secs, secs / 60));
+                }
+            }
+
+            // Folder detection
+            if Self::is_folder_page(&page_url, &html) {
+                let children = Self::extract_folder_children(&html);
+                let folder_name = Self::extract_between(&html, "<title>", "</title>")
+                    .unwrap_or_else(|| "pasta_1fichier".to_string());
+                return Ok(FileInfo {
+                    filename: <Self as ProviderDefaults>::safe_filename(&folder_name, "pasta_1fichier"),
+                    size: 0,
+                    mime_type: None,
+                    is_folder: true,
+                    children: if children.is_empty() { None } else { Some(children) },
+                });
+            }
+
             let fallback = "arquivo_1fichier";
             let (filename, size) = Self::extract_filename_and_size(&html, fallback);
 
@@ -192,8 +272,10 @@ impl Provider for FichierProvider {
             }
 
             let wait_seconds = Self::extract_wait_seconds(&landing).unwrap_or(0);
-            if wait_seconds > 0 {
-                tokio::time::sleep(Duration::from_secs(wait_seconds.min(90))).await;
+            if wait_seconds > 90 {
+                return Err(anyhow!("RATE_LIMIT:{}:1Fichier: aguarde {} minutos", wait_seconds, wait_seconds / 60));
+            } else if wait_seconds > 0 {
+                tokio::time::sleep(Duration::from_secs(wait_seconds)).await;
             }
 
             let response = client

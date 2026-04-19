@@ -898,6 +898,18 @@ fn current_unix_secs() -> u64 {
 }
 
 fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {
+    // Format: RATE_LIMIT:{secs}:{human_message}
+    if message.starts_with("RATE_LIMIT:") {
+        let parts: Vec<&str> = message.splitn(3, ':').collect();
+        let secs = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(3600);
+        let human = parts.get(2).copied().unwrap_or(message);
+        return RetryPolicy {
+            retry_delay_secs: secs,
+            wait_message: format!("{}. Retry automático agendado.", human),
+            final_message: human.to_string(),
+        };
+    }
+
     let lower = message.to_lowercase();
     let fallback_delay = (attempt + 1) as u64;
     let pretty = prettify_download_error(message);

@@ -13,6 +13,7 @@ use tokio::time::{sleep, Duration, Instant};
 // Declara os sub-módulos de cada provedor de download
 // Em PHP seria algo como: require_once 'providers/MegaProvider.php';
 pub mod gdrive;
+#[path = "1fichier.rs"]
 pub mod fichier;
 pub mod drime;
 pub mod mediafire;
