@@ -6,9 +6,18 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, try_parallel_download, ProgressUpdate, Provider};
+use super::{apply_speed_limit, try_parallel_download, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct MediaFireProvider;
+
+#[derive(Debug, Clone)]
+struct MediaFireFolderFileEntry {
+    filename: String,
+    path: String,
+    size: u64,
+    mime_type: Option<String>,
+    source_url: String,
+}
 
 impl MediaFireProvider {
     pub fn matches(url: &str) -> bool {
@@ -36,6 +45,15 @@ impl MediaFireProvider {
         }
 
         Some(folder_key.to_string())
+    }
+
+    pub fn extract_selected_subfolder_key(url: &str) -> Option<String> {
+        let fragment = url.split('#').nth(1)?.trim();
+        if fragment.is_empty() {
+            return None;
+        }
+
+        Some(fragment.to_string())
     }
 
     pub fn extract_filename_from_url(url: &str) -> Option<String> {
@@ -79,25 +97,6 @@ impl MediaFireProvider {
         }
 
         None
-    }
-
-    fn safe_filename(name: &str, fallback: &str) -> String {
-        let trimmed = name.trim();
-        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
-        candidate
-            .chars()
-            .map(|ch| match ch {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                _ => ch,
-            })
-            .collect()
-    }
-
-    fn http_client() -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()?)
     }
 
     async fn resolve_direct_download_url(client: &reqwest::Client, page_url: &str) -> Result<String> {
@@ -156,6 +155,82 @@ impl MediaFireProvider {
         Ok(files)
     }
 
+    async fn fetch_folder_subfolders(client: &reqwest::Client, folder_key: &str) -> Result<Vec<Value>> {
+        let mut chunk = 1usize;
+        let mut folders = Vec::new();
+
+        loop {
+            let chunk_str = chunk.to_string();
+            let json: Value = client
+                .get("https://www.mediafire.com/api/1.4/folder/get_content.php")
+                .query(&[
+                    ("folder_key", folder_key),
+                    ("content_type", "folders"),
+                    ("response_format", "json"),
+                    ("chunk", chunk_str.as_str()),
+                ])
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+
+            let folder_content = &json["response"]["folder_content"];
+
+            if let Some(page_folders) = folder_content["folders"].as_array() {
+                folders.extend(page_folders.iter().cloned());
+            }
+
+            if folder_content["more_chunks"].as_str().unwrap_or("no") != "yes" {
+                break;
+            }
+
+            chunk += 1;
+        }
+
+        Ok(folders)
+    }
+
+    async fn resolve_effective_folder_key(client: &reqwest::Client, url: &str) -> Result<String> {
+        let root_key = Self::extract_folder_key(url)
+            .ok_or_else(|| anyhow!("URL de pasta do MediaFire inválida: {url}"))?;
+
+        let Some(selected_key) = Self::extract_selected_subfolder_key(url) else {
+            return Ok(root_key);
+        };
+
+        let folders_json: Value = client
+            .get("https://www.mediafire.com/api/1.4/folder/get_content.php")
+            .query(&[
+                ("folder_key", root_key.as_str()),
+                ("content_type", "folders"),
+                ("response_format", "json"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let matches_child = folders_json["response"]["folder_content"]["folders"]
+            .as_array()
+            .map(|folders| {
+                folders.iter().any(|folder| {
+                    folder["folderkey"]
+                        .as_str()
+                        .map(|folder_key| folder_key == selected_key)
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+
+        if matches_child {
+            Ok(selected_key)
+        } else {
+            Ok(root_key)
+        }
+    }
+
     fn mediafire_file_size(file: &Value) -> u64 {
         file["size"]
             .as_str()
@@ -163,48 +238,63 @@ impl MediaFireProvider {
             .unwrap_or(0)
     }
 
-    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
-        resp.headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split('/').last())
-            .and_then(|value| value.parse::<u64>().ok())
-            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
-            .unwrap_or(0)
-    }
-
-    async fn send_with_resume_fallback(
+    async fn collect_folder_entries_recursive(
         client: &reqwest::Client,
-        url: &str,
-        dest_path: &str,
-        existing_bytes: u64,
-    ) -> Result<(reqwest::Response, bool)> {
-        if existing_bytes == 0 {
-            return Ok((client.get(url).send().await?.error_for_status()?, false));
+        folder_key: &str,
+        prefix: String,
+    ) -> Result<Vec<MediaFireFolderFileEntry>> {
+        let mut out = Vec::new();
+        let mut pending = vec![(folder_key.to_string(), prefix)];
+
+        while let Some((current_folder_key, current_prefix)) = pending.pop() {
+            let files = Self::fetch_folder_files(client, &current_folder_key).await?;
+            out.extend(files.iter().map(|file| {
+                let filename = <Self as ProviderDefaults>::safe_filename(
+                    file["filename"].as_str().unwrap_or("arquivo_mediafire"),
+                    "arquivo_mediafire",
+                );
+                let path = if current_prefix.is_empty() {
+                    filename.clone()
+                } else {
+                    format!("{}/{}", current_prefix, filename)
+                };
+
+                MediaFireFolderFileEntry {
+                    filename,
+                    path,
+                    size: Self::mediafire_file_size(file),
+                    mime_type: file["mimetype"].as_str().map(String::from),
+                    source_url: file["links"]["normal_download"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                }
+            }));
+
+            let folders = Self::fetch_folder_subfolders(client, &current_folder_key).await?;
+            for folder in folders {
+                let child_key = folder["folderkey"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Subpasta do MediaFire sem folderkey"))?;
+                let folder_name = <Self as ProviderDefaults>::safe_filename(
+                    folder["name"].as_str().unwrap_or("pasta_mediafire"),
+                    "pasta_mediafire",
+                );
+                let next_prefix = if current_prefix.is_empty() {
+                    folder_name
+                } else {
+                    format!("{}/{}", current_prefix, folder_name)
+                };
+                pending.push((child_key.to_string(), next_prefix));
+            }
         }
 
-        let ranged = client
-            .get(url)
-            .header("Range", format!("bytes={existing_bytes}-"))
-            .send()
-            .await?;
-
-        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            return Ok((ranged, true));
-        }
-
-        if matches!(
-            ranged.status(),
-            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-        ) {
-            let _ = tokio::fs::remove_file(dest_path).await;
-            let fresh = client.get(url).send().await?.error_for_status()?;
-            return Ok((fresh, false));
-        }
-
-        Ok((ranged.error_for_status()?, false))
+        Ok(out)
     }
+
 }
+
+impl ProviderDefaults for MediaFireProvider {}
 
 impl Provider for MediaFireProvider {
     fn name(&self) -> &str { "MediaFire" }
@@ -213,13 +303,12 @@ impl Provider for MediaFireProvider {
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>
     {
         Box::pin(async move {
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
 
             if Self::is_folder_url(url) {
-                let folder_key = Self::extract_folder_key(url)
-                    .ok_or_else(|| anyhow!("URL de pasta do MediaFire inválida: {url}"))?;
+                let folder_key = Self::resolve_effective_folder_key(&client, url).await?;
                 let folder_info = Self::fetch_folder_info(&client, &folder_key).await?;
-                let files = Self::fetch_folder_files(&client, &folder_key).await?;
+                let files = Self::collect_folder_entries_recursive(&client, &folder_key, String::new()).await?;
 
                 let folder_name = folder_info["response"]["folder_info"]["name"]
                     .as_str()
@@ -228,14 +317,12 @@ impl Provider for MediaFireProvider {
                 let children = files
                     .iter()
                     .map(|file| FileChildInfo {
-                        filename: file["filename"]
-                            .as_str()
-                            .unwrap_or("arquivo_mediafire")
-                            .to_string(),
-                        size: Self::mediafire_file_size(file),
-                        mime_type: file["mimetype"].as_str().map(String::from),
+                        filename: file.filename.clone(),
+                        size: file.size,
+                        mime_type: file.mime_type.clone(),
                         is_folder: false,
-                        source_url: file["links"]["normal_download"].as_str().map(String::from),
+                        path: Some(file.path.clone()),
+                        source_url: Some(file.source_url.clone()),
                         bytes_downloaded: None,
                         speed_bps: None,
                         eta_secs: None,
@@ -246,7 +333,7 @@ impl Provider for MediaFireProvider {
                 let total_size = children.iter().map(|child| child.size).sum();
 
                 return Ok(FileInfo {
-                    filename: Self::safe_filename(folder_name, "pasta_mediafire"),
+                    filename: <Self as ProviderDefaults>::safe_filename(folder_name, "pasta_mediafire"),
                     size: total_size,
                     mime_type: None,
                     is_folder: true,
@@ -305,16 +392,23 @@ impl Provider for MediaFireProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
         Box::pin(async move {
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
 
             if Self::is_folder_url(url) {
-                let folder_key = Self::extract_folder_key(url)
-                    .ok_or_else(|| anyhow!("URL de pasta do MediaFire inválida: {url}"))?;
-                let files = Self::fetch_folder_files(&client, &folder_key).await?;
+                let folder_key = Self::resolve_effective_folder_key(&client, url).await?;
+                let mut files = Self::collect_folder_entries_recursive(&client, &folder_key, String::new()).await?;
+
+                if let Some(selected) = selected_children {
+                    let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
+                    files.retain(|file| {
+                        selected_set.contains(&file.source_url)
+                    });
+                }
 
                 if files.is_empty() {
                     return Err(anyhow!("Pasta do MediaFire vazia ou sem arquivos acessíveis"));
@@ -322,24 +416,21 @@ impl Provider for MediaFireProvider {
 
                 tokio::fs::create_dir_all(dest_path).await?;
 
-                let total_size: u64 = files.iter().map(Self::mediafire_file_size).sum();
+                let total_size: u64 = files.iter().map(|file| file.size).sum();
                 let started_at = tokio::time::Instant::now();
                 let mut downloaded_total = 0u64;
                 let mut session_downloaded = 0u64;
 
-                for (index, file) in files.iter().enumerate() {
-                    let fallback_name = format!("arquivo_mediafire_{index}");
-                    let filename = Self::safe_filename(
-                        file["filename"].as_str().unwrap_or(&fallback_name),
-                        &fallback_name,
-                    );
-                    let page_url = file["links"]["normal_download"]
-                        .as_str()
-                        .ok_or_else(|| anyhow!("Item da pasta do MediaFire sem link de download"))?;
+                for file in &files {
+                    let page_url = file.source_url.as_str();
 
                     let direct_url = Self::resolve_direct_download_url(&client, page_url).await?;
-                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), filename);
-                    let file_total = Self::mediafire_file_size(file);
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), file.path);
+                    if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {
+                        tokio::fs::create_dir_all(parent_dir).await?;
+                    }
+                    let filename = file.filename.clone();
+                    let file_total = file.size;
                     let existing_bytes = tokio::fs::metadata(&output_path)
                         .await
                         .ok()
@@ -397,6 +488,7 @@ impl Provider for MediaFireProvider {
                                 .send(ProgressUpdate {
                                     bytes_downloaded: downloaded_total,
                                     total_bytes: total_size,
+                                    child_path: None,
                                     child_filename: Some(filename.clone()),
                                     child_bytes_downloaded: Some(child_downloaded),
                                     child_total_bytes: Some(file_total),
@@ -438,9 +530,9 @@ impl Provider for MediaFireProvider {
                 }
 
                 let (resp, resumed) =
-                    Self::send_with_resume_fallback(&client, &direct_url, dest_path, existing_bytes).await?;
+                    <Self as ProviderDefaults>::send_with_resume_fallback(&client, &direct_url, dest_path, existing_bytes).await?;
             let total = if resumed {
-                Self::response_total_bytes(&resp, existing_bytes)
+                <Self as ProviderDefaults>::response_total_bytes(&resp, existing_bytes)
             } else {
                 resp.content_length().unwrap_or(0)
             };
@@ -467,6 +559,7 @@ impl Provider for MediaFireProvider {
                         .send(ProgressUpdate {
                             bytes_downloaded: downloaded,
                             total_bytes: total,
+                            child_path: None,
                             child_filename: None,
                             child_bytes_downloaded: None,
                             child_total_bytes: None,

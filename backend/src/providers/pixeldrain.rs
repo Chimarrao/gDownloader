@@ -5,7 +5,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate};
+use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct PixelDrainProvider;
 
@@ -58,18 +58,6 @@ impl PixelDrainProvider {
             .unwrap_or(0)
     }
 
-    fn safe_filename(name: &str, fallback: &str) -> String {
-        let trimmed = name.trim();
-        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
-        candidate
-            .chars()
-            .map(|ch| match ch {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                _ => ch,
-            })
-            .collect()
-    }
-
     async fn fetch_file_info(client: &reqwest::Client, id: &str) -> Result<Value> {
         let info_url = format!("https://pixeldrain.com/api/file/{id}/info");
         Ok(client.get(&info_url).send().await?.error_for_status()?.json().await?)
@@ -80,48 +68,9 @@ impl PixelDrainProvider {
         Ok(client.get(&info_url).send().await?.error_for_status()?.json().await?)
     }
 
-    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
-        resp.headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split('/').last())
-            .and_then(|value| value.parse::<u64>().ok())
-            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
-            .unwrap_or(0)
-    }
-
-    async fn send_with_resume_fallback(
-        client: &reqwest::Client,
-        url: &str,
-        dest_path: &str,
-        existing_bytes: u64,
-    ) -> Result<(reqwest::Response, bool)> {
-        if existing_bytes == 0 {
-            return Ok((client.get(url).send().await?.error_for_status()?, false));
-        }
-
-        let ranged = client
-            .get(url)
-            .header("Range", format!("bytes={existing_bytes}-"))
-            .send()
-            .await?;
-
-        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            return Ok((ranged, true));
-        }
-
-        if matches!(
-            ranged.status(),
-            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-        ) {
-            let _ = tokio::fs::remove_file(dest_path).await;
-            let fresh = client.get(url).send().await?.error_for_status()?;
-            return Ok((fresh, false));
-        }
-
-        Ok((ranged.error_for_status()?, false))
-    }
 }
+
+impl ProviderDefaults for PixelDrainProvider {}
 
 impl Provider for PixelDrainProvider {
     fn name(&self) -> &str { "PixelDrain" }
@@ -160,6 +109,7 @@ impl Provider for PixelDrainProvider {
                             size: file["size"].as_u64().unwrap_or(0),
                             mime_type: file["mime_type"].as_str().map(String::from),
                             is_folder: false,
+                            path: None,
                             source_url: file["id"]
                                 .as_str()
                                 .map(|id| format!("https://pixeldrain.com/u/{id}")),
@@ -173,7 +123,7 @@ impl Provider for PixelDrainProvider {
                     let total_size = children.iter().map(|child| child.size).sum();
 
                     Ok(FileInfo {
-                        filename: Self::safe_filename(
+                        filename: <Self as ProviderDefaults>::safe_filename(
                             json["title"].as_str().unwrap_or("lista_pixeldrain"),
                             "lista_pixeldrain",
                         ),
@@ -193,6 +143,7 @@ impl Provider for PixelDrainProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
@@ -229,9 +180,9 @@ impl Provider for PixelDrainProvider {
                     }
 
                     let (resp, resumed) =
-                        Self::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
+                        <Self as ProviderDefaults>::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
                     let total = if resumed {
-                        Self::response_total_bytes(&resp, existing_bytes)
+                        <Self as ProviderDefaults>::response_total_bytes(&resp, existing_bytes)
                     } else {
                         resp.content_length().unwrap_or(0)
                     };
@@ -254,6 +205,7 @@ impl Provider for PixelDrainProvider {
                         let _ = progress_tx.send(ProgressUpdate {
                             bytes_downloaded: downloaded,
                             total_bytes: total,
+                            child_path: None,
                             child_filename: None,
                             child_bytes_downloaded: None,
                             child_total_bytes: None,
@@ -268,10 +220,20 @@ impl Provider for PixelDrainProvider {
                 }
                 PixelDrainTarget::List { id, selected_index } => {
                     let json = Self::fetch_list_info(&client, &id).await?;
-                    let files = json["files"]
+                    let mut files = json["files"]
                         .as_array()
                         .cloned()
                         .ok_or_else(|| anyhow!("Lista do PixelDrain sem arquivos"))?;
+
+                    if let Some(selected) = selected_children {
+                        let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
+                        files.retain(|file| {
+                            file["id"]
+                                .as_str()
+                                .map(|file_id| selected_set.contains(&format!("https://pixeldrain.com/u/{file_id}")))
+                                .unwrap_or(false)
+                        });
+                    }
 
                     if files.is_empty() {
                         return Err(anyhow!("Lista do PixelDrain vazia"));
@@ -353,6 +315,7 @@ impl Provider for PixelDrainProvider {
                             let _ = progress_tx.send(ProgressUpdate {
                                 bytes_downloaded: downloaded_total,
                                 total_bytes: total_size,
+                                child_path: None,
                                 child_filename: Some(filename.clone()),
                                 child_bytes_downloaded: Some(child_downloaded),
                                 child_total_bytes: Some(file_total),

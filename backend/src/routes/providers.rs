@@ -67,6 +67,10 @@ pub async fn list_providers() -> Json<serde_json::Value> {
         { "id": "mediafire",  "name": "MediaFire",    "icon": "mediafire",  "color": "#0062C7" },
         { "id": "gdrive",     "name": "Google Drive", "icon": "gdrive",     "color": "#4285F4" },
         { "id": "pixeldrain", "name": "PixelDrain",   "icon": "pixeldrain", "color": "#ff6600" },
+        { "id": "fichier",    "name": "1Fichier",     "icon": "fichier",    "color": "#e67e22" },
+        { "id": "drime",      "name": "Drime",        "icon": "drime",      "color": "#2ec4b6" },
+        { "id": "terabox",    "name": "Terabox",      "icon": "terabox",    "color": "#2a6df5" },
+        { "id": "onedrive",   "name": "OneDrive",     "icon": "onedrive",   "color": "#0a66d9" },
     ]))
 }
 
@@ -76,6 +80,10 @@ fn provider_meta(name: &str) -> (&'static str, &'static str) {
         "MediaFire"    => ("mediafire",  "#0062C7"),
         "Google Drive" => ("gdrive",     "#4285F4"),
         "PixelDrain"   => ("pixeldrain", "#ff6600"),
+        "1Fichier"     => ("fichier",    "#e67e22"),
+        "Drime"        => ("drime",      "#2ec4b6"),
+        "Terabox"      => ("terabox",    "#2a6df5"),
+        "OneDrive"     => ("onedrive",   "#0a66d9"),
         _              => ("unknown",    "#64748b"),
     }
 }

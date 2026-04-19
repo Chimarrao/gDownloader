@@ -41,7 +41,7 @@ interface RendererApi {
     isLoggedIn: (moduleId: string) => Promise<boolean>
     login: (moduleId: string, params: Record<string, string>) => Promise<void>
     logout: (moduleId: string) => Promise<void>
-    accountInfo: (moduleId: string) => Promise<unknown>
+    accountInfo: (moduleId: string) => Promise<{ email: string } | null>
   }
   downloads: {
     add: (
@@ -49,7 +49,8 @@ interface RendererApi {
       moduleId: string,
       title: string,
       size: number,
-      destDir: string
+      destDir: string,
+      selectedChildren?: string[]
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
     pause: (id: string) => Promise<void>

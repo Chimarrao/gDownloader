@@ -42,6 +42,8 @@ pub struct Download {
     pub max_retries: u32,
     pub speed_limit_kib: u64,
     pub parallel_parts: u32,
+    pub selected_children: Option<Vec<String>>,
+    pub retry_at: Option<u64>,
     pub error: Option<String>,   // Option = pode ser Some("mensagem") ou None — como string|null no PHP
     pub created_at: u64,         // Timestamp Unix em segundos (como time() no PHP)
 }
@@ -55,6 +57,7 @@ pub struct FileChildInfo {
     pub size: u64,
     pub mime_type: Option<String>,
     pub is_folder: bool,
+    pub path: Option<String>,
     pub source_url: Option<String>,
     pub bytes_downloaded: Option<u64>,
     pub speed_bps: Option<u64>,
@@ -88,6 +91,7 @@ pub enum WsEvent {
         speed: u64,
         eta: u64,
         status: DownloadStatus,
+        child_path: Option<String>,
         child_filename: Option<String>,
         child_bytes: Option<u64>,
         child_total: Option<u64>,
@@ -125,6 +129,7 @@ pub struct AddDownloadRequest {
     pub max_retries: Option<u32>,
     pub speed_limit_kib: Option<u64>,
     pub parallel_parts: Option<u32>,
+    pub selected_children: Option<Vec<String>>,
 }
 
 // --- Resposta padrão de erro da API ---

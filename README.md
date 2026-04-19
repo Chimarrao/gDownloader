@@ -11,25 +11,9 @@
 <!-- keywords: download manager, electron app, rust backend, mega downloader, mediafire downloader, google drive downloader, pixeldrain, gerenciador de downloads, cliente de downloads, desktop app, fila de downloads, axum, vue3, tokio -->
 
 > Gerenciador de downloads open-source com interface desktop (Electron/Vue 3) e backend em Rust/Axum.
-> Baixe arquivos do Mega, MediaFire, Google Drive e PixelDrain com uma interface limpa, suporte a filas, retries automáticos e controle de velocidade.
+> Baixe arquivos do Mega, MediaFire, Google Drive, PixelDrain, 1Fichier, Drime, Terabox e links públicos de OneDrive/SharePoint com uma interface limpa, suporte a filas, retries automáticos e controle de velocidade.
 
----
-
-## ✨ Funcionalidades
-
-- Download de arquivos e pastas para todos os provedores suportados
-- Fila de downloads com limite configurável de simultâneos
-- Retry automático configurável + retry manual por item
-- Pause e resume por item e em lote
-- Controle de velocidade global (speed limit em KB/s)
-- Notificação nativa ao concluir download
-- Link Grabber — inspeciona e enfileira múltiplos links com preview de pastas
-- Extração de arquivos (ZIP, RAR, 7z, TAR) integrada
-- Download em paralelo com múltiplas partes
-- Suporte a tema dark/light com paleta roxa personalizável
-- Histórico de downloads persistido na sessão
-- Gráfico de velocidade global em tempo real (sparkline)
-- Ícones de arquivo por categoria com fallback por extensão e MIME
+> As preferências e contas locais de teste ficam em `settings.json` na raiz do projeto, arquivo ignorado pelo Git.
 
 ---
 
@@ -38,17 +22,42 @@
 | Ícone | Provedor | Tipos suportados | Status | Observações |
 |-------|----------|-----------------|--------|-------------|
 | <img src="src/renderer/src/assets/provider-icons/mega.svg" alt="Mega" width="18" /> | **Mega** | Arquivo único, pasta pública | 🟢 Estável | Download sequencial de pastas; suporte a links `/file/` e formato legado `#!` |
-| <img src="src/renderer/src/assets/provider-icons/mediafire.svg" alt="MediaFire" width="18" /> | **MediaFire** | Arquivo único, pasta pública | 🟢 Estável | Usa API pública `folder/get_content` para listagem de pastas |
+| <img src="src/renderer/src/assets/provider-icons/mediafire.svg" alt="MediaFire" width="18" /> | **MediaFire** | Arquivo único, pasta pública | 🟢 Estável | Usa API pública `folder/get_content`; suporta subpasta via fragmento `#folderkey` |
 | <img src="src/renderer/src/assets/provider-icons/googledrive.svg" alt="Google Drive" width="18" /> | **Google Drive** | Arquivo único público | 🟡 Parcial | Requer arquivo compartilhado publicamente; falta suporte a arquivos grandes com confirmação |
 | 🟠 | **PixelDrain** | Arquivo único, lista | 🟢 Estável | Suporte a fragmento `#item=N` para listas; sem fragmento usa o primeiro arquivo |
-| <img src="src/renderer/src/assets/provider-icons/onedrive.svg" alt="OneDrive" width="18" /> | OneDrive | — | ⚪ Planejado | Alto valor como mirror em sites de download |
-| <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | Terabox | — | ⚪ Planejado | Requer tratamento de tokens e cookies |
+| 1️⃣ | **1Fichier** | Arquivo único público | 🟡 Parcial | Metadata funciona; download gratuito depende de cooldown e disponibilidade de slot guest no host |
+| <img src="src/renderer/src/assets/provider-icons/onedrive.svg" alt="OneDrive" width="18" /> | **OneDrive / SharePoint** | Arquivo único público | 🟡 Parcial | O provider já reconhece o host; links que caem em `login.microsoftonline.com` exigem autenticação Microsoft e retornam erro claro |
+| <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | **Terabox** | Arquivo único, pasta pública | 🟡 Parcial | Listagem pública funciona; o download bruto pode exigir `verify_v2` do próprio host em alguns links |
+| 💧 | **Drime** | Arquivo único, pasta pública | 🟡 Parcial | Share público com download resolvido via `shareable_link`; falta rodada maior de smoke com mais amostras |
 | ☁️ | GoFile | — | ⚪ Planejado | API razoável, mas com mudanças frequentes |
-| 📦 | 1Fichier | — | ⚪ Planejado | Cooldown/captcha forte |
 
 **Legenda:** 🟢 Estável · 🟡 Parcial · ⚪ Planejado
 
 Para mais detalhes sobre provedores futuros e dificuldades por hoster, veja [docs/provedores-futuros-dificuldades.md](docs/provedores-futuros-dificuldades.md).
+
+---
+
+## 🧭 Provedores planejados
+
+### Mapeados primeiro
+
+Drime, GoFile, Sendnow, Terabox, 1Fichier, BRUpload.
+
+### Hosters, mirrors e serviços comuns em sites de download
+
+FreeDL, DailyUploads, Uploady, UsersDrive, MixDrop, HexUpload, Clicknupload, UploadCloud, Racaty, KatFile, Rapidgator, NitroFlare, Turbobit, Keep2Share, FileJoker, DDownload, UploadGig, FastClick, Send.cm, Fikper, FileFactory, FileFox, Uploadboy, Up-4ever, MegaUp, BayFiles, AnonFiles-like mirrors, Uloz.to, FileRio, Drop.download, Upload-4ever, ModsFire, GameBanana downloads, Nexus Mods CDN/public links, CurseForge media, MediaFire mirror clones, File-upload.com, UploadEE, MirrorAce, MultiUp, Paste-like download pages, KrakenFiles, Qiwi.gg / Qiwi links, Lumpics / image host downloads, WorkUpload, EasyUpload, UploadNow.io, Uploadrar, DLFree.fr, Desiupload, Alfafile, HitFile, TakeFile, MexaShare, K2S-like mirrors, CosmoBox, FileSpace, Downace, Rosefile, Douploads, Uploadraja, MirrorUpload, MirrorCreator, DepositFiles, Uploaded / Ul.to-like mirrors, Zippyshare-like clones, DailyMotion attachments / mirrors, StreamTape, StreamWish, FileMoon, VidGuard, Voe.sx / Voe-like, doodstream, Uploadrar clones, DLUpload.
+
+### Android, software, mods, datasets e arquivos públicos
+
+AndroidFileHost, SourceForge mirror pages, Fosshub, APKMirror downloads, APKPure files, APKCombo downloads, Pling / OpenDesktop files, ModDB files, IndieDB files, Archive.org direct item files.
+
+### Hosts simples, temporários e anônimos
+
+Catbox, Litterbox, Pomf-like hosts, Pomf2 / uguu-like hosts, Uguu.se, file.io, tmpfiles.org, Temp.sh, AnonTransfer, Transfer.sh clones, Oshi.at, fileditch, pixeldrain-like mirrors.
+
+### Clouds e wrappers que aparecem como mirror secundário
+
+OneDrive, Proton Drive, Dropbox, pCloud, Box, Google Drive, MediaFire, Mega, PixelDrain, Nextcloud/public shares, onedrive short-link wrappers.
 
 ---
 
@@ -117,25 +126,9 @@ Acessíveis pelo painel de configurações dentro do app:
 - **Downloads simultâneos** — limite de quantos downloads rodam em paralelo
 - **Limite de velocidade** — throttle global em KB/s (0 = sem limite)
 - **Retries automáticos** — número de tentativas em caso de falha
-- **Extração automática** — extrair arquivos comprimidos ao concluir
 - **Notificações nativas** — alertar ao concluir ou falhar um download
-- **Tema** — dark / light com paleta de cores personalizável
-
----
-
-## 🗺 Roadmap
-
-Consulte [docs/roadmap-pos-itens-atuais.md](docs/roadmap-pos-itens-atuais.md) para o planejamento detalhado. Destaques:
-
-- [ ] Suporte a OneDrive (links públicos e mirrors)
-- [ ] Suporte a Terabox
-- [ ] Suporte a GoFile
-- [ ] Suporte a 1Fichier
-- [ ] Suporte a Proton Drive
-- [ ] Suporte a FreeDL
-- [ ] Contas premium (aumento de velocidade e sem cooldown)
-- [ ] Bypass de encurtadores de link
-- [ ] Agendamento de downloads
+ - **Tema** — dark / light
+ - **Contas** — armazenamento local em `settings.json`; `Terabox` está em estudo de sessão/login
 
 ---
 
@@ -155,7 +148,18 @@ cp .env.test.example .env.test.local
 cargo test -- --include-ignored
 ```
 
-> Os smoke tests de arquivo baixam apenas um pequeno `Range` do arquivo para validar o fluxo real de resolução sem consumir banda desnecessária.
+Smoke tests reais cobertos hoje:
+
+- leitura de metadados de arquivo/pasta via `.env.test.local`
+- início de download e aborto controlado após o primeiro progresso
+
+Links reais já preparados para esse fluxo:
+
+- `TEST_MEDIAFIRE_FILE_URL`
+- `TEST_MEDIAFIRE_FOLDER_URL`
+- `TEST_MEGA_FILE_URL`
+- `TEST_MEGA_FOLDER_URL`
+- `TEST_PIXELDRAIN_URL`
 
 ### Frontend (TypeScript)
 
@@ -168,28 +172,3 @@ npm run test
 ```
 
 > Links reais de teste ficam em `backend/.env.test.local`, ignorado pelo Git. Use `backend/.env.test.example` como modelo.
-
----
-
-## 🤝 Contribuindo
-
-Contribuições são bem-vindas! Para começar:
-
-1. Faça um fork do repositório
-2. Crie uma branch para sua feature: `git checkout -b feat/minha-feature`
-3. Implemente e escreva testes quando aplicável
-4. Abra um Pull Request descrevendo o que foi feito
-
-Para adicionar um novo provedor, veja como os providers existentes estão implementados em `backend/src/providers/` e siga o mesmo padrão de trait.
-
-Antes de enviar um PR com links reais nos testes, certifique-se de que eles estão em `.env.test.local` (ignorado pelo Git) e não commitados.
-
----
-
-## 📄 Licença
-
-Este projeto ainda não possui um arquivo de licença formal. Por enquanto, o código é disponibilizado publicamente para fins de estudo e contribuição. Uma licença open-source será adicionada em breve.
-
----
-
-<sub>gDownloader — gerenciador de downloads desktop, mega downloader, mediafire downloader, google drive downloader, pixeldrain client, electron rust app</sub>

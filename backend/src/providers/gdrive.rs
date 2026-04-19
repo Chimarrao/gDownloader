@@ -4,7 +4,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate};
+use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct GDriveProvider;
 
@@ -46,57 +46,9 @@ impl GDriveProvider {
         format!("https://drive.google.com/uc?export=download&id={id}&confirm=t")
     }
 
-    // Cria um cliente HTTP com User-Agent configurado
-    // O Google Drive requer um User-Agent válido, caso contrário retorna 403
-    fn http_client() -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .redirect(reqwest::redirect::Policy::limited(10)) // Segue até 10 redirects
-            .build()?)
-    }
-
-    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
-        resp.headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split('/').last())
-            .and_then(|value| value.parse::<u64>().ok())
-            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
-            .unwrap_or(0)
-    }
-
-    async fn send_with_resume_fallback(
-        client: &reqwest::Client,
-        url: &str,
-        dest_path: &str,
-        existing_bytes: u64,
-    ) -> Result<(reqwest::Response, bool)> {
-        if existing_bytes == 0 {
-            return Ok((client.get(url).send().await?.error_for_status()?, false));
-        }
-
-        let ranged = client
-            .get(url)
-            .header("Range", format!("bytes={existing_bytes}-"))
-            .send()
-            .await?;
-
-        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            return Ok((ranged, true));
-        }
-
-        if matches!(
-            ranged.status(),
-            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-        ) {
-            let _ = tokio::fs::remove_file(dest_path).await;
-            let fresh = client.get(url).send().await?.error_for_status()?;
-            return Ok((fresh, false));
-        }
-
-        Ok((ranged.error_for_status()?, false))
-    }
 }
+
+impl ProviderDefaults for GDriveProvider {}
 
 impl Provider for GDriveProvider {
     fn name(&self) -> &str { "Google Drive" }
@@ -108,7 +60,7 @@ impl Provider for GDriveProvider {
             let id = Self::extract_id(url)
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
             let download_url = Self::download_url(&id);
 
             // HEAD request = só os headers, sem baixar o body
@@ -155,6 +107,7 @@ impl Provider for GDriveProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         parallel_parts: usize,
+        _selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
@@ -162,7 +115,7 @@ impl Provider for GDriveProvider {
             let id = Self::extract_id(url)
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
             let download_url = Self::download_url(&id);
 
             let existing_bytes = tokio::fs::metadata(dest_path)
@@ -188,9 +141,9 @@ impl Provider for GDriveProvider {
             }
 
             let (resp, resumed) =
-                Self::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
+                <Self as ProviderDefaults>::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
             let total = if resumed {
-                Self::response_total_bytes(&resp, existing_bytes)
+                <Self as ProviderDefaults>::response_total_bytes(&resp, existing_bytes)
             } else {
                 resp.content_length().unwrap_or(0)
             };
@@ -214,6 +167,7 @@ impl Provider for GDriveProvider {
                     .send(ProgressUpdate {
                         bytes_downloaded: downloaded,
                         total_bytes: total,
+                        child_path: None,
                         child_filename: None,
                         child_bytes_downloaded: None,
                         child_total_bytes: None,

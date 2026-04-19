@@ -25,6 +25,7 @@ export interface DownloadChild {
   size: number
   mimeType?: string
   isFolder: boolean
+  path?: string
   sourceUrl?: string
   bytesDownloaded?: number
   speedBps?: number
@@ -70,6 +71,7 @@ export interface DownloadItem {
   etaSec: number
   retryCount?: number
   maxRetries?: number
+  retryAt?: number
   error: string
   outputPath?: string
   addedAt: number
@@ -100,4 +102,12 @@ export interface PersistedSettings {
   fontFamily: string
   uiZoom: number
   nativeNotification: boolean
+  accounts?: {
+    terabox?: {
+      email: string
+      password: string
+      cookies?: string[]
+      verifiedAt?: string
+    }
+  }
 }

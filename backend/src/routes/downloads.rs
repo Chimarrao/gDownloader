@@ -66,12 +66,38 @@ pub async fn add_download(
     })?;
 
     // Busca informações do arquivo (nome, tamanho) antes de criar o item na fila
-    let file_info = provider.get_file_info(&req.url).await.map_err(|e| {
+    let mut file_info = provider.get_file_info(&req.url).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new(format!("Falha ao obter informações do arquivo: {e}"))),
         )
     })?;
+
+    let selected_children = req
+        .selected_children
+        .clone()
+        .filter(|children| !children.is_empty());
+
+    if file_info.is_folder {
+        if let (Some(children), Some(selected)) = (file_info.children.as_mut(), selected_children.as_ref()) {
+            let selected_set = selected.iter().cloned().collect::<std::collections::HashSet<_>>();
+            children.retain(|child| {
+                child.source_url
+                    .as_ref()
+                    .map(|source_url| selected_set.contains(source_url))
+                    .unwrap_or(false)
+            });
+
+            if children.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new("Nenhum arquivo selecionado da pasta pôde ser resolvido")),
+                ));
+            }
+
+            file_info.size = children.iter().map(|child| child.size).sum();
+        }
+    }
 
     let dest_dir = expand_home(&req.dest_dir);
     tokio::fs::create_dir_all(&dest_dir).await.map_err(|e| {
@@ -94,6 +120,7 @@ pub async fn add_download(
             download.dest_path == dest_path
                 && download.size == file_info.size
                 && download.is_folder == file_info.is_folder
+                && download.selected_children == selected_children
         }) {
             return Ok(Json(existing.clone()));
         }
@@ -136,6 +163,8 @@ pub async fn add_download(
         max_retries: req.max_retries.unwrap_or(0),
         speed_limit_kib: req.speed_limit_kib.unwrap_or(0),
         parallel_parts: req.parallel_parts.unwrap_or(1).max(1),
+        selected_children: selected_children.clone(),
+        retry_at: None,
         error: None,
         created_at: now,
     };
@@ -178,6 +207,7 @@ pub async fn cancel_download(
             download.status = DownloadStatus::Cancelled;
             download.speed_bps = 0;
             download.eta_secs = 0;
+            download.retry_at = None;
             download.error = Some("Cancelado pelo usuário".to_string());
             if let Some(children) = download.children.as_mut() {
                 for child in children.iter_mut() {
@@ -267,6 +297,7 @@ pub async fn pause_download(
             download.status = DownloadStatus::Paused;
             download.speed_bps = 0;
             download.eta_secs = 0;
+            download.retry_at = None;
             download.error = None;
             if let Some(children) = download.children.as_mut() {
                 for child in children.iter_mut() {
@@ -323,13 +354,14 @@ pub async fn restart_download(
 // Esta função roda em uma task separada do tokio
 // É como um Worker ou uma Promise longa rodando em paralelo
 async fn run_download(state: AppState, id: String, url: String, dest_path: String) {
-    let (max_retries, speed_limit_bps, parallel_parts) = {
+    let (max_retries, speed_limit_bps, parallel_parts, selected_children) = {
         {
             let mut map = state.downloads.lock().await;
             if let Some(d) = map.get_mut(&id) {
                 d.status = DownloadStatus::Downloading;
                 d.error = None;
                 d.retry_count = 0;
+                d.retry_at = None;
             }
         }
         let map = state.downloads.lock().await;
@@ -341,22 +373,30 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             .get(&id)
             .map(|d| d.parallel_parts.max(1))
             .unwrap_or(1);
-        (max_retries, speed_limit_bps, parallel_parts)
+        let selected_children = map
+            .get(&id)
+            .and_then(|d| d.selected_children.clone());
+        (max_retries, speed_limit_bps, parallel_parts, selected_children)
     };
 
     for attempt in 0..=max_retries {
         {
-            {
-                let mut map = state.downloads.lock().await;
-                if let Some(d) = map.get_mut(&id) {
-                    d.status = DownloadStatus::Downloading;
-                    d.retry_count = attempt;
-                    d.bytes_downloaded = 0;
-                    d.speed_bps = 0;
-                    d.eta_secs = 0;
-                    d.error = None;
-                }
+            let mut map = state.downloads.lock().await;
+            let Some(d) = map.get_mut(&id) else {
+                return;
+            };
+
+            if matches!(d.status, DownloadStatus::Paused | DownloadStatus::Cancelled) {
+                reschedule_pending_downloads(state.clone());
+                return;
             }
+
+            d.status = DownloadStatus::Downloading;
+            d.retry_count = attempt;
+            d.speed_bps = 0;
+            d.eta_secs = 0;
+            d.retry_at = None;
+            d.error = None;
         }
 
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
@@ -372,9 +412,17 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
         let url_clone = url.clone();
         let dest_clone = dest_path.clone();
+        let selected_children_clone = selected_children.clone();
         let download_task = tokio::spawn(async move {
             provider
-                .download(&url_clone, &dest_clone, speed_limit_bps, parallel_parts as usize, progress_tx)
+                .download(
+                    &url_clone,
+                    &dest_clone,
+                    speed_limit_bps,
+                    parallel_parts as usize,
+                    selected_children_clone,
+                    progress_tx,
+                )
                 .await
         });
         state
@@ -418,8 +466,13 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     }
                     if let Some(children) = d.children.as_mut() {
                         if let Some(child_filename) = update.child_filename.as_deref() {
+                            let child_path = update.child_path.as_deref();
                             for child in children.iter_mut() {
-                                if child.filename == child_filename {
+                                let matches = child_path
+                                    .map(|path| child.path.as_deref() == Some(path))
+                                    .unwrap_or_else(|| child.filename == child_filename);
+
+                                if matches {
                                     child.bytes_downloaded = update.child_bytes_downloaded;
                                     child.speed_bps = update.child_speed_bps;
                                     child.eta_secs = update.child_eta_secs;
@@ -450,6 +503,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 speed,
                 eta,
                 status: DownloadStatus::Downloading,
+                child_path: update.child_path.clone(),
                 child_filename: update.child_filename.clone(),
                 child_bytes: update.child_bytes_downloaded,
                 child_total: update.child_total_bytes,
@@ -467,6 +521,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         d.bytes_downloaded = d.size;
                         d.speed_bps = 0;
                         d.eta_secs = 0;
+                        d.retry_at = None;
                         d.error = None;
                         if let Some(children) = d.children.as_mut() {
                             for child in children.iter_mut() {
@@ -488,26 +543,49 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
             Ok(Err(e)) => {
                 state.active_tasks.lock().await.remove(&id);
+                let retry_policy = classify_retry_policy(&e.to_string(), attempt);
                 if attempt < max_retries {
+                    let retry_delay_secs = retry_policy.retry_delay_secs;
+                    let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
                             d.status = DownloadStatus::Pending;
-                            d.error = Some(format!(
-                                "Falha na tentativa {} de {}. Tentando novamente...",
-                                attempt + 1,
-                                max_retries + 1
-                            ));
+                            d.speed_bps = 0;
+                            d.eta_secs = retry_delay_secs;
+                            d.retry_at = Some(retry_at);
+                            d.error = Some(retry_policy.wait_message.clone());
+                            if let Some(children) = d.children.as_mut() {
+                                for child in children.iter_mut() {
+                                    child.speed_bps = Some(0);
+                                    child.eta_secs = Some(0);
+                                    if child.status == Some(DownloadStatus::Downloading) {
+                                        child.status = Some(DownloadStatus::Pending);
+                                    }
+                                }
+                            }
                         }
                     }
                     state.broadcast(WsEvent::Status {
                         id: id.clone(),
                         status: DownloadStatus::Pending,
                     });
-                    tokio::time::sleep(std::time::Duration::from_secs((attempt + 1) as u64)).await;
+                    reschedule_pending_downloads(state.clone());
+
+                    for _ in 0..retry_delay_secs {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        let status = {
+                            let map = state.downloads.lock().await;
+                            map.get(&id).map(|download| download.status.clone())
+                        };
+                        if matches!(status, Some(DownloadStatus::Paused | DownloadStatus::Cancelled) | None) {
+                            reschedule_pending_downloads(state.clone());
+                            return;
+                        }
+                    }
                     continue;
                 }
-                update_error(&state, &id, &prettify_download_error(&e.to_string())).await;
+                update_error(&state, &id, &retry_policy.final_message).await;
                 reschedule_pending_downloads(state.clone());
                 return;
             }
@@ -553,9 +631,13 @@ pub async fn schedule_pending_downloads(state: AppState) {
 
     let to_start = {
         let mut map = state.downloads.lock().await;
+        let now = current_unix_secs();
         let mut pending = map
             .values()
-            .filter(|download| matches!(download.status, DownloadStatus::Pending))
+            .filter(|download| {
+                matches!(download.status, DownloadStatus::Pending)
+                    && download.retry_at.map(|retry_at| retry_at <= now).unwrap_or(true)
+            })
             .map(|download| {
                 (
                     download.id.clone(),
@@ -575,6 +657,7 @@ pub async fn schedule_pending_downloads(state: AppState) {
                 download.error = None;
                 download.speed_bps = 0;
                 download.eta_secs = 0;
+                download.retry_at = None;
             }
         }
 
@@ -614,6 +697,7 @@ async fn restart_download_internal(
         download.bytes_downloaded = 0;
         download.speed_bps = 0;
         download.eta_secs = 0;
+        download.retry_at = None;
         download.error = None;
         if let Some(children) = download.children.as_mut() {
             for child in children.iter_mut() {
@@ -656,6 +740,7 @@ async fn update_error(state: &AppState, id: &str, message: &str) {
             d.error = Some(message.to_string());
             d.speed_bps = 0;
             d.eta_secs = 0;
+            d.retry_at = None;
             if let Some(children) = d.children.as_mut() {
                 for child in children.iter_mut() {
                     if child.status == Some(DownloadStatus::Downloading) {
@@ -693,4 +778,60 @@ fn prettify_download_error(message: &str) -> String {
     }
 
     message.to_string()
+}
+
+struct RetryPolicy {
+    retry_delay_secs: u64,
+    wait_message: String,
+    final_message: String,
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {
+    let lower = message.to_lowercase();
+    let fallback_delay = (attempt + 1) as u64;
+    let pretty = prettify_download_error(message);
+
+    if lower.contains("509")
+        || lower.contains("bandwidth limit exceeded")
+        || lower.contains("userstorage.mega.co.nz")
+        || lower.contains("userstorage.mega.nz")
+    {
+        return RetryPolicy {
+            retry_delay_secs: 5 * 60 * (attempt as u64 + 1),
+            wait_message: "Limite temporário do Mega detectado. Vamos tentar novamente automaticamente e retomar do ponto onde parou.".to_string(),
+            final_message: "O Mega aplicou um limite temporário de tráfego. Tente novamente mais tarde ou use uma conta para continuar.".to_string(),
+        };
+    }
+
+    if lower.contains("429") || lower.contains("too many requests") {
+        return RetryPolicy {
+            retry_delay_secs: 60 * (attempt as u64 + 1),
+            wait_message: "O provedor limitou temporariamente as requisições. Vamos tentar novamente em breve.".to_string(),
+            final_message: pretty,
+        };
+    }
+
+    if lower.contains("403") || lower.contains("forbidden") {
+        return RetryPolicy {
+            retry_delay_secs: 30 * (attempt as u64 + 1),
+            wait_message: "O servidor bloqueou temporariamente este download. Vamos tentar novamente em breve.".to_string(),
+            final_message: pretty,
+        };
+    }
+
+    RetryPolicy {
+        retry_delay_secs: fallback_delay,
+        wait_message: format!(
+            "Falha temporária na tentativa {}. Vamos tentar novamente automaticamente.",
+            attempt + 1
+        ),
+        final_message: pretty,
+    }
 }

@@ -30,6 +30,7 @@
         <button
           class="toolbar-btn"
           :disabled="finishedCount === 0"
+          title="Remover downloads encerrados da lista"
           @click="clearFinished"
         >
           Limpar concluídos
@@ -65,7 +66,7 @@
               <div class="item-actions">
                 <span class="status-badge" :class="`badge-${item.status}`">
                   <span class="badge-dot" :class="`dot-${item.status}`"></span>
-                  {{ statusText(item.status) }}
+                  {{ statusText(item) }}
                 </span>
                 <button
                   class="action-btn"
@@ -172,6 +173,14 @@
                 <span class="meta-eta">{{ formatEta(item.etaSec) }} restante</span>
               </template>
 
+              <template v-else-if="isWaitingRetry(item)">
+                <span class="meta-sep">·</span>
+                <span class="meta-wait">
+                  <i class="pi pi-clock"></i>
+                  {{ formatEta(retryCountdown(item)) }} para tentar novamente
+                </span>
+              </template>
+
               <template v-if="item.size > 0">
                 <span class="meta-sep">·</span>
                 <span class="meta-size">
@@ -185,7 +194,12 @@
                 <span class="meta-size">{{ item.children?.length }} item(ns)</span>
               </template>
 
-              <template v-if="item.status === 'error' && item.error">
+              <template v-if="isWaitingRetry(item) && item.error">
+                <span class="meta-sep">·</span>
+                <span class="meta-wait-reason" :title="item.error">{{ item.error }}</span>
+              </template>
+
+              <template v-else-if="item.status === 'error' && item.error">
                 <span class="meta-sep">·</span>
                 <span class="meta-error" :title="item.error">{{ item.error }}</span>
               </template>
@@ -214,41 +228,47 @@
               class="folder-children"
             >
               <div
-                v-for="child in item.children"
-                :key="`${item.id}:${child.filename}`"
+                v-for="node in childNodes(item.children)"
+                :key="`${item.id}:${node.key}`"
                 class="child-row"
+                :class="{ 'is-folder-row': node.isFolder }"
               >
                 <div class="child-main">
-                  <div class="child-name">
+                  <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
                     <span
                       class="child-icon"
-                      :class="getFileIcon(child.filename, child.mimeType, child.isFolder).className"
-                      :aria-label="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
+                      :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
+                      :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
                       role="img"
                     ></span>
-                    <span>{{ child.filename }}</span>
+                    <span class="child-name-label">{{ node.name }}</span>
+                    <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
                   </div>
                   <div class="child-meta">
-                    <span class="child-status">{{ childStatusText(child.status) }}</span>
+                    <span class="child-status">{{ childStatusText(node.status) }}</span>
                     <span class="meta-sep">·</span>
-                    <span>{{ childPercent(child) }}%</span>
-                    <template v-if="(child.speedBps ?? 0) > 0">
+                    <span>{{ childPercent(node) }}%</span>
+                    <template v-if="(node.speedBps ?? 0) > 0">
                       <span class="meta-sep">·</span>
-                      <span class="meta-speed">{{ formatSpeed(child.speedBps ?? 0) }}</span>
+                      <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
                     </template>
-                    <template v-if="(child.etaSec ?? 0) > 0">
+                    <template v-if="(node.etaSec ?? 0) > 0">
                       <span class="meta-sep">·</span>
-                      <span>{{ formatEta(child.etaSec ?? 0) }}</span>
+                      <span>{{ formatEta(node.etaSec ?? 0) }}</span>
+                    </template>
+                    <template v-if="node.isFolder">
+                      <span class="meta-sep">·</span>
+                      <span>{{ node.fileCount }} arquivo(s)</span>
                     </template>
                   </div>
                   <div class="child-track">
                     <div
                       class="child-fill"
-                      :style="{ width: `${childPercent(child)}%` }"
+                      :style="{ width: `${childPercent(node)}%` }"
                     ></div>
                   </div>
                 </div>
-                <span class="child-size">{{ formatBytes(child.size) }}</span>
+                <span class="child-size">{{ formatBytes(node.size) }}</span>
               </div>
             </div>
           </div>
@@ -264,6 +284,7 @@ import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadChild, DownloadItem } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
 import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
+import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 
 interface ModuleSummary {
   id: string
@@ -296,6 +317,9 @@ let hydrateQueued = false
 let hydrateInFlight = false
 let isMounted = false
 let lastSpeedEmit = 0
+const nowTick = ref(Date.now())
+let retryTimer: number | null = null
+let hydrateTimer: number | null = null
 
 // ── Computed ───────────────────────────────────────────────
 const orderedItems = computed(() => [...items.value].sort((a, b) => b.addedAt - a.addedAt))
@@ -306,6 +330,13 @@ const finishedCount = computed(() =>
 // ── Lifecycle ──────────────────────────────────────────────
 onMounted(async () => {
   isMounted = true
+  retryTimer = window.setInterval(() => {
+    nowTick.value = Date.now()
+  }, 1000)
+  hydrateTimer = window.setInterval(() => {
+    if (!isMounted) return
+    void hydrate()
+  }, 1500)
   // Load module metadata for labels
   const modules = await window.api.modules.list().catch(() => [])
   modulesById.value = modules.reduce<Record<string, ModuleSummary>>((acc, mod) => {
@@ -326,6 +357,7 @@ onMounted(async () => {
         total?: number
         speed?: number
         eta?: number
+        child_path?: string
         status?: string
         child_filename?: string
         child_bytes?: number
@@ -341,7 +373,11 @@ onMounted(async () => {
         let nextChildren = items.value[idx].children
         if (ev.child_filename && nextChildren?.length) {
           nextChildren = nextChildren.map((child) => {
-            if (child.filename !== ev.child_filename) {
+            const matches = ev.child_path
+              ? child.path === ev.child_path
+              : child.filename === ev.child_filename
+
+            if (!matches) {
               return child.status === DownloadStatusEnum.Downloading
                 ? { ...child, speedBps: 0, etaSec: 0 }
                 : child
@@ -390,7 +426,7 @@ onMounted(async () => {
         }
         // Somar speed de todos os itens ativos (throttled a 200ms para não sobrecarregar)
         const now = Date.now()
-        if (now - lastSpeedEmit >= 200) {
+        if (now - lastSpeedEmit >= 120) {
           lastSpeedEmit = now
           const totalSpeed = items.value
             .filter((i) => i.status === 'downloading')
@@ -415,10 +451,13 @@ onMounted(async () => {
           ...items.value[idx],
           status: DownloadStatusEnum.Complete,
           percent: 100,
+          speedBps: 0,
+          etaSec: 0,
           outputPath
         }
         emit('download-complete', { id: ev.id, outputPath })
       }
+      void hydrate()
     })
   )
 
@@ -431,9 +470,12 @@ onMounted(async () => {
         items.value[idx] = {
           ...items.value[idx],
           status: DownloadStatusEnum.Error,
+          speedBps: 0,
+          etaSec: 0,
           error: ev.message ?? ev.error ?? 'Erro desconhecido'
         }
       }
+      void hydrate()
     })
   )
 
@@ -442,7 +484,7 @@ onMounted(async () => {
     window.api.downloads.on('download:status', (event: unknown) => {
       const ev = event as { id: string; status: DownloadItem['status'] }
       if (!ev?.id) return
-      upsertById(ev.id, { status: ev.status })
+      void hydrate()
     })
   )
 
@@ -451,12 +493,21 @@ onMounted(async () => {
       const ev = event as { id: string }
       if (!ev?.id) return
       upsertById(ev.id, { status: DownloadStatusEnum.Cancelled })
+      void hydrate()
     })
   )
 })
 
 onUnmounted(() => {
   isMounted = false
+  if (retryTimer !== null) {
+    window.clearInterval(retryTimer)
+    retryTimer = null
+  }
+  if (hydrateTimer !== null) {
+    window.clearInterval(hydrateTimer)
+    hydrateTimer = null
+  }
   for (const unsub of unsubs) unsub()
 })
 
@@ -581,6 +632,13 @@ function openFolder(filePath: string): void {
   window.api.showInFolder(filePath)
 }
 
+function childNodes(children?: DownloadChild[]): DerivedChildNode[] {
+  if (!children?.length) {
+    return []
+  }
+  return flattenChildTree(buildChildTree(children))
+}
+
 function isTerminal(status: DownloadItem['status']): boolean {
   return status === DownloadStatusEnum.Complete
     || status === DownloadStatusEnum.Error
@@ -617,12 +675,13 @@ function getProgressColor(item: DownloadItem): string {
   if (item.status === 'error') return '#ef4444'
   if (item.status === 'complete') return 'linear-gradient(90deg, #22c55e, #4ade80)'
   if (item.status === 'cancelled') return '#666'
+  if (isWaitingRetry(item)) return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
   // Use provider color for active downloads
   const color = modulesById.value[item.moduleId]?.color ?? getProviderColor(item.moduleId)
   return `linear-gradient(90deg, ${color}, ${color}cc)`
 }
 
-function statusText(status: DownloadItem['status']): string {
+function statusText(item: DownloadItem): string {
   const map: Record<string, string> = {
     pending: 'Na fila',
     downloading: 'Baixando',
@@ -631,7 +690,21 @@ function statusText(status: DownloadItem['status']): string {
     cancelled: 'Cancelado',
     paused: 'Pausado'
   }
-  return map[status] ?? status
+  if (isWaitingRetry(item)) {
+    return 'Aguardando retry'
+  }
+  return map[item.status] ?? item.status
+}
+
+function isWaitingRetry(item: DownloadItem): boolean {
+  return item.status === DownloadStatusEnum.Pending
+    && typeof item.retryAt === 'number'
+    && item.retryAt > nowTick.value
+}
+
+function retryCountdown(item: DownloadItem): number {
+  if (!item.retryAt) return 0
+  return Math.max(0, Math.ceil((item.retryAt - nowTick.value) / 1000))
 }
 
 function formatBytes(n: number): string {
@@ -661,7 +734,7 @@ function formatEta(secs: number): string {
   return `${h}h ${m}m`
 }
 
-function childPercent(child: DownloadChild): number {
+function childPercent(child: Pick<DownloadChild, 'size' | 'bytesDownloaded'>): number {
   if (!child.size || child.size <= 0) return 0
   const bytes = child.bytesDownloaded ?? 0
   return Math.max(0, Math.min(100, Math.floor((bytes / child.size) * 100)))
@@ -669,7 +742,13 @@ function childPercent(child: DownloadChild): number {
 
 function childStatusText(status?: DownloadChild['status']): string {
   if (!status) return 'Na fila'
-  return statusText(status)
+  if (status === DownloadStatusEnum.Pending) return 'Na fila'
+  if (status === DownloadStatusEnum.Downloading) return 'Baixando'
+  if (status === DownloadStatusEnum.Complete) return 'Concluído'
+  if (status === DownloadStatusEnum.Error) return 'Erro'
+  if (status === DownloadStatusEnum.Cancelled) return 'Cancelado'
+  if (status === DownloadStatusEnum.Paused) return 'Pausado'
+  return String(status)
 }
 </script>
 
@@ -737,6 +816,8 @@ function childStatusText(status?: DownloadChild['status']): string {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
+  min-width: 0;
 }
 
 .list-count {
@@ -783,6 +864,7 @@ function childStatusText(status?: DownloadChild['status']): string {
   overflow: hidden;
   width: 100%;
   box-sizing: border-box;
+  align-self: stretch;
 }
 
 .download-card::before {
@@ -850,6 +932,7 @@ function childStatusText(status?: DownloadChild['status']): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .item-title-wrap {
@@ -1048,6 +1131,18 @@ function childStatusText(status?: DownloadChild['status']): string {
   color: var(--text-muted);
 }
 
+.meta-wait,
+.meta-wait-reason {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #f59e0b;
+}
+
+.meta-wait {
+  font-weight: 600;
+}
+
 .meta-size {
   color: var(--text-muted);
   font-family: 'Courier New', monospace;
@@ -1122,12 +1217,14 @@ function childStatusText(status?: DownloadChild['status']): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
-.child-name span {
+.child-name-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .child-meta {
@@ -1171,6 +1268,23 @@ function childStatusText(status?: DownloadChild['status']): string {
 .child-size {
   flex-shrink: 0;
   color: var(--text-muted);
+}
+
+.child-folder-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b27a00;
+  background: rgba(255, 193, 7, 0.12);
+}
+
+.child-row.is-folder-row {
+  background: color-mix(in srgb, var(--bg-card) 82%, rgba(255, 193, 7, 0.07));
+  border-radius: 8px;
+  padding: 4px 6px;
 }
 
 /* ── List transitions ───────────────────────────────────────── */

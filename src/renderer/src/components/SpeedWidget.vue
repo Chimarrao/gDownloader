@@ -27,7 +27,6 @@
     </svg>
     <div class="speed-labels">
       <span class="speed-down">↓ {{ formattedSpeed }}</span>
-      <span class="speed-up">↑ —</span>
     </div>
   </div>
 </template>
@@ -98,8 +97,6 @@ const formattedSpeed = computed(() => {
 
 .speed-labels {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
   font-size: 11px;
   line-height: 1.2;
 }
@@ -107,11 +104,6 @@ const formattedSpeed = computed(() => {
 .speed-down {
   color: var(--accent-color);
   font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.speed-up {
-  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 </style>

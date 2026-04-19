@@ -198,6 +198,9 @@ function onLocaleChange(): void {
   flex-direction: column;
   gap: 28px;
   max-width: 640px;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings-header {

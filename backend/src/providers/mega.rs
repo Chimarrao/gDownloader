@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -18,7 +18,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, ProgressUpdate, Provider};
+use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 type Aes128CbcDec = Decryptor<aes::Aes128>;
@@ -36,6 +36,7 @@ struct MegaPublicFileMeta {
 struct MegaFolderFileEntry {
     handle: String,
     name: String,
+    path: String,
     size: u64,
     key_bytes: Vec<u8>,
     source_url: String,
@@ -45,6 +46,12 @@ struct MegaFolderFileEntry {
 struct MegaFolderListing {
     name: String,
     files: Vec<MegaFolderFileEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct MegaFolderNodeMeta {
+    parent: Option<String>,
+    name: String,
 }
 
 impl MegaProvider {
@@ -226,25 +233,6 @@ impl MegaProvider {
         attrs["n"].as_str().map(|value| value.to_string())
     }
 
-    fn safe_filename(name: &str, fallback: &str) -> String {
-        let trimmed = name.trim();
-        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
-        candidate
-            .chars()
-            .map(|ch| match ch {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                _ => ch,
-            })
-            .collect()
-    }
-
-    fn http_client() -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()?)
-    }
-
     async fn get_public_file_meta(
         client: &reqwest::Client,
         handle: &str,
@@ -282,7 +270,7 @@ impl MegaProvider {
             .to_string();
 
         Ok(MegaPublicFileMeta {
-            name: Self::safe_filename(&name, &format!("mega_{handle}")),
+            name: <Self as ProviderDefaults>::safe_filename(&name, &format!("mega_{handle}")),
             size: result["s"].as_u64().unwrap_or(0),
             download_url,
         })
@@ -350,9 +338,82 @@ impl MegaProvider {
         }
 
         Ok(MegaFolderListing {
-            name: Self::safe_filename(&folder_name, &format!("mega_{folder_handle}")),
+            name: <Self as ProviderDefaults>::safe_filename(&folder_name, &format!("mega_{folder_handle}")),
             files,
         })
+    }
+
+    fn build_folder_map(
+        nodes: &[Value],
+        shared_key: &[u8],
+    ) -> HashMap<String, MegaFolderNodeMeta> {
+        let mut folders = HashMap::new();
+
+        for node in nodes {
+            if node["t"].as_u64() != Some(1) {
+                continue;
+            }
+
+            let Some(handle) = node["h"].as_str().map(str::to_string) else {
+                continue;
+            };
+
+            let name = node["k"]
+                .as_str()
+                .and_then(|raw_key_field| raw_key_field.rsplit(':').next())
+                .map(Self::mega_base64_decode)
+                .and_then(|encrypted_node_key| Self::decrypt_folder_node_key(shared_key, &encrypted_node_key))
+                .and_then(|node_key| Self::derive_attr_key_from_node_key(&node_key, false))
+                .zip(node["a"].as_str())
+                .and_then(|(attr_key, attr)| Self::decrypt_attributes_name(attr, &attr_key))
+                .unwrap_or_else(|| format!("mega_{handle}"));
+
+            folders.insert(handle, MegaFolderNodeMeta {
+                parent: node["p"].as_str().map(str::to_string),
+                name: <Self as ProviderDefaults>::safe_filename(&name, "pasta_mega"),
+            });
+        }
+
+        folders
+    }
+
+    fn is_descendant_of(
+        parent_handle: Option<&str>,
+        root_handle: &str,
+        folder_map: &HashMap<String, MegaFolderNodeMeta>,
+    ) -> bool {
+        let mut current = parent_handle.map(str::to_string);
+        while let Some(handle) = current {
+            if handle == root_handle {
+                return true;
+            }
+            current = folder_map.get(&handle).and_then(|meta| meta.parent.clone());
+        }
+        false
+    }
+
+    fn relative_segments(
+        parent_handle: Option<&str>,
+        root_handle: Option<&str>,
+        folder_map: &HashMap<String, MegaFolderNodeMeta>,
+    ) -> Vec<String> {
+        let mut segments = Vec::new();
+        let mut current = parent_handle.map(str::to_string);
+
+        while let Some(handle) = current {
+            if root_handle.is_some() && Some(handle.as_str()) == root_handle {
+                break;
+            }
+
+            let Some(meta) = folder_map.get(&handle) else {
+                break;
+            };
+            segments.push(meta.name.clone());
+            current = meta.parent.clone();
+        }
+
+        segments.reverse();
+        segments
     }
 
     fn collect_folder_files(
@@ -362,14 +423,16 @@ impl MegaProvider {
     ) -> Vec<MegaFolderFileEntry> {
         let mut seen = HashSet::new();
         let mut files = Vec::new();
+        let folder_map = Self::build_folder_map(nodes, shared_key);
 
         for node in nodes {
             if node["t"].as_u64() != Some(0) {
                 continue;
             }
 
+            let parent_handle = node["p"].as_str();
             if let Some(root) = root_handle {
-                if node["p"].as_str() != Some(root) {
+                if !Self::is_descendant_of(parent_handle, root, &folder_map) {
                     continue;
                 }
             }
@@ -400,10 +463,18 @@ impl MegaProvider {
                 .as_str()
                 .and_then(|attr| Self::decrypt_attributes_name(attr, &attr_key))
                 .unwrap_or_else(|| format!("mega_{handle}"));
+            let safe_name = <Self as ProviderDefaults>::safe_filename(&name, &format!("mega_{handle}"));
+            let relative_segments = Self::relative_segments(parent_handle, root_handle, &folder_map);
+            let path = if relative_segments.is_empty() {
+                safe_name.clone()
+            } else {
+                format!("{}/{}", relative_segments.join("/"), safe_name)
+            };
 
             files.push(MegaFolderFileEntry {
                 handle: handle.clone(),
-                name: Self::safe_filename(&name, &format!("mega_{handle}")),
+                name: safe_name,
+                path,
                 size: node["s"].as_u64().unwrap_or(0),
                 source_url: format!("https://mega.nz/file/{}#{}", handle, Self::mega_base64_encode(&node_key)),
                 key_bytes: node_key,
@@ -445,48 +516,6 @@ impl MegaProvider {
         let size = result["s"].as_u64().unwrap_or(0);
 
         Ok((download_url, size))
-    }
-
-    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64 {
-        resp.headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split('/').last())
-            .and_then(|value| value.parse::<u64>().ok())
-            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
-            .unwrap_or(0)
-    }
-
-    async fn send_with_resume_fallback(
-        client: &reqwest::Client,
-        url: &str,
-        dest_path: &str,
-        existing_bytes: u64,
-    ) -> Result<(reqwest::Response, bool)> {
-        if existing_bytes == 0 {
-            return Ok((client.get(url).send().await?.error_for_status()?, false));
-        }
-
-        let ranged = client
-            .get(url)
-            .header("Range", format!("bytes={existing_bytes}-"))
-            .send()
-            .await?;
-
-        if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            return Ok((ranged, true));
-        }
-
-        if matches!(
-            ranged.status(),
-            reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
-        ) {
-            let _ = tokio::fs::remove_file(dest_path).await;
-            let fresh = client.get(url).send().await?.error_for_status()?;
-            return Ok((fresh, false));
-        }
-
-        Ok((ranged.error_for_status()?, false))
     }
 
     async fn try_parallel_download(
@@ -560,6 +589,7 @@ impl MegaProvider {
                         .send(ProgressUpdate {
                             bytes_downloaded: downloaded,
                             total_bytes: total_size,
+                            child_path: None,
                             child_filename: None,
                             child_bytes_downloaded: None,
                             child_total_bytes: None,
@@ -599,6 +629,8 @@ impl MegaProvider {
     }
 }
 
+impl ProviderDefaults for MegaProvider {}
+
 impl Provider for MegaProvider {
     fn name(&self) -> &str { "Mega" }
 
@@ -608,7 +640,7 @@ impl Provider for MegaProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>
     {
         Box::pin(async move {
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
 
             if let Some((folder_handle, shared_key)) = Self::parse_folder_url(url) {
                 let listing = Self::get_public_folder_listing(&client, &folder_handle, &shared_key).await?;
@@ -620,6 +652,7 @@ impl Provider for MegaProvider {
                         size: file.size,
                         mime_type: None,
                         is_folder: false,
+                        path: Some(file.path.clone()),
                         source_url: Some(file.source_url.clone()),
                         bytes_downloaded: None,
                         speed_bps: None,
@@ -658,27 +691,37 @@ impl Provider for MegaProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
         Box::pin(async move {
-            let client = Self::http_client()?;
+            let client = <Self as ProviderDefaults>::http_client()?;
             let started_at = tokio::time::Instant::now();
 
             if let Some((folder_handle, shared_key)) = Self::parse_folder_url(url) {
                 let listing = Self::get_public_folder_listing(&client, &folder_handle, &shared_key).await?;
-                if listing.files.is_empty() {
+                let mut files = listing.files;
+                if let Some(selected) = selected_children.filter(|items| !items.is_empty()) {
+                    let selected_set = selected.into_iter().collect::<HashSet<_>>();
+                    files.retain(|file| selected_set.contains(&file.source_url));
+                }
+
+                if files.is_empty() {
                     return Err(anyhow!("Pasta pública do Mega vazia ou sem arquivos acessíveis"));
                 }
 
                 tokio::fs::create_dir_all(dest_path).await?;
 
-                let total_size: u64 = listing.files.iter().map(|file| file.size).sum();
+                let total_size: u64 = files.iter().map(|file| file.size).sum();
                 let mut downloaded_total = 0u64;
                 let mut session_downloaded = 0u64;
 
-                for file in &listing.files {
-                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), file.name);
+                for file in &files {
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), file.path);
+                    if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {
+                        tokio::fs::create_dir_all(parent_dir).await?;
+                    }
                     let existing_bytes = tokio::fs::metadata(&output_path)
                         .await
                         .ok()
@@ -744,6 +787,7 @@ impl Provider for MegaProvider {
                             .send(ProgressUpdate {
                                 bytes_downloaded: downloaded_total,
                                 total_bytes: total_size,
+                                child_path: Some(file.path.clone()),
                                 child_filename: Some(file.name.clone()),
                                 child_bytes_downloaded: Some(child_downloaded),
                                 child_total_bytes: Some(file.size),
@@ -790,9 +834,9 @@ impl Provider for MegaProvider {
             }
 
             let (resp, resumed) =
-                Self::send_with_resume_fallback(&client, &meta.download_url, dest_path, existing_bytes).await?;
+                <Self as ProviderDefaults>::send_with_resume_fallback(&client, &meta.download_url, dest_path, existing_bytes).await?;
             let total = if resumed {
-                Self::response_total_bytes(&resp, existing_bytes)
+                <Self as ProviderDefaults>::response_total_bytes(&resp, existing_bytes)
             } else {
                 meta.size
             };
@@ -821,6 +865,7 @@ impl Provider for MegaProvider {
                     .send(ProgressUpdate {
                         bytes_downloaded: downloaded,
                         total_bytes: total,
+                        child_path: None,
                         child_filename: None,
                         child_bytes_downloaded: None,
                         child_total_bytes: None,

@@ -5,6 +5,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::{future::Future, pin::Pin};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, Duration, Instant};
@@ -12,9 +13,90 @@ use tokio::time::{sleep, Duration, Instant};
 // Declara os sub-módulos de cada provedor de download
 // Em PHP seria algo como: require_once 'providers/MegaProvider.php';
 pub mod gdrive;
+pub mod fichier;
+pub mod drime;
 pub mod mediafire;
 pub mod mega;
 pub mod pixeldrain;
+pub mod sharepoint;
+pub mod terabox;
+
+pub trait ProviderDefaults {
+    fn safe_filename(name: &str, fallback: &str) -> String
+    where
+        Self: Sized,
+    {
+        let trimmed = name.trim();
+        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
+        candidate
+            .chars()
+            .map(|ch| match ch {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                _ => ch,
+            })
+            .collect()
+    }
+
+    fn http_client() -> Result<reqwest::Client>
+    where
+        Self: Sized,
+    {
+        Ok(reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .build()?)
+    }
+
+    fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64
+    where
+        Self: Sized,
+    {
+        resp.headers()
+            .get("content-range")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split('/').last())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| resp.content_length().map(|len| len + resumed_bytes))
+            .unwrap_or(0)
+    }
+
+    fn send_with_resume_fallback<'a>(
+        client: &'a reqwest::Client,
+        url: &'a str,
+        dest_path: &'a str,
+        existing_bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(reqwest::Response, bool)>> + Send + 'a>>
+    where
+        Self: Sized,
+    {
+        Box::pin(async move {
+            if existing_bytes == 0 {
+                return Ok((client.get(url).send().await?.error_for_status()?, false));
+            }
+
+            let ranged = client
+                .get(url)
+                .header("Range", format!("bytes={existing_bytes}-"))
+                .send()
+                .await?;
+
+            if ranged.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                return Ok((ranged, true));
+            }
+
+            if matches!(
+                ranged.status(),
+                reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
+            ) {
+                let _ = tokio::fs::remove_file(dest_path).await;
+                let fresh = client.get(url).send().await?.error_for_status()?;
+                return Ok((fresh, false));
+            }
+
+            Ok((ranged.error_for_status()?, false))
+        })
+    }
+}
 
 // Estrutura de atualização de progresso enviada pelo provider durante o download
 // Usada para calcular velocidade (bytes/s) e ETA no handler de downloads
@@ -22,6 +104,7 @@ pub mod pixeldrain;
 pub struct ProgressUpdate {
     pub bytes_downloaded: u64,
     pub total_bytes: u64, // 0 se o servidor não informar Content-Length
+    pub child_path: Option<String>,
     pub child_filename: Option<String>,
     pub child_bytes_downloaded: Option<u64>,
     pub child_total_bytes: Option<u64>,
@@ -143,6 +226,7 @@ pub async fn try_parallel_download(
                         .send(ProgressUpdate {
                             bytes_downloaded: downloaded,
                             total_bytes,
+                            child_path: None,
                             child_filename: None,
                             child_bytes_downloaded: None,
                             child_total_bytes: None,
@@ -180,7 +264,7 @@ pub async fn try_parallel_download(
 // Trait = como uma interface PHP — define o contrato que todo provider deve seguir
 // Send + Sync = restrições de thread-safety: o provider pode ser movido entre threads
 //              e compartilhado por referência entre threads — obrigatório com tokio
-pub trait Provider: Send + Sync {
+pub trait Provider: Send + Sync + ProviderDefaults {
     // Retorna o nome legível do provider para logs e exibição na UI
     fn name(&self) -> &str;
 
@@ -205,6 +289,7 @@ pub trait Provider: Send + Sync {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
         // Sender do canal de progresso — o provider envia, o handler recebe
         // mpsc = Multiple Producer, Single Consumer (como uma fila de mensagens)
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -223,6 +308,18 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if mediafire::MediaFireProvider::matches(url) {
         return Some(Box::new(mediafire::MediaFireProvider));
+    }
+    if drime::DrimeProvider::matches(url) {
+        return Some(Box::new(drime::DrimeProvider));
+    }
+    if fichier::FichierProvider::matches(url) {
+        return Some(Box::new(fichier::FichierProvider));
+    }
+    if terabox::TeraboxProvider::matches(url) {
+        return Some(Box::new(terabox::TeraboxProvider));
+    }
+    if sharepoint::SharePointProvider::matches(url) {
+        return Some(Box::new(sharepoint::SharePointProvider));
     }
     if gdrive::GDriveProvider::matches(url) {
         return Some(Box::new(gdrive::GDriveProvider));

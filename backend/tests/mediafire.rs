@@ -1,7 +1,12 @@
 // Testes do provider MediaFire
 
+mod common;
+
 use gdownloader_backend::providers::mediafire::MediaFireProvider;
 use gdownloader_backend::providers::detect_provider;
+use gdownloader_backend::providers::Provider;
+
+use common::{assert_download_starts_and_can_abort, required_test_env, skip_if_missing, temp_test_path};
 
 // --- matches ---
 
@@ -75,4 +80,32 @@ fn detect_provider_recognizes_mediafire_url() {
     let provider = detect_provider("https://www.mediafire.com/file/abc/file.zip");
     assert!(provider.is_some());
     assert_eq!(provider.unwrap().name(), "MediaFire");
+}
+
+#[tokio::test]
+async fn real_mediafire_file_info_returns_real_name() {
+    let url = required_test_env("TEST_MEDIAFIRE_FILE_URL");
+    if skip_if_missing(&url) {
+        return;
+    }
+
+    let provider = MediaFireProvider;
+    let info = provider.get_file_info(&url).await.unwrap();
+
+    assert!(!info.is_folder);
+    assert!(!info.filename.trim().is_empty());
+}
+
+#[tokio::test]
+async fn real_mediafire_file_download_starts_and_can_be_aborted() {
+    let url = required_test_env("TEST_MEDIAFIRE_FILE_URL");
+    if skip_if_missing(&url) {
+        return;
+    }
+
+    let provider = MediaFireProvider;
+    let info = provider.get_file_info(&url).await.unwrap();
+    let dest = temp_test_path("gdownloader-mediafire").join(info.filename);
+
+    assert_download_starts_and_can_abort(provider, url, dest, false).await;
 }

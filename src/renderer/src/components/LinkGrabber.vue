@@ -52,7 +52,8 @@
           <input
             type="checkbox"
             :checked="allSelectableChecked"
-            :indeterminate="someSelectableChecked && !allSelectableChecked"
+            :indeterminate.prop="someSelectableChecked && !allSelectableChecked"
+            title="Selecionar ou desmarcar todos os itens disponíveis"
             @change="toggleAll"
           />
           <span>Selecionar tudo</span>
@@ -73,8 +74,10 @@
             <label class="row-check">
               <input
                 type="checkbox"
-                v-model="row.selected"
-                :disabled="!row.module || !!row.error || row.loading"
+                :checked="isRowChecked(row)"
+                :indeterminate.prop="isRowIndeterminate(row)"
+                :disabled="rowSelectableUnitCount(row) === 0"
+                @change="toggleRow(row, $event)"
               />
             </label>
 
@@ -124,6 +127,7 @@
             <button
               v-if="(row.info?.isFolder && (row.info.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
               class="expand-btn"
+              :title="row.expanded ? 'Ocultar detalhes' : 'Mostrar detalhes'"
               @click="row.expanded = !row.expanded"
             >
               <i class="pi" :class="row.expanded ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
@@ -144,17 +148,36 @@
             </div>
 
             <div v-if="row.info?.isFolder && row.info.children?.length" class="children-list">
-              <div v-for="child in row.info.children" :key="`${row.url}:${child.filename}`" class="child-row">
-                <div class="child-name">
+              <div
+                v-for="node in childNodes(row)"
+                :key="`${row.url}:${node.key}`"
+                class="child-row"
+                :class="{ 'is-folder-row': node.isFolder }"
+              >
+                <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
+                  <label
+                    v-if="supportsChildSelection(row) && node.original?.sourceUrl && !node.isFolder"
+                    class="child-check"
+                    :title="`Selecionar ${node.name}`"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="node.original.selected !== false"
+                      :disabled="!node.original.sourceUrl"
+                      @change="toggleChild(row, node.original, $event)"
+                    />
+                  </label>
+                  <span v-else class="child-check child-check-placeholder"></span>
                   <span
                     class="child-icon"
-                    :class="getFileIcon(child.filename, child.mimeType, child.isFolder).className"
-                    :aria-label="getFileIcon(child.filename, child.mimeType, child.isFolder).alt"
+                    :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
+                    :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
                     role="img"
                   ></span>
-                  <span>{{ child.filename }}</span>
+                  <span>{{ node.name }}</span>
+                  <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
                 </div>
-                <span>{{ fmtBytes(child.size) }}</span>
+                <span>{{ fmtBytes(node.size) }}</span>
               </div>
             </div>
           </div>
@@ -168,7 +191,12 @@
     </p>
 
     <div class="actions-row" ref="actionsRef">
-      <button class="btn-clear" :disabled="!urlsInput.trim() && rows.length === 0" @click="clear">
+      <button
+        class="btn-clear"
+        :disabled="!urlsInput.trim() && rows.length === 0"
+        title="Limpar os links e resultados capturados"
+        @click="clear"
+      >
         <i class="pi pi-trash"></i>
         Limpar
       </button>
@@ -176,6 +204,7 @@
         class="btn-add"
         :disabled="selectedCount === 0 || adding"
         :class="{ loading: adding }"
+        :title="adding ? 'Adicionando itens selecionados' : `Adicionar ${selectedCount} item(ns) selecionado(s)`"
         @click="addAll"
       >
         <i :class="adding ? 'pi pi-spin pi-spinner' : 'pi pi-plus'"></i>
@@ -188,7 +217,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { getFileIcon } from '../assets/file-icons'
-import type { FileInfo } from '../../../shared/types'
+import type { DownloadChild, FileInfo } from '../../../shared/types'
+import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 
 interface ModuleSummary {
   id: string
@@ -197,11 +227,19 @@ interface ModuleSummary {
   color: string
 }
 
+interface SelectableChild extends DownloadChild {
+  selected?: boolean
+}
+
+interface RowFileInfo extends Omit<FileInfo, 'children'> {
+  children?: SelectableChild[]
+}
+
 interface CapturedRow {
   url: string
   displayName: string
   module: ModuleSummary | null
-  info: FileInfo | null
+  info: RowFileInfo | null
   loading: boolean
   error: string
   selected: boolean
@@ -222,12 +260,73 @@ const lastError = ref('')
 const detectToken = ref(0)
 const actionsRef = ref<HTMLElement | null>(null)
 
-const selectableRows = computed(() => rows.value.filter((row) => row.module && !row.loading && !row.error))
-const selectedRows = computed(() => selectableRows.value.filter((row) => row.selected))
-const selectedCount = computed(() => selectedRows.value.length)
-const availableCount = computed(() => selectableRows.value.length)
-const allSelectableChecked = computed(() => selectableRows.value.length > 0 && selectedRows.value.length === selectableRows.value.length)
-const someSelectableChecked = computed(() => selectedRows.value.length > 0)
+interface QueueEntry {
+  url: string
+  module: ModuleSummary
+  title: string
+  size: number
+  sourceLabel: string
+  selectedChildren?: string[]
+}
+
+const selectableRows = computed(() => rows.value.filter((row) => rowSelectableUnitCount(row) > 0))
+const selectedEntries = computed<QueueEntry[]>(() => {
+  const entries: QueueEntry[] = []
+
+  for (const row of rows.value) {
+    if (!row.module || row.loading || row.error || !row.info) {
+      continue
+    }
+
+    if (supportsChildSelection(row)) {
+      const children = selectableChildren(row)
+      const chosen = children.filter((child) => child.selected !== false)
+      if (chosen.length === 0) {
+        continue
+      }
+
+      if (chosen.length === children.length) {
+        entries.push({
+          url: row.url,
+          module: row.module,
+          title: row.info.name,
+          size: row.info.size,
+          sourceLabel: row.module.name,
+        })
+        continue
+      }
+
+      entries.push({
+        url: row.url,
+        module: row.module,
+        title: row.info.name,
+        size: chosen.reduce((sum, child) => sum + child.size, 0),
+        sourceLabel: row.module.name,
+        selectedChildren: chosen
+          .map((child) => child.sourceUrl)
+          .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
+      })
+      continue
+    }
+
+    if (row.selected) {
+      entries.push({
+        url: row.url,
+        module: row.module,
+        title: row.info.name,
+        size: row.info.size,
+        sourceLabel: row.module.name,
+      })
+    }
+  }
+
+  return entries
+})
+const selectedCount = computed(() => selectedEntries.value.length)
+const availableCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectableUnitCount(row), 0))
+const selectedUnitCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0))
+const allSelectableChecked = computed(() => availableCount.value > 0 && selectedUnitCount.value === availableCount.value)
+const someSelectableChecked = computed(() => selectedUnitCount.value > 0)
 const onlineCount = computed(() => rows.value.filter((row) => row.module && !row.loading && !row.error).length)
 const errorCount = computed(() => rows.value.filter((row) => !!row.error).length)
 const folderCount = computed(() => rows.value.filter((row) => row.info?.isFolder).length)
@@ -305,8 +404,9 @@ async function detectProviders(): Promise<void> {
 
         const info = await window.api.modules.fileInfo(module.id, row.url)
         if (token !== detectToken.value) return
-        rows.value[index].info = info
+        rows.value[index].info = hydrateInfoForSelection(info)
         rows.value[index].displayName = info.name
+        rows.value[index].selected = isRowChecked(rows.value[index])
         rows.value[index].loading = false
       } catch (error) {
         if (token !== detectToken.value) return
@@ -323,20 +423,26 @@ async function detectProviders(): Promise<void> {
 }
 
 async function addAll(): Promise<void> {
-  if (selectedRows.value.length === 0 || adding.value) return
+  if (selectedEntries.value.length === 0 || adding.value) return
   adding.value = true
   lastError.value = ''
   let addedCount = 0
-  emit('adding-urls', selectedRows.value.length)
+  emit('adding-urls', selectedEntries.value.length)
   const current = await window.api.settings.load().catch(() => null)
   const outputDir = current?.outputDir ?? '~/Downloads'
-  for (const row of selectedRows.value) {
-    if (!row.module || !row.info) continue
+  for (const entry of selectedEntries.value) {
     try {
-      await window.api.downloads.add(row.url, row.module.id, row.info.name, row.info.size, outputDir)
+      await window.api.downloads.add(
+        entry.url,
+        entry.module.id,
+        entry.title,
+        entry.size,
+        outputDir,
+        entry.selectedChildren
+      )
       addedCount += 1
     } catch (err) {
-      lastError.value = `Erro ao adicionar: ${truncateUrl(row.url)} — ${err instanceof Error ? err.message : String(err)}`
+      lastError.value = `Erro ao adicionar: ${truncateUrl(entry.url)} — ${err instanceof Error ? err.message : String(err)}`
     }
   }
 
@@ -351,7 +457,7 @@ async function addAll(): Promise<void> {
 function toggleAll(event: Event): void {
   const checked = (event.target as HTMLInputElement).checked
   for (const row of selectableRows.value) {
-    row.selected = checked
+    setRowSelection(row, checked)
   }
 }
 
@@ -416,6 +522,80 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
   return [...grouped.values()]
 }
 
+function hydrateInfoForSelection(info: FileInfo): RowFileInfo {
+  const next: RowFileInfo = {
+    ...info,
+    children: info.children?.map((child) => ({
+      ...child,
+      selected: !!child.sourceUrl && !child.isFolder,
+    })),
+  }
+  return next
+}
+
+function supportsChildSelection(row: CapturedRow): boolean {
+  return !!row.info?.isFolder && selectableChildren(row).length > 0
+}
+
+function childNodes(row: CapturedRow): DerivedChildNode<SelectableChild>[] {
+  if (!row.info?.children?.length) {
+    return []
+  }
+  return flattenChildTree(buildChildTree(row.info.children))
+}
+
+function selectableChildren(row: CapturedRow): SelectableChild[] {
+  if (!row.info?.children?.length) {
+    return []
+  }
+  return row.info.children.filter((child) => !!child.sourceUrl && !child.isFolder)
+}
+
+function rowSelectableUnitCount(row: CapturedRow): number {
+  if (!row.module || row.loading || row.error) {
+    return 0
+  }
+  const children = supportsChildSelection(row) ? selectableChildren(row) : []
+  return children.length > 0 ? children.length : 1
+}
+
+function rowSelectedUnitCount(row: CapturedRow): number {
+  const children = supportsChildSelection(row) ? selectableChildren(row) : []
+  if (children.length > 0) {
+    return children.filter((child) => child.selected !== false).length
+  }
+  return row.selected && rowSelectableUnitCount(row) > 0 ? 1 : 0
+}
+
+function isRowChecked(row: CapturedRow): boolean {
+  const total = rowSelectableUnitCount(row)
+  return total > 0 && rowSelectedUnitCount(row) === total
+}
+
+function isRowIndeterminate(row: CapturedRow): boolean {
+  const selected = rowSelectedUnitCount(row)
+  const total = rowSelectableUnitCount(row)
+  return selected > 0 && selected < total
+}
+
+function setRowSelection(row: CapturedRow, checked: boolean): void {
+  if (supportsChildSelection(row)) {
+    for (const child of selectableChildren(row)) {
+      child.selected = checked
+    }
+  }
+  row.selected = checked
+}
+
+function toggleRow(row: CapturedRow, event: Event): void {
+  setRowSelection(row, (event.target as HTMLInputElement).checked)
+}
+
+function toggleChild(row: CapturedRow, child: SelectableChild, event: Event): void {
+  child.selected = (event.target as HTMLInputElement).checked
+  row.selected = isRowChecked(row)
+}
+
 function fmtBytes(n: number): string {
   if (!n || n <= 0) return '0 B'
   if (n < 1024) return `${n} B`
@@ -431,12 +611,12 @@ function fmtBytes(n: number): string {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  max-width: 980px;
+  max-width: none;
   width: 100%;
   min-width: 0;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .grabber-header {
@@ -626,12 +806,18 @@ function fmtBytes(n: number): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .row-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .row-badge {
@@ -670,6 +856,7 @@ function fmtBytes(n: number): string {
 .row-sub {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 3px;
   font-size: 11px;
@@ -745,6 +932,26 @@ function fmtBytes(n: number): string {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.child-name span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.child-check {
+  display: inline-flex;
+  align-items: center;
+  width: 16px;
+  justify-content: center;
+}
+
+.child-check-placeholder {
+  opacity: 0;
 }
 
 .child-icon {
@@ -755,6 +962,21 @@ function fmtBytes(n: number): string {
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+.child-folder-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b27a00;
+  background: rgba(255, 193, 7, 0.12);
+}
+
+.is-folder-row {
+  background: color-mix(in srgb, var(--bg-card) 82%, rgba(255, 193, 7, 0.07));
 }
 
 .error-msg {

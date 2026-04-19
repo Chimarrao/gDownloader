@@ -30,7 +30,7 @@
         <i class="pi pi-cog"></i>
         <span>{{ t('settings') }}</span>
       </button>
-      <button class="tab-btn is-disabled" disabled>
+      <button class="tab-btn" :class="{ active: activeTab === 'account' }" @click="activeTab = 'account'">
         <i class="pi pi-user"></i>
         <span>{{ t('account') }}</span>
       </button>
@@ -54,6 +54,10 @@
       <section v-show="activeTab === 'settings'" class="panel">
         <AppSettings />
       </section>
+
+      <section v-show="activeTab === 'account'" class="panel">
+        <AccountSettings />
+      </section>
     </main>
   </div>
 </template>
@@ -63,11 +67,12 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import DownloadList from './components/DownloadList.vue'
 import LinkGrabber from './components/LinkGrabber.vue'
 import AppSettings from './components/AppSettings.vue'
+import AccountSettings from './components/AccountSettings.vue'
 import SpeedWidget from './components/SpeedWidget.vue'
 import { setLocale, useI18n } from './i18n'
 import { useTheme, type ThemeId } from './themes'
 
-type AppTab = 'downloads' | 'grabber' | 'settings'
+type AppTab = 'downloads' | 'grabber' | 'settings' | 'account'
 
 interface HistoryItem {
   id: string
@@ -109,7 +114,7 @@ onMounted(async () => {
   speedTicker = setInterval(() => {
     if (!appMounted) return
     speedHistory.value = [...speedHistory.value.slice(1), currentSpeed.value]
-  }, 1000)
+  }, 120)
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
   if (settings.locale) {
@@ -232,11 +237,6 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   border-bottom-color: var(--accent-color);
 }
 
-.tab-btn.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
 .tab-badge {
   min-width: 18px;
   height: 18px;
@@ -265,13 +265,20 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   min-height: 0;
   display: flex;
   align-items: stretch;
-  overflow: hidden;
+  overflow: auto;
+}
+
+.panel > * {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 
 .downloads-panel {
   width: 100%;
-  max-width: 1040px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   align-self: stretch;
   min-width: 0;
   overflow: hidden;

@@ -3,8 +3,23 @@ mod common;
 use gdownloader_backend::providers::detect_provider;
 use gdownloader_backend::providers::mega::MegaProvider;
 use gdownloader_backend::providers::Provider;
+use std::time::Duration;
 
-use common::{required_test_env, skip_if_missing};
+use common::{assert_download_starts_and_can_abort, required_test_env, skip_if_missing, temp_test_path};
+
+async fn fetch_folder_info_with_retry(provider: &MegaProvider, url: &str) -> gdownloader_backend::models::FileInfo {
+    match provider.get_file_info(url).await {
+        Ok(info) => info,
+        Err(first_err) => {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            provider.get_file_info(url).await.unwrap_or_else(|second_err| {
+                panic!(
+                    "Falha ao ler pasta pública do Mega após retry. Primeiro erro: {first_err}. Segundo erro: {second_err}"
+                )
+            })
+        }
+    }
+}
 
 // --- parse_url ---
 
@@ -143,7 +158,7 @@ async fn real_mega_folder_info_returns_children() {
     }
 
     let provider = MegaProvider;
-    let info = provider.get_file_info(&url).await.unwrap();
+    let info = fetch_folder_info_with_retry(&provider, &url).await;
 
     assert!(info.is_folder);
     assert!(info.size > 0);
@@ -151,4 +166,18 @@ async fn real_mega_folder_info_returns_children() {
     assert!(!info.filename.starts_with("mega_"));
     assert!(info.children.as_ref().is_some_and(|children| !children.is_empty()));
     assert!(info.children.as_ref().unwrap().iter().all(|child| !child.filename.starts_with("mega_")));
+}
+
+#[tokio::test]
+async fn real_mega_folder_download_starts_and_can_be_aborted() {
+    let url = required_test_env("TEST_MEGA_FOLDER_URL");
+    if skip_if_missing(&url) {
+        return;
+    }
+
+    let provider = MegaProvider;
+    let info = fetch_folder_info_with_retry(&provider, &url).await;
+    let dest = temp_test_path("gdownloader-mega-folder").join(info.filename);
+
+    assert_download_starts_and_can_abort(provider, url, dest, true).await;
 }

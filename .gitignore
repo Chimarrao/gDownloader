@@ -1,13 +1,17 @@
 node_modules/
 out/
 dist/
+.DS_Store
 .eslintcache
 *.log
 logs.txt
 .worktrees/
 .idea/
 docs/
+poc/
 tsconfig.web.tsbuildinfo
 backend/.env.test.local
+settings.json
+~/
 # Artefatos compilados do Rust — gerados pelo cargo build
 backend/target/

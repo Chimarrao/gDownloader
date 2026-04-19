@@ -2,6 +2,9 @@ import megaSvg from './provider-icons/mega.svg?raw'
 import mediafireSvg from './provider-icons/mediafire.svg?raw'
 import googledriveSvg from './provider-icons/googledrive.svg?raw'
 import anonfilesSvg from './provider-icons/anonfiles.svg?raw'
+import onedriveSvg from './provider-icons/onedrive.svg?raw'
+import drimeSvg from './provider-icons/drime.svg?raw'
+import teraboxSvg from './provider-icons/terabox.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -17,9 +20,28 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#0261CB',
     svg: mediafireSvg,
   },
+  fichier: {
+    color: '#e67e22',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#e67e22"/>
+      <text x="18" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="Arial, sans-serif">1F</text>
+    </svg>`,
+  },
+  drime: {
+    color: '#2ec4b6',
+    svg: drimeSvg,
+  },
   googledrive: {
     color: '#4285F4',
     svg: googledriveSvg,
+  },
+  onedrive: {
+    color: '#0a66d9',
+    svg: onedriveSvg,
+  },
+  terabox: {
+    color: '#0ea5e9',
+    svg: teraboxSvg,
   },
   anonfiles: {
     color: '#00d4ff',

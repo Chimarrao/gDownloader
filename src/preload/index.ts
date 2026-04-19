@@ -59,7 +59,14 @@ const api = {
   // --- Downloads ---
   downloads: {
     // Adiciona download à fila do backend
-    add: async (url: string, _moduleId: string, _title: string, _size: number, destDir: string) => {
+    add: async (
+      url: string,
+      _moduleId: string,
+      _title: string,
+      _size: number,
+      destDir: string,
+      selectedChildren?: string[]
+    ) => {
       const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
         method: 'POST',
@@ -70,6 +77,7 @@ const api = {
           max_retries: settings?.maxRetriesPerDownload ?? 0,
           speed_limit_kib: settings?.speedLimitKib ?? 0,
           parallel_parts: settings?.parallelPartsPerDownload ?? 1,
+          selected_children: selectedChildren,
         }),
       })
       if (!resp.ok) {
@@ -162,6 +170,14 @@ const api = {
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
+  auth: {
+    isLoggedIn: (moduleId: string): Promise<boolean> => ipcRenderer.invoke('auth:isLoggedIn', moduleId),
+    login: (moduleId: string, params: Record<string, string>): Promise<void> =>
+      ipcRenderer.invoke('auth:login', moduleId, params),
+    logout: (moduleId: string): Promise<void> => ipcRenderer.invoke('auth:logout', moduleId),
+    accountInfo: (moduleId: string): Promise<unknown> => ipcRenderer.invoke('auth:accountInfo', moduleId),
+  },
+
   // --- Histórico ---
   loadHistory: () => ipcRenderer.invoke('history:load'),
   saveHistory: (items: unknown) => ipcRenderer.invoke('history:save', items),
@@ -202,6 +218,7 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     etaSec: d.eta_secs ?? 0,
     retryCount: d.retry_count ?? 0,
     maxRetries: d.max_retries ?? 0,
+    retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
     error: d.error ?? '',
     outputPath: d.dest_path,
     addedAt: ((d.created_at as number) ?? 0) * 1000,
