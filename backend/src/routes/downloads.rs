@@ -261,7 +261,7 @@ pub async fn remove_download(
             ));
         };
 
-        if matches!(download.status, DownloadStatus::Pending | DownloadStatus::Downloading | DownloadStatus::Paused) {
+        if matches!(download.status, DownloadStatus::Pending | DownloadStatus::Downloading | DownloadStatus::Paused | DownloadStatus::RateLimited | DownloadStatus::WaitingCaptcha) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ApiError::new("Só é possível remover downloads encerrados da lista")),
@@ -414,6 +414,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
 
             d.status = DownloadStatus::Downloading;
+            d.retry_at = None;
             d.retry_count = attempt;
             d.speed_bps = 0;
             d.eta_secs = 0;
@@ -576,14 +577,44 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
             Ok(Err(e)) => {
                 state.active_tasks.lock().await.remove(&id);
-                let retry_policy = classify_retry_policy(&e.to_string(), attempt);
-                if attempt < max_retries {
-                    let retry_delay_secs = retry_policy.retry_delay_secs;
-                    let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
+                let err_str = e.to_string();
+
+                // Captcha required — set WaitingCaptcha and halt
+                if let Some((captcha_type, sitekey, page_url)) = parse_captcha_error(&err_str) {
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
-                            d.status = DownloadStatus::Pending;
+                            d.status = DownloadStatus::WaitingCaptcha;
+                            d.captcha_type = Some(captcha_type.clone());
+                            d.captcha_sitekey = Some(sitekey.clone());
+                            d.captcha_page_url = Some(page_url.clone());
+                            d.speed_bps = 0;
+                            d.eta_secs = 0;
+                        }
+                    }
+                    state.broadcast(WsEvent::StatusChanged {
+                        id: id.clone(),
+                        status: DownloadStatus::WaitingCaptcha,
+                        error: None,
+                        retry_at: None,
+                        captcha_type: Some(captcha_type),
+                        captcha_sitekey: Some(sitekey),
+                        captcha_page_url: Some(page_url),
+                    });
+                    reschedule_pending_downloads(state.clone());
+                    return;
+                }
+
+                let retry_policy = classify_retry_policy(&err_str, attempt);
+                if attempt < max_retries {
+                    let retry_delay_secs = retry_policy.retry_delay_secs;
+                    let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
+                    let is_rate_limit = err_str.starts_with("RATE_LIMIT:");
+                    let wait_status = if is_rate_limit { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
+                    {
+                        let mut map = state.downloads.lock().await;
+                        if let Some(d) = map.get_mut(&id) {
+                            d.status = wait_status.clone();
                             d.speed_bps = 0;
                             d.eta_secs = retry_delay_secs;
                             d.retry_at = Some(retry_at);
@@ -599,9 +630,19 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                             }
                         }
                     }
-                    state.broadcast(WsEvent::Status {
+                    if let Ok(db) = state.db.lock() {
+                        let status_str = if is_rate_limit { "rate_limited" } else { "pending" };
+                        let _ = crate::db::update_retry_at(&db, &id, retry_at);
+                        let _ = crate::db::update_status(&db, &id, status_str, Some(&retry_policy.wait_message));
+                    }
+                    state.broadcast(WsEvent::StatusChanged {
                         id: id.clone(),
-                        status: DownloadStatus::Pending,
+                        status: wait_status,
+                        error: Some(retry_policy.wait_message.clone()),
+                        retry_at: Some(retry_at),
+                        captcha_type: None,
+                        captcha_sitekey: None,
+                        captcha_page_url: None,
                     });
                     reschedule_pending_downloads(state.clone());
 
@@ -611,9 +652,14 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                             let map = state.downloads.lock().await;
                             map.get(&id).map(|download| download.status.clone())
                         };
-                        if matches!(status, Some(DownloadStatus::Paused | DownloadStatus::Cancelled) | None) {
-                            reschedule_pending_downloads(state.clone());
-                            return;
+                        match status {
+                            None | Some(DownloadStatus::Paused | DownloadStatus::Cancelled) => {
+                                reschedule_pending_downloads(state.clone());
+                                return;
+                            }
+                            // WaitingCaptcha breaks the sleep loop: captcha was submitted, re-attempt
+                            Some(DownloadStatus::Pending) => break,
+                            _ => {}
                         }
                     }
                     continue;
@@ -668,13 +714,19 @@ pub async fn schedule_pending_downloads(state: AppState) {
         let mut pending = map
             .values()
             .filter(|download| {
-                matches!(download.status, DownloadStatus::Pending)
+                matches!(download.status, DownloadStatus::Pending | DownloadStatus::RateLimited)
                     && download.retry_at.map(|retry_at| retry_at <= now).unwrap_or(true)
             })
             .map(|download| {
+                // If captcha_token present, embed in URL fragment
+                let url = if let Some(ref token) = download.captcha_token {
+                    format!("{}#captcha_token={}", download.url, token)
+                } else {
+                    download.url.clone()
+                };
                 (
                     download.id.clone(),
-                    download.url.clone(),
+                    url,
                     download.dest_path.clone(),
                     download.created_at,
                 )
@@ -895,6 +947,19 @@ fn current_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Retorna Some((type, sitekey, pageurl)) se o erro é um captcha.
+fn parse_captcha_error(message: &str) -> Option<(String, String, String)> {
+    // Format: CAPTCHA_REQUIRED:{type}:{sitekey}:{pageurl}
+    if message.starts_with("CAPTCHA_REQUIRED:") {
+        let parts: Vec<&str> = message.splitn(4, ':').collect();
+        let captcha_type = parts.get(1).copied().unwrap_or("recaptcha2");
+        let sitekey = parts.get(2).copied().unwrap_or("");
+        let pageurl = parts.get(3).copied().unwrap_or("");
+        return Some((captcha_type.to_string(), sitekey.to_string(), pageurl.to_string()));
+    }
+    None
 }
 
 fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {

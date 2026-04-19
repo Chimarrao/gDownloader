@@ -100,7 +100,7 @@
                   <i class="pi pi-play"></i>
                 </button>
                 <button
-                  v-if="item.status === 'pending' || item.status === 'downloading' || item.status === 'paused'"
+                  v-if="item.status === 'pending' || item.status === 'downloading' || item.status === 'paused' || item.status === 'rate_limited' || item.status === 'waiting_captcha'"
                   class="cancel-btn"
                   title="Cancelar"
                   @click="cancel(item.id)"
@@ -108,7 +108,7 @@
                   <i class="pi pi-times"></i>
                 </button>
                 <button
-                  v-if="item.status === 'paused' || item.status === 'error' || item.status === 'cancelled'"
+                  v-if="item.status === 'paused' || item.status === 'error' || item.status === 'cancelled' || item.status === 'rate_limited'"
                   class="action-btn"
                   title="Tentar novamente"
                   @click="retry(item.id)"
@@ -173,6 +173,22 @@
                 <span class="meta-eta">{{ formatEta(item.etaSec) }} restante</span>
               </template>
 
+              <template v-else-if="item.status === 'rate_limited'">
+                <span class="meta-sep">·</span>
+                <span class="meta-wait">
+                  <i class="pi pi-clock"></i>
+                  {{ item.retryAt && item.retryAt > nowTick ? formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) + ' para desbloquear' : 'Bloqueado por limite de taxa' }}
+                </span>
+              </template>
+
+              <template v-else-if="item.status === 'waiting_captcha'">
+                <span class="meta-sep">·</span>
+                <span class="meta-captcha-wait">
+                  <i class="pi pi-shield"></i>
+                  Aguardando resolução do captcha
+                </span>
+              </template>
+
               <template v-else-if="isWaitingRetry(item)">
                 <span class="meta-sep">·</span>
                 <span class="meta-wait">
@@ -212,7 +228,22 @@
               </template>
             </div>
 
-            <!-- Row 4: output path (clickable) -->
+            <!-- Row 4: captcha inline (only for waiting_captcha status) -->
+            <div v-if="item.status === 'waiting_captcha' && item.captchaSitekey" class="captcha-row">
+              <div class="captcha-header">
+                <i class="pi pi-shield"></i>
+                <span>Verificação de captcha necessária</span>
+              </div>
+              <iframe
+                :src="captchaUrl(item)"
+                class="captcha-frame"
+                frameborder="0"
+                scrolling="no"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              ></iframe>
+            </div>
+
+            <!-- Row 5: output path (clickable) -->
             <div
               v-if="item.outputPath"
               class="item-path"
@@ -310,6 +341,7 @@ const emit = defineEmits<{
 const items = ref<DownloadItem[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
+const backendPort = ref<number>(0)
 const unsubs: Array<() => void> = []
 // Mutex: at most one hydrate() runs at a time; hydrateQueued ensures one follow-up
 // run executes after the in-flight one finishes.
@@ -337,6 +369,22 @@ onMounted(async () => {
     if (!isMounted) return
     void hydrate()
   }, 1500)
+
+  // Get backend port for captcha iframe URLs
+  backendPort.value = await window.api.getBackendPort().catch(() => 0)
+
+  // Listen for captcha tokens from inline iframe
+  const onCaptchaMessage = (ev: MessageEvent): void => {
+    if (!ev.data || typeof ev.data !== 'object') return
+    if (ev.data.type !== 'captcha-token') return
+    const { id, token } = ev.data as { type: string; id: string; token: string }
+    if (id && token) {
+      void window.api.captcha.submit(id, token).catch(() => null)
+    }
+  }
+  window.addEventListener('message', onCaptchaMessage)
+  unsubs.push(() => window.removeEventListener('message', onCaptchaMessage))
+
   // Load module metadata for labels
   const modules = await window.api.modules.list().catch(() => [])
   modulesById.value = modules.reduce<Record<string, ModuleSummary>>((acc, mod) => {
@@ -479,12 +527,34 @@ onMounted(async () => {
     })
   )
 
-  // Also subscribe to old-style events for compatibility
+  // Status change events (includes rate_limited + waiting_captcha metadata)
   unsubs.push(
     window.api.downloads.on('download:status', (event: unknown) => {
-      const ev = event as { id: string; status: DownloadItem['status'] }
+      const ev = event as {
+        type?: string
+        id: string
+        status?: DownloadItem['status']
+        retry_at?: number
+        captcha_type?: string
+        captcha_sitekey?: string
+        captcha_page_url?: string
+        error?: string
+      }
       if (!ev?.id) return
-      void hydrate()
+      if (ev.type === 'status_changed') {
+        upsertById(ev.id, {
+          status: ev.status,
+          retryAt: ev.retry_at ? ev.retry_at * 1000 : undefined,
+          captchaType: ev.captcha_type ?? null,
+          captchaSitekey: ev.captcha_sitekey ?? null,
+          captchaPageUrl: ev.captcha_page_url ?? null,
+          error: ev.error ?? '',
+          speedBps: 0,
+          etaSec: 0,
+        })
+      } else {
+        void hydrate()
+      }
     })
   )
 
@@ -688,7 +758,9 @@ function statusText(item: DownloadItem): string {
     complete: 'Concluído',
     error: 'Erro',
     cancelled: 'Cancelado',
-    paused: 'Pausado'
+    paused: 'Pausado',
+    rate_limited: 'Limite de taxa',
+    waiting_captcha: 'Captcha',
   }
   if (isWaitingRetry(item)) {
     return 'Aguardando retry'
@@ -705,6 +777,17 @@ function isWaitingRetry(item: DownloadItem): boolean {
 function retryCountdown(item: DownloadItem): number {
   if (!item.retryAt) return 0
   return Math.max(0, Math.ceil((item.retryAt - nowTick.value) / 1000))
+}
+
+function captchaUrl(item: DownloadItem): string {
+  if (!backendPort.value || !item.captchaSitekey) return ''
+  const params = new URLSearchParams({
+    type: item.captchaType ?? 'recaptcha2',
+    sitekey: item.captchaSitekey,
+    pageurl: item.captchaPageUrl ?? item.url,
+    id: item.id,
+  })
+  return `http://127.0.0.1:${backendPort.value}/captcha?${params.toString()}`
 }
 
 function formatBytes(n: number): string {
@@ -1028,6 +1111,28 @@ function childStatusText(status?: DownloadChild['status']): string {
 .dot-error { background: var(--status-error); }
 .dot-cancelled { background: var(--status-cancelled); }
 .dot-paused { background: var(--status-paused); }
+.dot-rate_limited { background: #f59e0b; animation: pulse-glow 1.5s ease-in-out infinite; }
+.dot-waiting_captcha { background: #8b5cf6; animation: pulse-glow 1.5s ease-in-out infinite; }
+
+.badge-rate_limited {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
+.badge-waiting_captcha {
+  background: rgba(139, 92, 246, 0.15);
+  color: #8b5cf6;
+}
+
+.download-card.status-bg-rate_limited::before {
+  background: linear-gradient(180deg, #f59e0b, #fbbf24);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.download-card.status-bg-waiting_captcha::before {
+  background: linear-gradient(180deg, #8b5cf6, #a78bfa);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
 
 /* ── Action buttons ─────────────────────────────────────────── */
 .cancel-btn,
@@ -1285,6 +1390,42 @@ function childStatusText(status?: DownloadChild['status']): string {
   background: color-mix(in srgb, var(--bg-card) 82%, rgba(255, 193, 7, 0.07));
   border-radius: 8px;
   padding: 4px 6px;
+}
+
+/* ── Captcha inline ─────────────────────────────────────────── */
+.captcha-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, #8b5cf6 30%, var(--border-color));
+  border-radius: 10px;
+  background: color-mix(in srgb, #8b5cf6 5%, var(--bg-card));
+}
+
+.captcha-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b5cf6;
+}
+
+.captcha-frame {
+  width: 100%;
+  height: 82px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.meta-captcha-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #8b5cf6;
+  font-weight: 600;
 }
 
 /* ── List transitions ───────────────────────────────────────── */

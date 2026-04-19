@@ -16,6 +16,7 @@ pub mod gdrive;
 #[path = "1fichier.rs"]
 pub mod fichier;
 pub mod drime;
+pub mod rapidgator;
 pub mod mediafire;
 pub mod mega;
 pub mod pixeldrain;
@@ -327,6 +328,9 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if pixeldrain::PixelDrainProvider::matches(url) {
         return Some(Box::new(pixeldrain::PixelDrainProvider));
+    }
+    if rapidgator::RapidgatorProvider::matches(url) {
+        return Some(Box::new(rapidgator::RapidgatorProvider));
     }
     // URL não reconhecida por nenhum provider suportado
     None

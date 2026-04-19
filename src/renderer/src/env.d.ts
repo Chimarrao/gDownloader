@@ -76,6 +76,10 @@ interface RendererApi {
   archive: {
     extract: (archivePath: string) => Promise<string>
   }
+  captcha: {
+    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }) => Promise<string>
+    submit: (id: string, token: string) => Promise<void>
+  }
 }
 
 declare global {

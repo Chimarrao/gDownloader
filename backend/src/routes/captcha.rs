@@ -13,6 +13,7 @@ pub struct CaptchaQuery {
     pub r#type: String,   // "recaptcha2" | "hcaptcha"
     pub sitekey: String,
     pub pageurl: String,
+    pub id: String,       // download ID — echoed back in postMessage
 }
 
 /// Serve uma página HTML mínima com apenas o widget de captcha.
@@ -36,6 +37,7 @@ pub async fn captcha_page(Query(params): Query<CaptchaQuery>) -> Html<String> {
         ),
     };
 
+    let download_id = &params.id;
     Html(format!(
         r#"<!DOCTYPE html>
 <html>
@@ -54,8 +56,9 @@ pub async fn captcha_page(Query(params): Query<CaptchaQuery>) -> Html<String> {
 <body>
   {widget_html}
   <script>
+    var DOWNLOAD_ID = "{download_id}";
     function onSolved(token) {{
-      window.parent.postMessage({{ type: 'captcha-token', token }}, '*');
+      window.parent.postMessage({{ type: 'captcha-token', id: DOWNLOAD_ID, token: token }}, '*');
     }}
   </script>
   <script src="{script_url}" async defer></script>
@@ -66,7 +69,7 @@ pub async fn captcha_page(Query(params): Query<CaptchaQuery>) -> Html<String> {
 
 #[derive(Deserialize)]
 pub struct SubmitCaptchaBody {
-    pub download_id: String,
+    pub id: String,
     pub token: String,
 }
 
@@ -81,7 +84,7 @@ pub async fn submit_captcha(
     Json(body): Json<SubmitCaptchaBody>,
 ) -> Json<SubmitCaptchaResponse> {
     let mut downloads = state.downloads.lock().await;
-    if let Some(d) = downloads.get_mut(&body.download_id) {
+    if let Some(d) = downloads.get_mut(&body.id) {
         d.captcha_token = Some(body.token);
         d.status = DownloadStatus::Pending;
         d.captcha_type = None;

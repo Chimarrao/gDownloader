@@ -750,6 +750,45 @@ app.whenReady().then(async () => {
     writeFileSync(historyPath, '[]')
   })
 
+  // NoPecha: auto-resolve captchas
+  ipcMain.handle('captcha:nopecha-solve', async (_e, params: {
+    type: string
+    sitekey: string
+    pageurl: string
+  }) => {
+    const settings = readSettingsFromDisk()
+    const apiKey = (settings as Record<string, unknown>).nopechaApiKey as string | undefined
+    if (!apiKey) return null
+
+    try {
+      const submitRes = await fetch('https://api.nopecha.com/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: params.type,
+          sitekey: params.sitekey,
+          url: params.pageurl,
+          key: apiKey,
+        }),
+      }).then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+
+      if (!submitRes?.data) return null
+      const taskId = submitRes.data as string
+
+      // Poll up to 120 seconds
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        const res = await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
+          .then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+        const data = res?.data
+        if (Array.isArray(data) && data[0]) return data[0] as string
+      }
+      return null
+    } catch {
+      return null
+    }
+  })
+
   // Inicia o backend Rust antes de abrir a janela
   try {
     await startRustBackend()

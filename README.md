@@ -25,10 +25,11 @@
 | <img src="src/renderer/src/assets/provider-icons/mediafire.svg" alt="MediaFire" width="18" /> | **MediaFire** | Arquivo único, pasta pública | 🟢 Estável | Usa API pública `folder/get_content`; suporta subpasta via fragmento `#folderkey` |
 | <img src="src/renderer/src/assets/provider-icons/googledrive.svg" alt="Google Drive" width="18" /> | **Google Drive** | Arquivo único público | 🟡 Parcial | Requer arquivo compartilhado publicamente; falta suporte a arquivos grandes com confirmação |
 | 🟠 | **PixelDrain** | Arquivo único, lista | 🟢 Estável | Suporte a fragmento `#item=N` para listas; sem fragmento usa o primeiro arquivo |
-| 1️⃣ | **1Fichier** | Arquivo único público | 🟡 Parcial | Metadata funciona; download gratuito depende de cooldown e disponibilidade de slot guest no host |
+| 1️⃣ | **1Fichier** | Arquivo único, pasta | 🟡 Parcial | Suporte a pastas, rate limit detectado via texto da página; download gratuito depende de cooldown |
 | <img src="src/renderer/src/assets/provider-icons/onedrive.svg" alt="OneDrive" width="18" /> | **OneDrive / SharePoint** | Arquivo único público | 🟡 Parcial | O provider já reconhece o host; links que caem em `login.microsoftonline.com` exigem autenticação Microsoft e retornam erro claro |
-| <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | **Terabox** | Arquivo único, pasta pública | 🟡 Parcial | Listagem pública funciona; o download bruto pode exigir `verify_v2` do próprio host em alguns links |
+| <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | **Terabox** | Arquivo único, pasta pública | 🟡 Parcial | Login via browser integrado (BrowserWindow isolado); captura cookies de sessão automaticamente |
 | 💧 | **Drime** | Arquivo único, pasta pública | 🟡 Parcial | Share público com download resolvido via `shareable_link`; falta rodada maior de smoke com mais amostras |
+| ⚡ | **Rapidgator** | Arquivo único (conta gratuita) | 🟡 Parcial | Suporte a reCaptcha v2 inline e rate limit; conta premium não testada |
 | ☁️ | GoFile | — | ⚪ Planejado | API razoável, mas com mudanças frequentes |
 
 **Legenda:** 🟢 Estável · 🟡 Parcial · ⚪ Planejado
@@ -72,6 +73,7 @@ OneDrive, Proton Drive, Dropbox, pCloud, Box, Google Drive, MediaFire, Mega, Pix
 | Backend HTTP | [Rust](https://www.rust-lang.org/) + [Axum](https://github.com/tokio-rs/axum) |
 | Async runtime | [Tokio](https://tokio.rs/) |
 | Comunicação | WebSocket (progresso em tempo real) + REST |
+| Persistência | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) (modo WAL; retomada após reinício) |
 
 ---
 
@@ -127,8 +129,10 @@ Acessíveis pelo painel de configurações dentro do app:
 - **Limite de velocidade** — throttle global em KB/s (0 = sem limite)
 - **Retries automáticos** — número de tentativas em caso de falha
 - **Notificações nativas** — alertar ao concluir ou falhar um download
- - **Tema** — dark / light
- - **Contas** — armazenamento local em `settings.json`; `Terabox` está em estudo de sessão/login
+- **Tema** — dark / light
+- **Cor de destaque** — personalize a cor primária da interface via color picker
+- **NoPecha API key** — resolução automática de captchas (reCaptcha v2 / hCaptcha) via [NoPecha](https://nopecha.com/)
+- **Contas** — Terabox: login via browser integrado (não armazenamos senha); captura cookies de sessão automaticamente
 
 ---
 

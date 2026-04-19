@@ -141,7 +141,7 @@ const api = {
             // Mapeamos os eventos do backend para os canais esperados pelo renderer
             if (channel === 'download:progress' && event.type === 'progress') {
               cb(event)
-            } else if (channel === 'download:status' && event.type === 'status') {
+            } else if (channel === 'download:status' && (event.type === 'status' || event.type === 'status_changed')) {
               cb(event)
             } else if (channel === 'download:complete' && event.type === 'complete') {
               cb(event)
@@ -195,6 +195,16 @@ const api = {
   archive: {
     extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
   },
+  captcha: {
+    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }): Promise<string> =>
+      ipcRenderer.invoke('captcha:nopecha-solve', params),
+    submit: (id: string, token: string): Promise<void> =>
+      fetchBackend(`/captcha/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, token }),
+      }).then(() => undefined),
+  },
 
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
@@ -220,6 +230,9 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     maxRetries: d.max_retries ?? 0,
     retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
     error: d.error ?? '',
+    captchaType: d.captcha_type ?? null,
+    captchaSitekey: d.captcha_sitekey ?? null,
+    captchaPageUrl: d.captcha_page_url ?? null,
     outputPath: d.dest_path,
     addedAt: ((d.created_at as number) ?? 0) * 1000,
   }
