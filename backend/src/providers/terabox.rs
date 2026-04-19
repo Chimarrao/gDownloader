@@ -22,6 +22,7 @@ struct ShareContext {
     uk: i64,
     sign: String,
     timestamp: i64,
+    host: &'static str,  // "https://www.terabox.com" ou "https://www.1024tera.com"
 }
 
 #[derive(Clone)]
@@ -92,7 +93,9 @@ impl TeraboxProvider {
     }
 
     fn extract_dir(url: &str) -> Option<String> {
+        // Suporta tanto ?dir= quanto ?path= (links públicos do terabox.com usam path=)
         Self::extract_query_value(url, "dir")
+            .or_else(|| Self::extract_query_value(url, "path"))
             .map(|v| Self::decode_url_component(&v))
             .filter(|v| !v.is_empty())
     }
@@ -172,7 +175,7 @@ impl TeraboxProvider {
         let surl = Self::extract_surl(url)
             .ok_or_else(|| anyhow!("URL do TeraBox sem parâmetro surl"))?;
 
-        let info = Self::fetch_shorturl_info(client, &js_token, &surl, Self::detect_lang(url)).await?;
+        let info = Self::fetch_shorturl_info(client, &js_token, &surl, url).await?;
         Ok(ShareContext {
             js_token,
             surl,
@@ -180,19 +183,29 @@ impl TeraboxProvider {
             uk: info["uk"].as_i64().ok_or_else(|| anyhow!("Resposta do TeraBox sem uk"))?,
             sign: info["sign"].as_str().unwrap_or_default().to_string(),
             timestamp: info["timestamp"].as_i64().ok_or_else(|| anyhow!("Resposta do TeraBox sem timestamp"))?,
+            host: Self::api_host(url),
         })
+    }
+
+    fn api_host(url: &str) -> &'static str {
+        if url.contains("terabox.com") {
+            "https://www.terabox.com"
+        } else {
+            "https://www.1024tera.com"
+        }
     }
 
     async fn fetch_shorturl_info(
         client: &reqwest::Client,
         js_token: &str,
         surl: &str,
-        _lang: &str,
+        origin_url: &str,
     ) -> Result<Value> {
         let logid = Self::make_logid();
+        let host = Self::api_host(origin_url);
         let json: Value = Self::with_saved_cookies(
             client
-                .get("https://www.1024tera.com/api/shorturlinfo")
+                .get(format!("{host}/api/shorturlinfo"))
                 .query(&[
                     ("app_id", APP_ID),
                     ("web", "1"),
@@ -239,7 +252,7 @@ impl TeraboxProvider {
     ) -> Result<Vec<ShareEntry>> {
         let logid = Self::make_logid();
         let mut req = client
-            .get("https://www.1024tera.com/share/list")
+            .get(format!("{}/share/list", ctx.host))
             .query(&[
                 ("app_id", APP_ID),
                 ("web", "1"),
@@ -408,8 +421,8 @@ impl TeraboxProvider {
 
         Ok(Self::with_saved_cookies(
             client
-                .post("https://www.1024tera.com/share/download")
-                .header("Origin", "https://www.1024tera.com")
+                .post(format!("{}/share/download", ctx.host))
+                .header("Origin", ctx.host)
                 .header("Referer", referer)
                 .query(&[
                     ("app_id", APP_ID),
@@ -503,24 +516,48 @@ impl Provider for TeraboxProvider {
                 });
             }
 
+            // Se o URL aponta para uma subpasta (path=/CDZ), navega direto para ela
+            let (entry_path, entry_fsid) = if let Some(sub_path) = Self::extract_dir(url) {
+                // sub_path é algo como "/CDZ" — o full path seria root.path + sub_path
+                let full_path = format!("{}{}", root.path.trim_end_matches('/'), sub_path);
+                // Busca a entrada no root que corresponde ao nome da subpasta
+                let sub_name = sub_path.trim_matches('/').split('/').next().unwrap_or("");
+                let sub_entry = root_items.iter()
+                    .find(|e| e.filename.eq_ignore_ascii_case(sub_name) || e.path.ends_with(sub_name));
+                if let Some(sub) = sub_entry {
+                    (sub.path.clone(), sub.fs_id.clone())
+                } else {
+                    // Tenta direto com o full_path
+                    (full_path, root.fs_id.clone())
+                }
+            } else {
+                (root.path.clone(), root.fs_id.clone())
+            };
+
             let files = Self::collect_folder_files(
                 &client,
                 &ctx,
-                root.path.clone(),
-                root.fs_id.clone(),
+                entry_path.clone(),
+                entry_fsid,
             ).await?;
 
             let children = files
                 .iter()
                 .map(|entry| {
-                    let relative_path = Self::relative_path(&root.path, &entry.path);
+                    let relative_path = Self::relative_path(&entry_path, &entry.path);
                     Self::entry_to_child(url, entry, relative_path)
                 })
                 .collect::<Vec<_>>();
             let total_size = children.iter().map(|child| child.size).sum();
 
+            let folder_name = entry_path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&root.filename);
             Ok(FileInfo {
-                filename: <Self as ProviderDefaults>::safe_filename(&root.filename, "pasta_terabox"),
+                filename: <Self as ProviderDefaults>::safe_filename(folder_name, "pasta_terabox"),
                 size: total_size,
                 mime_type: None,
                 is_folder: true,

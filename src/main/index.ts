@@ -458,8 +458,10 @@ function loginTeraboxWithBrowser(parentWin: BrowserWindow): Promise<string[]> {
     const loginWin = new BrowserWindow({
       parent: parentWin,
       modal: true,
-      width: 480,
-      height: 580,
+      width: 900,
+      height: 700,
+      minWidth: 700,
+      minHeight: 500,
       title: 'Entrar no Terabox',
       autoHideMenuBar: true,
       webPreferences: {
@@ -469,41 +471,44 @@ function loginTeraboxWithBrowser(parentWin: BrowserWindow): Promise<string[]> {
       },
     })
 
-    // Esconde tudo exceto o formulário de login
-    loginWin.webContents.on('dom-ready', () => {
-      loginWin.webContents.insertCSS(`
-        header, footer, nav, .nav, .sidebar, .banner, .ad-wrap,
-        [class*="header"]:not([class*="login"]),
-        [class*="footer"], [class*="navbar"], [class*="banner"],
-        [class*="promotion"], [class*="download-app"], [class*="top-bar"] {
-          display: none !important;
-        }
-        body { background: #14131f !important; }
-      `).catch(() => {})
+    const tbSession = session.fromPartition('persist:terabox')
+    let resolved = false
+
+    async function captureAndClose(): Promise<void> {
+      if (resolved) return
+      // Pega todos os cookies de qualquer domínio terabox
+      const all = await tbSession.cookies.get({}).catch(() => [] as Electron.Cookie[])
+      const teraboxCookies = all.filter(c =>
+        (c.domain ?? '').includes('terabox') || (c.domain ?? '').includes('1024tera')
+      )
+      if (teraboxCookies.length === 0) return
+      resolved = true
+      const cookieHeader = teraboxCookies.map(c => `${c.name}=${c.value}`).join('; ')
+      if (!loginWin.isDestroyed()) loginWin.close()
+      resolve([cookieHeader])
+    }
+
+    // Detecta redirecionamento pós-login: quando sair de /login já logou
+    loginWin.webContents.on('did-navigate', (_e, url) => {
+      if (!url.includes('/login') && !url.includes('/passport')) {
+        void captureAndClose()
+      }
     })
 
-    // Poll de cookies a cada 800ms
-    const tbSession = session.fromPartition('persist:terabox')
-    const pollInterval = setInterval(async () => {
-      const cookies = await tbSession.cookies.get({ domain: '.terabox.com' })
-        .catch(() => tbSession.cookies.get({ domain: '.1024tera.com' }).catch(() => []))
-      const sessionCookies = cookies.filter(c =>
-        ['ndus', 'ndut', 'BDUSS', 'STOKEN', 'csrfToken'].includes(c.name)
-      )
-      if (sessionCookies.length >= 2) {
-        clearInterval(pollInterval)
-        const cookieHeader = sessionCookies.map(c => `${c.name}=${c.value}`).join('; ')
-        if (!loginWin.isDestroyed()) loginWin.close()
-        resolve([cookieHeader])
+    loginWin.webContents.on('did-navigate-in-page', (_e, url) => {
+      if (!url.includes('/login') && !url.includes('/passport')) {
+        void captureAndClose()
       }
-    }, 800)
+    })
 
     loginWin.on('closed', () => {
-      clearInterval(pollInterval)
-      reject(new Error('Login cancelado pelo usuário'))
+      if (!resolved) reject(new Error('Login cancelado pelo usuário'))
     })
 
-    loginWin.loadURL('https://www.terabox.com/login')
+    // User-agent de Chrome desktop — sem "Electron" para evitar redirecionamento mobile
+    const desktopUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    loginWin.webContents.setUserAgent(desktopUA)
+    loginWin.loadURL('https://www.terabox.com/login', { userAgent: desktopUA })
   })
 }
 
