@@ -14,12 +14,14 @@ use serde::{Deserialize, Serialize};
 // "InProgress" → "in_progress", "Complete" → "complete", etc.
 #[serde(rename_all = "snake_case")]
 pub enum DownloadStatus {
-    Pending,      // Na fila, aguardando vez para iniciar
-    Downloading,  // Transferência em andamento agora
-    Paused,       // Pausado pelo usuário (reservado para implementação futura)
-    Complete,     // Concluído com sucesso
-    Error,        // Falhou com erro (ver campo error no Download)
-    Cancelled,    // Cancelado pelo usuário via DELETE /downloads/:id
+    Pending,         // Na fila, aguardando vez para iniciar
+    Downloading,     // Transferência em andamento agora
+    Paused,          // Pausado pelo usuário
+    Complete,        // Concluído com sucesso
+    Error,           // Falhou com erro (ver campo error no Download)
+    Cancelled,       // Cancelado pelo usuário via DELETE /downloads/:id
+    RateLimited,     // Bloqueado pelo servidor; aguardando retry_at
+    WaitingCaptcha,  // Aguardando o usuário resolver um captcha
 }
 
 // --- Representa um download na fila ---
@@ -44,6 +46,10 @@ pub struct Download {
     pub parallel_parts: u32,
     pub selected_children: Option<Vec<String>>,
     pub retry_at: Option<u64>,
+    pub captcha_type: Option<String>,     // "recaptcha2" | "hcaptcha"
+    pub captcha_sitekey: Option<String>,
+    pub captcha_page_url: Option<String>,
+    pub captcha_token: Option<String>,    // preenchido quando o usuário resolve
     pub error: Option<String>,   // Option = pode ser Some("mensagem") ou None — como string|null no PHP
     pub created_at: u64,         // Timestamp Unix em segundos (como time() no PHP)
 }
@@ -106,6 +112,16 @@ pub enum WsEvent {
     Status {
         id: String,
         status: DownloadStatus,
+    },
+    // Mudança de status com metadados extras (rate limit, captcha)
+    StatusChanged {
+        id: String,
+        status: DownloadStatus,
+        error: Option<String>,
+        retry_at: Option<u64>,
+        captcha_type: Option<String>,
+        captcha_sitekey: Option<String>,
+        captcha_page_url: Option<String>,
     },
     // Erro durante o download ou cancelamento
     Error {

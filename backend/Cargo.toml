@@ -33,6 +33,8 @@ tower-http = { version = "0.5", features = ["cors"] }
 anyhow = "1"
 # Expressões regulares
 regex = "1"
+# SQLite embutido para persistência de downloads
+rusqlite = { version = "0.31", features = ["bundled"] }
 # Parser de HTML para extrair links (usado no MediaFire)
 scraper = "0.20"
 # Criptografia AES-128 para descriptografar arquivos do Mega

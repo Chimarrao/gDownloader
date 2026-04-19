@@ -486,7 +486,8 @@ function startRustBackend(): Promise<number> {
 
     // spawn() inicia um processo filho — como child_process.spawn() no Node.js
     // stdio: 'pipe' captura stdout/stderr para podermos ler
-    rustBackend = spawn(binaryPath, [], {
+    const dbPath = join(app.getPath('userData'), 'downloads.db')
+    rustBackend = spawn(binaryPath, [dbPath], {
       stdio: ['ignore', 'pipe', 'pipe']
     })
 

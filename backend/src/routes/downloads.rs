@@ -165,16 +165,23 @@ pub async fn add_download(
         parallel_parts: req.parallel_parts.unwrap_or(1).max(1),
         selected_children: selected_children.clone(),
         retry_at: None,
+        captcha_type: None,
+        captcha_sitekey: None,
+        captcha_page_url: None,
+        captcha_token: None,
         error: None,
         created_at: now,
     };
 
-    // Adiciona ao mapa compartilhado antes de spawnar a task
-    // O lock() aguarda exclusividade (como um mutex.lock() em outras linguagens)
     {
         let mut map = state.downloads.lock().await;
         map.insert(id.clone(), download.clone());
-    } // O lock é liberado automaticamente aqui (RAII — sem precisar chamar unlock())
+    }
+
+    // Persiste no SQLite
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::upsert(&db, &download);
+    }
 
     schedule_pending_downloads(state.clone()).await;
 
@@ -229,6 +236,10 @@ pub async fn cancel_download(
         ));
     }
 
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::update_status(&db, &id, "cancelled", Some("Cancelado pelo usuário"));
+    }
+
     state.broadcast(WsEvent::Status {
         id: id.clone(),
         status: DownloadStatus::Cancelled,
@@ -261,6 +272,9 @@ pub async fn remove_download(
     };
 
     if removed {
+        if let Ok(db) = state.db.lock() {
+            let _ = crate::db::delete(&db, &id);
+        }
         return Ok(StatusCode::NO_CONTENT);
     }
 
@@ -273,13 +287,18 @@ pub async fn remove_download(
 pub async fn clear_finished_downloads(
     State(state): State<AppState>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let mut map = state.downloads.lock().await;
-    map.retain(|_, download| {
-        matches!(
-            download.status,
-            DownloadStatus::Pending | DownloadStatus::Downloading | DownloadStatus::Paused
-        )
-    });
+    {
+        let mut map = state.downloads.lock().await;
+        map.retain(|_, download| {
+            matches!(
+                download.status,
+                DownloadStatus::Pending | DownloadStatus::Downloading | DownloadStatus::Paused
+            )
+        });
+    }
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::delete_finished(&db);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -321,6 +340,9 @@ pub async fn pause_download(
         ));
     }
 
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::update_status(&db, &id, "paused", None);
+    }
     state.broadcast(WsEvent::Status {
         id: id.clone(),
         status: DownloadStatus::Paused,
@@ -434,8 +456,16 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         let mut last_bytes = 0u64;
         let mut last_time = std::time::Instant::now();
         let mut current_speed = 0u64;
+        let mut last_db_write = std::time::Instant::now();
 
         while let Some(update) = progress_rx.recv().await {
+            // Persiste progresso no SQLite a cada 5 segundos
+            if last_db_write.elapsed().as_secs() >= 5 {
+                if let Ok(db) = state.db.lock() {
+                    let _ = crate::db::update_progress(&db, &id, update.bytes_downloaded);
+                }
+                last_db_write = std::time::Instant::now();
+            }
             let elapsed = last_time.elapsed().as_secs_f64();
             if elapsed >= 0.35 {
                 let delta = update.bytes_downloaded.saturating_sub(last_bytes);
@@ -534,6 +564,9 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     }
                 }
                 state.active_tasks.lock().await.remove(&id);
+                if let Ok(db) = state.db.lock() {
+                    let _ = crate::db::update_status(&db, &id, "complete", None);
+                }
                 state.broadcast(WsEvent::Complete {
                     id: id.clone(),
                     path: dest_path,
@@ -752,10 +785,81 @@ async fn update_error(state: &AppState, id: &str, message: &str) {
             }
         }
     }
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::update_status(&db, id, "error", Some(message));
+    }
     state.broadcast(WsEvent::Error {
         id: id.to_string(),
         message: message.to_string(),
     });
+}
+
+/// Carrega downloads interrompidos do SQLite e tenta retomá-los.
+pub async fn recover_downloads_from_db(state: AppState) {
+    let rows = {
+        let Ok(db) = state.db.lock() else { return };
+        crate::db::load_resumable(&db).unwrap_or_default()
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .build()
+        .unwrap_or_default();
+
+    for row in rows {
+        // Verifica se o link ainda está acessível
+        let reachable = match client.head(&row.url).send().await {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                code < 400 || code == 206
+            }
+            Err(_) => false,
+        };
+
+        let (status, error) = if reachable {
+            (DownloadStatus::Paused, None)
+        } else {
+            (DownloadStatus::Error, Some("Link expirado ou indisponível. Verifique e tente novamente.".to_string()))
+        };
+
+        let download = Download {
+            id: row.id.clone(),
+            url: row.url,
+            provider: row.provider,
+            filename: row.filename,
+            dest_path: row.dest_path,
+            size: row.size,
+            bytes_downloaded: row.bytes_downloaded,
+            status,
+            speed_bps: 0,
+            eta_secs: 0,
+            is_folder: false,
+            children: None,
+            retry_count: row.retry_count,
+            max_retries: 3,
+            speed_limit_kib: 0,
+            parallel_parts: 4,
+            selected_children: None,
+            retry_at: None,
+            captcha_type: None,
+            captcha_sitekey: None,
+            captcha_page_url: None,
+            captcha_token: None,
+            error,
+            created_at: row.created_at,
+        };
+
+        {
+            let mut map = state.downloads.lock().await;
+            map.insert(row.id.clone(), download);
+        }
+
+        // Atualiza o status no banco
+        if let Ok(db) = state.db.lock() {
+            let status_str = if reachable { "paused" } else { "error" };
+            let _ = crate::db::update_status(&db, &row.id, status_str, None);
+        }
+    }
 }
 
 fn prettify_download_error(message: &str) -> String {

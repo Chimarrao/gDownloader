@@ -3,7 +3,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::AbortHandle;
 
@@ -21,33 +21,23 @@ const CHANNEL_CAPACITY: usize = 256;
 // Clone aqui não copia o dado — só incrementa o contador de referências (barato)
 #[derive(Clone)]
 pub struct AppState {
-    // Canal de broadcast para eventos WebSocket
-    // Quando tx.send(evento) é chamado, TODOS os clientes WebSocket conectados recebem
-    // É como um EventEmitter do Node.js, mas thread-safe e sem callbacks
     pub tx: Arc<broadcast::Sender<WsEvent>>,
-
-    // Mutex = trava de exclusão mútua — só uma thread acessa o HashMap por vez
-    // Arc<Mutex<...>> = Arc = referência contada entre threads (como passar um objeto
-    //                  por referência no PHP), Mutex = trava para acesso seguro
-    // Em PHP: como um $semaphore que protege leitura/escrita a dados compartilhados
     pub downloads: Arc<Mutex<HashMap<String, Download>>>,
     pub active_tasks: Arc<Mutex<HashMap<String, AbortHandle>>>,
     pub max_concurrent_downloads: Arc<Mutex<usize>>,
+    pub db: Arc<StdMutex<rusqlite::Connection>>,
 }
 
 // Como um class em PHP — agrupa métodos desta struct
 impl AppState {
-    // Construtor — chamado uma única vez no main() ao iniciar o servidor
-    pub fn new() -> Self {
-        // broadcast::channel(N) cria um canal pub/sub com buffer de N mensagens
-        // Múltiplos receptores (um por cliente WebSocket) recebem todos os eventos
-        // _rx é o receptor inicial — descartamos porque cada WebSocket cria o seu próprio
+    pub fn new(db: rusqlite::Connection) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             tx: Arc::new(tx),
             downloads: Arc::new(Mutex::new(HashMap::new())),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_downloads: Arc::new(Mutex::new(3)),
+            db: Arc::new(StdMutex::new(db)),
         }
     }
 
