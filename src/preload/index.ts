@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { AppSettingsSnapshot } from '../shared/types'
+import { splitSseMessages } from './mirror-sse'
 
 // Porta do backend Rust (obtida via IPC e cacheada)
 let cachedPort: number | null = null
@@ -14,6 +16,173 @@ async function getPort(): Promise<number> {
 async function fetchBackend(path: string, options?: RequestInit): Promise<Response> {
   const port = await getPort()
   return fetch(`http://127.0.0.1:${port}${path}`, options)
+}
+
+// Callbacks registrados para eventos de mirrors (SSE)
+type MirrorStartPayload = {
+  filename: string
+  total: number
+}
+
+type MirrorProgressPayload = {
+  current: number
+  total: number
+  searcher: string
+  phase: string
+  newResults: number
+  totalResults: number
+  rawResults: number
+  rejectedResults: number
+  durationMs: number
+  error?: string | null
+}
+
+type MirrorResultPayload = {
+  url: string
+  source: string
+  hoster?: string | null
+  score: number
+}
+
+type MirrorDonePayload = {
+  filename: string
+  searchers: number
+  total: number
+  hosters: number
+  durationMs: number
+}
+
+type MirrorRendererEvent =
+  | { type: 'start'; payload: MirrorStartPayload }
+  | { type: 'progress'; payload: MirrorProgressPayload }
+  | { type: 'log'; payload: string }
+  | { type: 'result'; payload: MirrorResultPayload }
+  | { type: 'done'; payload: MirrorDonePayload }
+  | { type: 'error'; payload: string }
+
+const mirrorEventHandlers: Array<(ev: MirrorRendererEvent) => void> = []
+let activeMirrorController: AbortController | null = null
+let activeMirrorSearchSeq = 0
+
+type DownloadChannel =
+  | 'download:progress'
+  | 'download:status'
+  | 'download:complete'
+  | 'download:error'
+  | 'download:cancelled'
+
+const downloadListeners: Record<DownloadChannel, Set<(data: unknown) => void>> = {
+  'download:progress': new Set(),
+  'download:status': new Set(),
+  'download:complete': new Set(),
+  'download:error': new Set(),
+  'download:cancelled': new Set(),
+}
+
+let downloadsSocket: WebSocket | null = null
+let downloadsSocketPromise: Promise<void> | null = null
+let downloadsReconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+function hasDownloadListeners(): boolean {
+  return Object.values(downloadListeners).some((listeners) => listeners.size > 0)
+}
+
+function dispatchDownloadEvent(channel: DownloadChannel, payload: unknown): void {
+  for (const listener of downloadListeners[channel]) {
+    listener(payload)
+  }
+}
+
+function routeDownloadEvent(event: Record<string, unknown>): void {
+  if (event.type === 'progress') {
+    dispatchDownloadEvent('download:progress', event)
+    return
+  }
+
+  if (event.type === 'status' || event.type === 'status_changed') {
+    dispatchDownloadEvent('download:status', event)
+    if (event.type === 'status' && event.status === 'cancelled') {
+      dispatchDownloadEvent('download:cancelled', event)
+    }
+    return
+  }
+
+  if (event.type === 'complete') {
+    dispatchDownloadEvent('download:complete', event)
+    return
+  }
+
+  if (event.type === 'error') {
+    dispatchDownloadEvent('download:error', event)
+  }
+}
+
+async function ensureDownloadsSocket(): Promise<void> {
+  if (downloadsSocket && (downloadsSocket.readyState === WebSocket.OPEN || downloadsSocket.readyState === WebSocket.CONNECTING)) {
+    return
+  }
+  if (downloadsSocketPromise) {
+    return downloadsSocketPromise
+  }
+
+  downloadsSocketPromise = (async () => {
+    const port = await getPort()
+
+    await new Promise<void>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+      downloadsSocket = ws
+
+      ws.onopen = () => {
+        resolve()
+      }
+
+      ws.onmessage = (msg) => {
+        try {
+          routeDownloadEvent(JSON.parse(msg.data as string) as Record<string, unknown>)
+        } catch {
+          // ignora mensagens malformadas
+        }
+      }
+
+      ws.onerror = () => {
+        resolve()
+      }
+
+      ws.onclose = () => {
+        downloadsSocket = null
+        if (!hasDownloadListeners()) {
+          return
+        }
+        if (downloadsReconnectTimer !== null) {
+          clearTimeout(downloadsReconnectTimer)
+        }
+        downloadsReconnectTimer = setTimeout(() => {
+          downloadsReconnectTimer = null
+          void ensureDownloadsSocket()
+        }, 800)
+      }
+    })
+  })()
+
+  try {
+    await downloadsSocketPromise
+  } finally {
+    downloadsSocketPromise = null
+  }
+}
+
+function closeDownloadsSocketIfIdle(): void {
+  if (hasDownloadListeners()) {
+    return
+  }
+
+  if (downloadsReconnectTimer !== null) {
+    clearTimeout(downloadsReconnectTimer)
+    downloadsReconnectTimer = null
+  }
+
+  downloadsSocket?.close()
+  downloadsSocket = null
 }
 
 // API completa exposta para o renderer Vue
@@ -52,8 +221,15 @@ const api = {
       return resp.json()
     },
 
-    // Stub de autenticação (não implementado)
-    isLoggedIn: async (_moduleId: string) => false,
+    cachedFileInfo: async (_moduleId: string, url: string) => {
+      const resp = await fetchBackend(`/file-info/cache?url=${encodeURIComponent(url)}`)
+      if (!resp.ok) {
+        return null
+      }
+      return resp.json()
+    },
+
+    isLoggedIn: async (moduleId: string) => ipcRenderer.invoke('auth:isLoggedIn', moduleId),
   },
 
   // --- Downloads ---
@@ -74,7 +250,7 @@ const api = {
         body: JSON.stringify({
           url,
           dest_dir: destDir,
-          max_retries: settings?.maxRetriesPerDownload ?? 0,
+          max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0) - 1),
           speed_limit_kib: settings?.speedLimitKib ?? 0,
           parallel_parts: settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
@@ -121,8 +297,16 @@ const api = {
       await fetchBackend(`/downloads/${id}/restart`, { method: 'POST' })
     },
 
+    force: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/force`, { method: 'POST' })
+    },
+
     remove: async (id: string) => {
       await fetchBackend(`/downloads/${id}/remove`, { method: 'DELETE' })
+    },
+
+    removeWithFiles: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/remove-with-files`, { method: 'DELETE' })
     },
 
     clearFinished: async () => {
@@ -130,43 +314,21 @@ const api = {
     },
 
     // Subscreve a eventos de progresso via WebSocket
-    on: (channel: string, cb: (data: unknown) => void) => {
-      let ws: WebSocket | null = null
+    on: (channel: DownloadChannel, cb: (data: unknown) => void) => {
+      downloadListeners[channel].add(cb)
+      void ensureDownloadsSocket()
 
-      getPort().then((port) => {
-        ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-        ws.onmessage = (msg) => {
-          try {
-            const event = JSON.parse(msg.data as string)
-            // Mapeamos os eventos do backend para os canais esperados pelo renderer
-            if (channel === 'download:progress' && event.type === 'progress') {
-              cb(event)
-            } else if (channel === 'download:status' && (event.type === 'status' || event.type === 'status_changed')) {
-              cb(event)
-            } else if (channel === 'download:complete' && event.type === 'complete') {
-              cb(event)
-            } else if (channel === 'download:error' && event.type === 'error') {
-              cb(event)
-            } else if (channel === 'download:cancelled' && event.type === 'status' && event.status === 'cancelled') {
-              cb(event)
-            }
-          } catch {
-            // Ignora mensagens malformadas
-          }
-        }
-      })
-
-      // Retorna função de cleanup
       return () => {
-        ws?.close()
+        downloadListeners[channel].delete(cb)
+        closeDownloadsSocketIfIdle()
       }
     },
   },
 
   // --- Settings ---
   settings: {
-    load: () => ipcRenderer.invoke('settings:load'),
-    save: (s: unknown) => ipcRenderer.invoke('settings:save', s),
+    load: (): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:load'),
+    save: (s: AppSettingsSnapshot): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:save', s),
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
@@ -200,8 +362,10 @@ const api = {
       ipcRenderer.invoke('terabox:net-request', params),
   },
   captcha: {
-    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }): Promise<string> =>
+    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }): Promise<string | null> =>
       ipcRenderer.invoke('captcha:nopecha-solve', params),
+    openWindow: (params: { provider?: string; pageUrl: string; sourceUrl?: string }): Promise<string | null> =>
+      ipcRenderer.invoke('captcha:open-window', params),
     submit: (id: string, token: string): Promise<void> =>
       fetchBackend(`/captcha/submit`, {
         method: 'POST',
@@ -210,8 +374,216 @@ const api = {
       }).then(() => undefined),
   },
 
+  // ── Mirrors ──────────────────────────────────────────────────────────────
+  mirrors: {
+    /**
+     * Inicia a busca de mirrors via SSE no backend Rust.
+     * Os eventos chegam via onEvent; resolve quando termina.
+     */
+    search: async (filename: string): Promise<void> => {
+      activeMirrorSearchSeq += 1
+      activeMirrorController?.abort()
+      const controller = new AbortController()
+      const searchSeq = activeMirrorSearchSeq
+      activeMirrorController = controller
+      const port = await getPort()
+      const url = `http://127.0.0.1:${port}/mirrors/search?filename=${encodeURIComponent(filename)}`
+      const emit = (ev: MirrorRendererEvent) => {
+        if (searchSeq !== activeMirrorSearchSeq) {
+          return
+        }
+        for (const h of mirrorEventHandlers) h(ev)
+      }
+
+      const parseMessage = (payload: string): boolean => {
+        if (!payload) {
+          return false
+        }
+
+        try {
+          const data = JSON.parse(payload) as Record<string, unknown>
+          if (data.type === 'start') {
+            emit({
+              type: 'start',
+              payload: {
+                filename: String(data.filename ?? ''),
+                total: Number(data.total ?? 0),
+              },
+            })
+          } else if (data.type === 'progress') {
+            emit({
+              type: 'progress',
+              payload: {
+                current: Number(data.current ?? 0),
+                total: Number(data.total ?? 0),
+                searcher: String(data.searcher ?? ''),
+                phase: String(data.phase ?? ''),
+                newResults: Number(data.newResults ?? 0),
+                totalResults: Number(data.totalResults ?? 0),
+                rawResults: Number(data.rawResults ?? 0),
+                rejectedResults: Number(data.rejectedResults ?? 0),
+                durationMs: Number(data.durationMs ?? 0),
+                error: typeof data.error === 'string' ? data.error : null,
+              },
+            })
+          } else if (data.type === 'log') {
+            emit({ type: 'log', payload: String(data.payload ?? '') })
+          } else if (data.type === 'result') {
+            emit({
+              type: 'result',
+              payload: {
+                url: String(data.url ?? ''),
+                source: String(data.source ?? ''),
+                hoster: typeof data.hoster === 'string' ? data.hoster : null,
+                score: Number(data.score ?? 0),
+              },
+            })
+          } else if (data.type === 'done') {
+            emit({
+              type: 'done',
+              payload: {
+                filename: String(data.filename ?? ''),
+                searchers: Number(data.searchers ?? 0),
+                total: Number(data.total ?? 0),
+                hosters: Number(data.hosters ?? 0),
+                durationMs: Number(data.durationMs ?? 0),
+              },
+            })
+            return true
+          }
+        } catch {
+          // Ignora mensagens SSE malformadas.
+        }
+
+        return false
+      }
+
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: 'text/event-stream' },
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+
+        if (!response.ok || !response.body) {
+          emit({ type: 'error', payload: 'Falha ao iniciar stream de mirrors' })
+          return
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let doneReceived = false
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+              break
+            }
+
+            buffer += decoder.decode(value, { stream: true })
+
+            const parsed = splitSseMessages(buffer)
+            buffer = parsed.rest
+
+            for (const message of parsed.messages) {
+              if (parseMessage(message.data)) {
+                doneReceived = true
+                await reader.cancel().catch(() => undefined)
+                return
+              }
+            }
+          }
+
+          const trailing = buffer.trim()
+          if (trailing && parseMessage(trailing)) {
+            doneReceived = true
+          }
+        } finally {
+          reader.releaseLock()
+        }
+        if (!doneReceived && !controller.signal.aborted) {
+          emit({ type: 'error', payload: 'Conexão SSE perdida' })
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          emit({ type: 'error', payload: 'Conexão SSE perdida' })
+        }
+      } finally {
+        if (activeMirrorController === controller) {
+          activeMirrorController = null
+        }
+      }
+    },
+
+    abort: (): void => {
+      activeMirrorSearchSeq += 1
+      activeMirrorController?.abort()
+      activeMirrorController = null
+    },
+
+    /**
+     * Subscreve a eventos de progresso da busca:
+     *   { type: 'start',    payload: { filename, total } }
+     *   { type: 'progress', payload: { current, total, searcher, phase, ... } }
+     *   { type: 'log',      payload: string }
+     *   { type: 'result',   payload: { url, source, hoster, score } }
+     *   { type: 'done',     payload: { filename, searchers, total, hosters, durationMs } }
+     *   { type: 'error',    payload: string }
+     * Retorna função de cleanup.
+     */
+    onEvent: (cb: (event: MirrorRendererEvent) => void) => {
+      mirrorEventHandlers.push(cb)
+      return () => {
+        const idx = mirrorEventHandlers.indexOf(cb)
+        if (idx >= 0) mirrorEventHandlers.splice(idx, 1)
+      }
+    },
+  },
+
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
+}
+
+function normalizeModuleId(provider: unknown): string {
+  const raw = String(provider ?? '').trim().toLowerCase()
+  switch (raw) {
+    case 'google drive':
+    case 'googledrive':
+    case 'gdrive':
+      return 'gdrive'
+    case 'mediafire':
+      return 'mediafire'
+    case 'mega':
+      return 'mega'
+    case 'pixeldrain':
+      return 'pixeldrain'
+    case '1fichier':
+    case 'fichier':
+      return 'fichier'
+    case 'drime':
+      return 'drime'
+    case 'rapidgator':
+      return 'rapidgator'
+    case 'brupload':
+      return 'brupload'
+    case 'brfiles':
+      return 'brfiles'
+    case 'moondl':
+      return 'moondl'
+    case 'akirabox':
+      return 'akirabox'
+    case 'katfile':
+      return 'katfile'
+    case 'terabox':
+      return 'terabox'
+    case 'onedrive':
+    case 'one drive':
+      return 'onedrive'
+    default:
+      return raw || 'unknown'
+  }
 }
 
 // Converte o formato de download do backend Rust para o formato esperado pelo renderer
@@ -221,7 +593,7 @@ function rustDownloadToItem(d: Record<string, unknown>) {
   return {
     id: d.id,
     url: d.url,
-    moduleId: d.provider,
+    moduleId: normalizeModuleId(d.provider),
     title: d.filename,
     size,
     isFolder: d.is_folder ?? false,
@@ -234,11 +606,15 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     maxRetries: d.max_retries ?? 0,
     retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
     error: d.error ?? '',
-    captchaType: d.captcha_type ?? null,
-    captchaSitekey: d.captcha_sitekey ?? null,
-    captchaPageUrl: d.captcha_page_url ?? null,
+    captchaType: d.captcha_type ?? undefined,
+    captchaSitekey: d.captcha_sitekey ?? undefined,
+    captchaPageUrl: d.captcha_page_url ?? undefined,
     outputPath: d.dest_path,
+    priority: d.priority ?? 0,
     addedAt: ((d.created_at as number) ?? 0) * 1000,
+    startedAt: d.started_at ? (d.started_at as number) * 1000 : undefined,
+    completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,
+    lastProgressAt: d.last_progress_at ? (d.last_progress_at as number) * 1000 : undefined,
   }
 }
 

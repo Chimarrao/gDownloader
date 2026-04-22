@@ -5,82 +5,178 @@
       <p class="account-sub">{{ t('accountSub') }}</p>
     </div>
 
-    <section class="account-card">
+    <section
+      v-for="card in cards"
+      :key="card.id"
+      class="account-card"
+    >
       <div class="provider-row">
         <div class="provider-meta">
-          <img
-            src="../assets/provider-icons/terabox.svg"
-            alt="Terabox"
-            width="18"
-            height="18"
-          />
+          <div v-html="card.icon.svg" class="provider-icon"></div>
           <div class="provider-copy">
-            <strong>Terabox</strong>
-            <span>{{ t('accountTeraboxDesc') }}</span>
+            <strong>{{ card.name }}</strong>
+            <span>{{ card.description }}</span>
           </div>
         </div>
-        <span class="provider-status" :class="{ connected: loggedIn }">
-          {{ loggedIn ? t('accountConnected') : t('accountDisconnected') }}
+        <span class="provider-status" :class="{ connected: card.connected }">
+          {{ card.connected ? t('accountConnected') : t('accountDisconnected') }}
         </span>
       </div>
 
-      <p class="account-note">
-        Conecte-se via browser integrado — não armazenamos sua senha.
+      <p
+        v-for="note in card.notes"
+        :key="`${card.id}:${note}`"
+        class="account-note"
+      >
+        {{ note }}
       </p>
-      <p v-if="feedback" class="account-feedback" :class="{ success: loggedIn, error: !loggedIn && !!feedback }">
-        {{ feedback }}
+      <p v-if="card.feedback" class="account-feedback" :class="{ success: card.connected, error: !card.connected && !!card.feedback }">
+        {{ card.feedback }}
       </p>
 
       <div class="actions">
-        <button v-if="!loggedIn" class="primary-btn" :disabled="loading" @click="saveAccount">
-          {{ loading ? 'Abrindo login...' : 'Conectar Terabox' }}
+        <button v-if="!card.connected" class="primary-btn" :disabled="card.loading" @click="card.connect">
+          {{ card.loading ? t('accountOpeningLogin') : card.connectLabel }}
         </button>
-        <button v-if="loggedIn" class="ghost-btn" @click="disconnect">{{ t('accountDisconnect') }}</button>
+        <button v-if="card.connected" class="ghost-btn" @click="card.disconnect">{{ t('accountDisconnect') }}</button>
       </div>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from '../i18n'
+import { getProviderIcon } from '../assets/provider-icons'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
-const loggedIn = ref(false)
-const loading = ref(false)
-const feedback = ref('')
-
-onMounted(async () => {
-  const isLogged = await window.api.auth.isLoggedIn('terabox').catch(() => false)
-  loggedIn.value = isLogged
-  if (isLogged) {
-    const account = await window.api.auth.accountInfo('terabox').catch(() => null)
-    if (account && 'verifiedAt' in account && account.verifiedAt) {
-      feedback.value = `Conectado em ${new Date(String(account.verifiedAt)).toLocaleString()}`
-    }
+interface ProviderCardSummary {
+  id: string
+  name: string
+  description?: string
+  capabilities?: {
+    supportsManualAuth?: boolean
+    supportsFolder?: boolean
+    requiresBrowserHelper?: boolean
+    requiresAccountForLargeFiles?: boolean
   }
-})
+  accountState?: {
+    connected: boolean
+    verifiedAt?: string | null
+  } | null
+}
 
-async function saveAccount(): Promise<void> {
-  feedback.value = ''
-  loading.value = true
-  try {
-    await window.api.auth.login('terabox', {})
-    loggedIn.value = true
-    feedback.value = 'Conta conectada com sucesso!'
-  } catch (error) {
-    loggedIn.value = false
-    feedback.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    loading.value = false
+const providerCards = ref<ProviderCardSummary[]>([])
+const loadingById = ref<Record<string, boolean>>({})
+const feedbackById = ref<Record<string, string>>({})
+
+function isKnownAuthProvider(id: string): boolean {
+  return id === 'terabox' || id === 'brupload'
+}
+
+function providerNotes(card: ProviderCardSummary): string[] {
+  const notes = [t('accountLocalSqliteNote')]
+
+  if (card.id === 'terabox') {
+    notes.push(t('accountTeraboxTempCopyNote'))
+  }
+  if (card.capabilities?.requiresBrowserHelper) {
+    notes.push(t('accountBrowserHelperNote'))
+  }
+  if (card.capabilities?.requiresAccountForLargeFiles) {
+    notes.push(t('accountFreeLimitNote'))
+  }
+  if (card.capabilities?.supportsFolder) {
+    notes.push(t('accountSharedSessionNote'))
+  }
+
+  return notes
+}
+
+function providerDescription(card: ProviderCardSummary): string {
+  if (card.description?.trim()) {
+    return card.description
+  }
+  if (card.id === 'terabox') {
+    return t('accountTeraboxDesc')
+  }
+  if (card.id === 'brupload') {
+    return t('accountBruploadDesc')
+  }
+  return card.name
+}
+
+const cards = computed(() => providerCards.value
+  .filter((card) => isKnownAuthProvider(card.id) && card.capabilities?.supportsManualAuth)
+  .map((card) => ({
+    ...card,
+    description: providerDescription(card),
+    notes: providerNotes(card),
+    feedback: feedbackById.value[card.id] ?? '',
+    connected: card.accountState?.connected ?? false,
+    loading: !!loadingById.value[card.id],
+    icon: getProviderIcon(card.id),
+    connectLabel: `${t('accountConnect')} ${card.name}`,
+    connect: () => connectProvider(card.id),
+    disconnect: () => disconnectProvider(card.id),
+  })))
+
+async function refreshProviders(): Promise<void> {
+  const modules = await window.api.modules.list().catch(() => [])
+  providerCards.value = Array.isArray(modules) ? modules : []
+
+  for (const card of providerCards.value.filter((entry) => isKnownAuthProvider(entry.id))) {
+    const account = await window.api.auth.accountInfo(card.id).catch(() => null) as { verifiedAt?: string } | null
+    if (account?.verifiedAt) {
+      feedbackById.value = {
+        ...feedbackById.value,
+        [card.id]: `${t('accountConnectedAt')} ${new Date(String(account.verifiedAt)).toLocaleString(locale.value)}`,
+      }
+    }
   }
 }
 
-async function disconnect(): Promise<void> {
-  await window.api.auth.logout('terabox')
-  loggedIn.value = false
-  feedback.value = ''
+onMounted(async () => {
+  await refreshProviders()
+})
+
+async function connectProvider(moduleId: string): Promise<void> {
+  feedbackById.value = {
+    ...feedbackById.value,
+    [moduleId]: '',
+  }
+  loadingById.value = {
+    ...loadingById.value,
+    [moduleId]: true,
+  }
+  try {
+    await window.api.auth.login(moduleId, {})
+    await refreshProviders()
+    feedbackById.value = {
+      ...feedbackById.value,
+      [moduleId]: t('accountConnectedSuccess'),
+    }
+  } catch (error) {
+    feedbackById.value = {
+      ...feedbackById.value,
+      [moduleId]: error instanceof Error ? error.message : String(error),
+    }
+  } finally {
+    loadingById.value = {
+      ...loadingById.value,
+      [moduleId]: false,
+    }
+  }
+}
+
+async function disconnectProvider(moduleId: string): Promise<void> {
+  await window.api.auth.logout(moduleId)
+  feedbackById.value = {
+    ...feedbackById.value,
+    [moduleId]: '',
+  }
+  await refreshProviders()
 }
 </script>
 
@@ -135,6 +231,20 @@ async function disconnect(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.provider-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-icon :deep(svg) {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .provider-copy {

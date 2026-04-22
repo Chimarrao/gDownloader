@@ -2,8 +2,41 @@
    gDownloader — Global Styles + Theme Variables
    ============================================================ */
 
-/* ---------- Default / Dark Purple theme ---------- */
+/* ---------- Default / Light theme ---------- */
 :root,
+.theme-light {
+  --bg-primary: #f4f6fb;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #e8edf6;
+  --border-color: #d7deea;
+  --border: #d7deea;
+  --text-primary: #182132;
+  --text: #182132;
+  --text-secondary: #61708d;
+  --text-muted: #61708d;
+  --accent-color: #5b7cff;
+  --accent: #5b7cff;
+  --accent-light: #7da0ff;
+  --accent-gradient: linear-gradient(90deg, #4f73ff 0%, #7da0ff 100%);
+  --surface-card: #ffffff;
+  --surface-border: #d7deea;
+  --surface-section: #f4f6fb;
+  --surface-hover: #e8edf6;
+  --status-pending: #8090ab;
+  --status-downloading: #5b7cff;
+  --status-complete: #16a34a;
+  --status-error: #dc2626;
+  --status-cancelled: #9ca3af;
+  --status-paused: #d97706;
+  --shadow-card: 0 2px 16px rgba(0, 0, 0, 0.08);
+  --shadow-glow: 0 0 20px rgba(91, 124, 255, 0.1);
+  --ui-font-family: 'Inter';
+  --ui-font-size: 14px;
+  --ui-zoom: 1;
+}
+
+/* ---------- Dark Purple ---------- */
 .theme-dark-purple {
   --bg-primary: #0d0d1a;
   --bg-secondary: #16162a;
@@ -93,36 +126,6 @@
   --shadow-glow: 0 0 20px rgba(86, 156, 214, 0.1);
 }
 
-/* ---------- Light ---------- */
-.theme-light {
-  --bg-primary: #f0f0f8;
-  --bg-secondary: #ffffff;
-  --bg-card: #ffffff;
-  --bg-hover: #e8e8f4;
-  --border-color: #d0d0e0;
-  --border: #d0d0e0;
-  --text-primary: #1a1a2e;
-  --text: #1a1a2e;
-  --text-secondary: #6060a0;
-  --text-muted: #6060a0;
-  --accent-color: #6750a4;
-  --accent: #6750a4;
-  --accent-light: #9c7ee8;
-  --accent-gradient: linear-gradient(90deg, #6750a4 0%, #9c7ee8 100%);
-  --surface-card: #ffffff;
-  --surface-border: #d0d0e0;
-  --surface-section: #f0f0f8;
-  --surface-hover: #e8e8f4;
-  --status-pending: #8888aa;
-  --status-downloading: #6750a4;
-  --status-complete: #16a34a;
-  --status-error: #dc2626;
-  --status-cancelled: #9ca3af;
-  --status-paused: #d97706;
-  --shadow-card: 0 2px 16px rgba(0, 0, 0, 0.08);
-  --shadow-glow: 0 0 20px rgba(103, 80, 164, 0.1);
-}
-
 /* ============================================================
    Reset & Base
    ============================================================ */
@@ -138,11 +141,12 @@ body {
   padding: 0;
   overflow: hidden;
   height: 100%;
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-  font-size: 14px;
+  font-family: var(--ui-font-family), 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: var(--ui-font-size);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  zoom: var(--ui-zoom);
 }
 
 #app {

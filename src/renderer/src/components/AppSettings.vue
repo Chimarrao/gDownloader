@@ -3,6 +3,9 @@
     <div class="settings-header">
       <h2 class="settings-title">{{ t('settingsTitle') }}</h2>
       <p class="settings-sub">{{ t('settingsSub') }}</p>
+      <p v-if="saveFeedback" class="settings-feedback" :class="{ error: saveFeedbackError }">
+        {{ saveFeedback }}
+      </p>
     </div>
 
     <!-- Download section -->
@@ -21,7 +24,7 @@
             placeholder="~/Downloads"
             @change="save"
           />
-          <button class="browse-btn" @click="chooseDirectory">Escolher</button>
+          <button class="browse-btn" @click="chooseDirectory">{{ t('choose') }}</button>
         </div>
       </div>
 
@@ -92,17 +95,18 @@
           <span class="setting-desc">{{ t('themeDesc') }}</span>
         </div>
         <select v-model="settings.theme" class="setting-select" @change="onThemeChange">
+          <option value="light">{{ t('themeLight') }}</option>
+          <option value="system">{{ t('themeSystem') }}</option>
           <option value="dark-purple">{{ t('themeDarkPurple') }}</option>
           <option value="dark-monokai">{{ t('themeDarkMonokai') }}</option>
           <option value="dark-default">{{ t('themeDarkDefault') }}</option>
-          <option value="light">{{ t('themeLight') }}</option>
         </select>
       </div>
 
       <div class="setting-row">
         <div class="setting-info">
-          <span class="setting-label">Cor de destaque</span>
-          <span class="setting-desc">Personaliza a cor principal do app</span>
+          <span class="setting-label">{{ t('accentColorLabel') }}</span>
+          <span class="setting-desc">{{ t('accentColorDesc') }}</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center;">
           <input
@@ -116,19 +120,52 @@
             class="browse-btn"
             style="padding:6px 10px;font-size:12px;"
             @click="resetAccentColor"
-          >Resetar</button>
+          >{{ t('reset') }}</button>
         </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('fontFamilyLabel') }}</span>
+          <span class="setting-desc">{{ t('fontFamilyDesc') }}</span>
+        </div>
+        <select v-model="settings.fontFamily" class="setting-select" @change="onAppearanceChange">
+          <option value="Inter">Inter</option>
+          <option value="IBM Plex Sans">IBM Plex Sans</option>
+          <option value="Segoe UI">Segoe UI</option>
+          <option value="SF Pro Display">SF Pro Display</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('fontSizeLabel') }}</span>
+          <span class="setting-desc">{{ t('fontSizeDesc') }}</span>
+        </div>
+        <select v-model.number="settings.fontSize" class="setting-select" @change="onAppearanceChange">
+          <option v-for="size in [12,13,14,15,16,18]" :key="size" :value="size">{{ size }} px</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('uiZoomLabel') }}</span>
+          <span class="setting-desc">{{ t('uiZoomDesc') }}</span>
+        </div>
+        <select v-model.number="settings.uiZoom" class="setting-select" @change="onAppearanceChange">
+          <option v-for="zoom in [0.9,1,1.1,1.2,1.3]" :key="zoom" :value="zoom">{{ zoom.toFixed(1) }}x</option>
+        </select>
       </div>
     </div>
 
     <!-- Integrations section -->
     <div class="settings-section">
-      <h3 class="section-title">Integrações</h3>
+      <h3 class="section-title">{{ t('integrationsSection') }}</h3>
 
       <div class="setting-row">
         <div class="setting-info">
-          <span class="setting-label">NoPecha API Key</span>
-          <span class="setting-desc">Resolve captchas automaticamente</span>
+          <span class="setting-label">{{ t('nopechaApiKeyLabel') }}</span>
+          <span class="setting-desc">{{ t('nopechaApiKeyDesc') }}</span>
         </div>
         <input
           v-model="settings.nopechaApiKey"
@@ -166,36 +203,21 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive } from 'vue'
-import { useTheme, type ThemeId } from '../themes'
+import { onMounted, reactive, ref } from 'vue'
+import type { AppSettingsSnapshot } from '../../../shared/types'
+import { applyUiPreferences, useTheme, type ThemeId } from '../themes'
 import { setLocale, useI18n } from '../i18n'
 
-const { setTheme } = useTheme()
+const { setTheme, themeOptions } = useTheme()
 const { t } = useI18n()
 
-interface AppSettings {
-  outputDir: string
-  maxConcurrentDownloads: number
-  maxRetriesPerDownload: number
-  parallelPartsPerDownload: number
-  speedLimitKib: number
-  theme: string
-  nativeNotification: boolean
-  locale: string
-  fontSize: number
-  fontFamily: string
-  uiZoom: number
-  accentColor?: string
-  nopechaApiKey?: string
-}
-
-const settings = reactive<AppSettings>({
+const settings = reactive<AppSettingsSnapshot>({
   outputDir: '~/Downloads',
   maxConcurrentDownloads: 3,
   maxRetriesPerDownload: 3,
   parallelPartsPerDownload: 4,
   speedLimitKib: 0,
-  theme: 'dark-purple',
+  theme: 'light',
   nativeNotification: true,
   locale: 'pt-BR',
   fontSize: 14,
@@ -204,18 +226,47 @@ const settings = reactive<AppSettings>({
   accentColor: undefined,
   nopechaApiKey: undefined,
 })
+let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
+const saveFeedback = ref('')
+const saveFeedbackError = ref(false)
+
+function setSaveFeedback(message: string, error = false): void {
+  saveFeedback.value = message
+  saveFeedbackError.value = error
+  if (saveFeedbackTimer) {
+    clearTimeout(saveFeedbackTimer)
+  }
+  saveFeedbackTimer = setTimeout(() => {
+    saveFeedback.value = ''
+    saveFeedbackError.value = false
+  }, error ? 6000 : 2200)
+}
 
 onMounted(async () => {
   const saved = await window.api.settings.load().catch(() => null)
   if (saved) {
     Object.assign(settings, saved)
     setLocale(saved.locale)
-    if (saved.accentColor) applyAccentColor(saved.accentColor)
+    if (themeOptions.some((option) => option.id === saved.theme)) {
+      setTheme(saved.theme as ThemeId)
+    } else {
+      setTheme('light')
+    }
+    applyUiPreferences(saved)
   }
 })
 
 async function save(): Promise<void> {
-  await window.api.settings.save({ ...settings }).catch(() => null)
+  try {
+    const persisted = await window.api.settings.save({ ...settings })
+    Object.assign(settings, persisted)
+    setSaveFeedback(t('settingsSaved'))
+  } catch (error) {
+    setSaveFeedback(
+      error instanceof Error ? error.message : String(error),
+      true,
+    )
+  }
 }
 
 async function chooseDirectory(): Promise<void> {
@@ -227,6 +278,7 @@ async function chooseDirectory(): Promise<void> {
 
 function onThemeChange(): void {
   setTheme(settings.theme as ThemeId)
+  applyUiPreferences(settings)
   void save()
 }
 
@@ -238,22 +290,19 @@ function onLocaleChange(): void {
 function onAccentColorChange(e: Event): void {
   const color = (e.target as HTMLInputElement).value
   settings.accentColor = color
-  applyAccentColor(color)
+  applyUiPreferences(settings)
+  void save()
+}
+
+function onAppearanceChange(): void {
+  applyUiPreferences(settings)
   void save()
 }
 
 function resetAccentColor(): void {
   settings.accentColor = undefined
-  document.documentElement.style.removeProperty('--accent-color')
+  applyUiPreferences(settings)
   void save()
-}
-
-function applyAccentColor(color: string | undefined): void {
-  if (color) {
-    document.documentElement.style.setProperty('--accent-color', color)
-  } else {
-    document.documentElement.style.removeProperty('--accent-color')
-  }
 }
 </script>
 
@@ -287,6 +336,16 @@ function applyAccentColor(color: string | undefined): void {
   margin: 0;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.settings-feedback {
+  margin: 0;
+  font-size: 12px;
+  color: #16a34a;
+}
+
+.settings-feedback.error {
+  color: #dc2626;
 }
 
 /* Section */

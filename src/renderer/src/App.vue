@@ -64,25 +64,17 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import type { DownloadHistoryItem } from '../../shared/types'
 import DownloadList from './components/DownloadList.vue'
 import LinkGrabber from './components/LinkGrabber.vue'
 import AppSettings from './components/AppSettings.vue'
 import AccountSettings from './components/AccountSettings.vue'
 import SpeedWidget from './components/SpeedWidget.vue'
 import { setLocale, useI18n } from './i18n'
-import { useTheme, type ThemeId } from './themes'
+import { applyUiPreferences, useTheme, type ThemeId } from './themes'
+import { pushRingBuffer } from './utils/ring-buffer'
 
 type AppTab = 'downloads' | 'grabber' | 'settings' | 'account'
-
-interface HistoryItem {
-  id: string
-  url: string
-  title: string
-  thumbnail: string
-  date: string
-  formatId: string
-  outputPath?: string
-}
 
 interface DownloadCompletePayload {
   id: string
@@ -104,16 +96,17 @@ function onGlobalSpeed(bps: number): void {
 onUnmounted(() => {
   appMounted = false
   if (speedTicker) clearInterval(speedTicker)
+  disposeTheme()
 })
 const { t } = useI18n()
-const { initTheme, setTheme, themeOptions } = useTheme()
+const { initTheme, disposeTheme, setTheme, themeOptions } = useTheme()
 
 onMounted(async () => {
   initTheme()
   // Start speed ticker regardless of settings availability
   speedTicker = setInterval(() => {
     if (!appMounted) return
-    speedHistory.value = [...speedHistory.value.slice(1), currentSpeed.value]
+    speedHistory.value = pushRingBuffer(speedHistory.value, currentSpeed.value, 60)
   }, 120)
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
@@ -123,9 +116,7 @@ onMounted(async () => {
   if (themeOptions.some((option) => option.id === settings.theme)) {
     setTheme(settings.theme as ThemeId)
   }
-  if (settings.accentColor) {
-    document.documentElement.style.setProperty('--accent-color', settings.accentColor)
-  }
+  applyUiPreferences(settings)
 })
 
 function onAddingUrls(count: number): void {
@@ -137,24 +128,14 @@ function handleAddedToQueue(): void {
 }
 
 async function onDownloadComplete(payload: DownloadCompletePayload): Promise<void> {
-  console.log('[notify] onDownloadComplete triggered', payload)
   const settings = await window.api.settings.load().catch(() => null)
   if (settings?.nativeNotification) {
     const title = payload.outputPath.split('/').pop() || payload.outputPath
-    const shown = await window.api.system.notify('Download concluído', title).catch((e: unknown) => {
-      console.warn('[notify] erro ao mostrar notificação:', e)
-      return false
-    })
-    console.log('[notify] notify() returned:', shown)
-    if (!shown) {
-      console.warn('[notify] Notificação não foi exibida (isSupported=false ou permissão bloqueada)')
-    }
-  } else {
-    console.log('[notify] nativeNotification desabilitado nas settings')
+    await window.api.system.notify('Download concluído', title).catch(() => false)
   }
 
   const history = await window.api.loadHistory().catch(() => [])
-  const existing = history.find((item: HistoryItem) => item.id === payload.id)
+  const existing = history.find((item: DownloadHistoryItem) => item.id === payload.id)
   if (existing) return
 
   const item = {
@@ -167,7 +148,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
     outputPath: payload.outputPath,
   }
 
-  await window.api.saveHistory([...(history as HistoryItem[]), item]).catch(() => null)
+  await window.api.saveHistory([...(history as DownloadHistoryItem[]), item]).catch(() => null)
 }
 </script>
 

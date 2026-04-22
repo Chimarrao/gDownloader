@@ -1,257 +1,126 @@
 <template>
   <div class="link-grabber">
-    <div class="grabber-header">
-      <h2 class="grabber-title">Capturador de Links</h2>
-      <p class="grabber-sub">Cole links, aguarde a leitura e selecione o que vai para a fila.</p>
-    </div>
+    <LinkInputPanel v-model="urlsInput" @resize="autoResize" />
 
-    <div class="url-field">
-      <label class="field-label">Links para capturar</label>
-      <div class="textarea-wrapper">
-        <i class="pi pi-link textarea-icon"></i>
-        <textarea
-          v-model="urlsInput"
-          class="url-textarea"
-          placeholder="https://mega.nz/file/...&#10;https://www.mediafire.com/folder/...&#10;https://pixeldrain.com/l/..."
-          rows="5"
-          @input="autoResize"
-        ></textarea>
-      </div>
-    </div>
-
-    <div v-if="rows.length > 0" class="captured-panel">
-      <div class="status-chips">
-        <span class="status-chip">
-          Todos
-          <strong>{{ rows.length }}</strong>
-        </span>
-        <span class="status-chip is-online">
-          Online
-          <strong>{{ onlineCount }}</strong>
-        </span>
-        <span class="status-chip is-folder">
-          Pastas
-          <strong>{{ folderCount }}</strong>
-        </span>
-        <span class="status-chip is-file">
-          Arquivos
-          <strong>{{ fileCount }}</strong>
-        </span>
-        <span class="status-chip is-duplicate">
-          Duplicados
-          <strong>{{ duplicateCount }}</strong>
-        </span>
-        <span class="status-chip is-error">
-          Indisponível
-          <strong>{{ errorCount }}</strong>
-        </span>
-      </div>
-
-      <div class="captured-toolbar">
-        <label class="master-check">
-          <input
-            type="checkbox"
-            :checked="allSelectableChecked"
-            :indeterminate.prop="someSelectableChecked && !allSelectableChecked"
-            title="Selecionar ou desmarcar todos os itens disponíveis"
-            @change="toggleAll"
-          />
-          <span>Selecionar tudo</span>
-        </label>
-        <span class="captured-meta">
-          {{ selectedCount }} selecionado(s) · {{ availableCount }} disponível(is)
-        </span>
-      </div>
-
-      <div class="captured-list">
-        <div
-          v-for="row in rows"
-          :key="row.url"
-          class="captured-row"
-          :class="{ unavailable: !row.module || row.error }"
-        >
-          <div class="row-main">
-            <label class="row-check">
-              <input
-                type="checkbox"
-                :checked="isRowChecked(row)"
-                :indeterminate.prop="isRowIndeterminate(row)"
-                :disabled="rowSelectableUnitCount(row) === 0"
-                @change="toggleRow(row, $event)"
-              />
-            </label>
-
-            <span
-              class="row-icon"
-              :class="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).className"
-              :aria-label="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).alt"
-              role="img"
-            ></span>
-
-            <div class="row-copy">
-              <div class="row-title-line">
-                <div class="row-title">{{ row.info?.name ?? row.displayName }}</div>
-                <span
-                  class="row-badge"
-                  :class="{
-                    'is-loading': row.loading,
-                    'is-online': !row.loading && !row.error && !!row.module,
-                    'is-error': !!row.error,
-                    'is-folder': row.info?.isFolder,
-                  }"
-                >
-                  {{
-                    row.loading
-                      ? 'Lendo'
-                      : row.error
-                        ? 'Erro'
-                        : row.info?.isFolder
-                          ? 'Pasta'
-                          : 'Arquivo'
-                  }}
-                </span>
-              </div>
-              <div class="row-sub">
-                <span>{{ row.module?.name ?? 'Não suportado' }}</span>
-                <template v-if="row.sourceLabels.length > 1">
-                  <span>·</span>
-                  <span>{{ row.sourceLabels.length }} fontes: {{ row.sourceLabels.join(', ') }}</span>
-                </template>
-                <span>·</span>
-                <span v-if="row.loading">Lendo metadados...</span>
-                <span v-else-if="row.error">{{ row.error }}</span>
-                <span v-else-if="row.info">{{ fmtBytes(row.info.size) }}</span>
-              </div>
-            </div>
-
-            <button
-              v-if="(row.info?.isFolder && (row.info.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
-              class="expand-btn"
-              :title="row.expanded ? 'Ocultar detalhes' : 'Mostrar detalhes'"
-              @click="row.expanded = !row.expanded"
-            >
-              <i class="pi" :class="row.expanded ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
-            </button>
-          </div>
-
-          <div v-if="row.expanded && ((row.info?.isFolder && row.info.children?.length) || row.sourceUrls.length > 1)" class="child-panel">
-            <div v-if="row.sourceUrls.length > 1" class="source-panel">
-              <div class="source-heading">Fontes disponíveis</div>
-              <div
-                v-for="(sourceUrl, idx) in row.sourceUrls"
-                :key="`${row.url}:source:${sourceUrl}`"
-                class="source-row"
-              >
-                <span class="source-provider">{{ row.sourceLabels[idx] ?? 'Servidor' }}</span>
-                <span class="source-url" :title="sourceUrl">{{ truncateUrl(sourceUrl) }}</span>
-              </div>
-            </div>
-
-            <div v-if="row.info?.isFolder && row.info.children?.length" class="children-list">
-              <div
-                v-for="node in childNodes(row)"
-                :key="`${row.url}:${node.key}`"
-                class="child-row"
-                :class="{ 'is-folder-row': node.isFolder }"
-              >
-                <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
-                  <label
-                    v-if="supportsChildSelection(row) && node.original?.sourceUrl && !node.isFolder"
-                    class="child-check"
-                    :title="`Selecionar ${node.name}`"
-                  >
-                    <input
-                      type="checkbox"
-                      :checked="node.original.selected !== false"
-                      :disabled="!node.original.sourceUrl"
-                      @change="toggleChild(row, node.original, $event)"
-                    />
-                  </label>
-                  <span v-else class="child-check child-check-placeholder"></span>
-                  <span
-                    class="child-icon"
-                    :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
-                    :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
-                    role="img"
-                  ></span>
-                  <span>{{ node.name }}</span>
-                  <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
-                </div>
-                <span>{{ fmtBytes(node.size) }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <CapturedResultsPanel
+      v-if="rows.length > 0"
+      :rows="rows"
+      :all-selectable-checked="allSelectableChecked"
+      :some-selectable-checked="someSelectableChecked"
+      :selected-count="selectedCount"
+      :available-count="availableCount"
+      :online-count="onlineCount"
+      :offline-count="offlineCount"
+      :folder-count="folderCount"
+      :file-count="fileCount"
+      :duplicate-count="duplicateCount"
+      :error-count="errorCount"
+      :active-mirror-row-url="activeMirrorTarget?.rowUrl ?? ''"
+      :is-row-checked="isRowChecked"
+      :is-row-indeterminate="isRowIndeterminate"
+      :row-selectable-unit-count="rowSelectableUnitCount"
+      :supports-child-selection="supportsChildSelection"
+      :child-nodes="childNodes"
+      :folder-node-selectable-count="folderNodeSelectableCount"
+      :folder-node-selected-count="folderNodeSelectedCount"
+      :is-folder-node-checked="isFolderNodeChecked"
+      :is-folder-node-indeterminate="isFolderNodeIndeterminate"
+      :can-search-mirrors="canSearchMirrors"
+      :fmt-bytes="fmtBytes"
+      :truncate-url="truncateUrl"
+      @toggle-all="toggleAllChecked"
+      @toggle-row="toggleRowChecked"
+      @toggle-child="toggleChildChecked"
+      @toggle-folder-node="toggleFolderNodeChecked"
+      @set-row-selection="setRowSelectionChecked"
+      @toggle-expanded="toggleExpanded"
+      @open-mirrors="openMirrors"
+    />
 
     <p v-if="lastError" class="error-msg">
       <i class="pi pi-exclamation-triangle"></i>
       {{ lastError }}
     </p>
 
-    <div class="actions-row" ref="actionsRef">
-      <button
-        class="btn-clear"
-        :disabled="!urlsInput.trim() && rows.length === 0"
-        title="Limpar os links e resultados capturados"
-        @click="clear"
-      >
-        <i class="pi pi-trash"></i>
-        Limpar
-      </button>
-      <button
-        class="btn-add"
-        :disabled="selectedCount === 0 || adding"
-        :class="{ loading: adding }"
-        :title="adding ? 'Adicionando itens selecionados' : `Adicionar ${selectedCount} item(ns) selecionado(s)`"
-        @click="addAll"
-      >
-        <i :class="adding ? 'pi pi-spin pi-spinner' : 'pi pi-plus'"></i>
-        {{ adding ? 'Adicionando...' : `Adicionar ${selectedCount} selecionado(s)` }}
-      </button>
+    <MirrorSearchModal
+      v-if="activeMirrorTarget"
+      :filename="activeMirrorTarget.filename"
+      :searching="mirrorsSearching"
+      :current-searcher="mirrorCurrentSearcher"
+      :phase-label="mirrorPhaseLabel"
+      :progress-text="mirrorProgressText"
+      :progress-percent="mirrorProgressPercent"
+      :hoster-text="mirrorHosterText"
+      :elapsed-label="mirrorElapsedLabel"
+      :timing-label="mirrorTimingLabel"
+      :progress-headline="mirrorProgressHeadline"
+      :results="mirrorResults"
+      :log="mirrorsLog"
+      @close="closeMirrors"
+      @search="searchMirrors"
+      @copy-all="copyMirrorResults"
+      @copy-one="copyMirrorResult"
+    />
+
+    <div ref="actionsRef">
+      <LinkGrabberActionsBar
+        :disable-clear="!urlsInput.trim() && rows.length === 0"
+        :disable-add="selectedCount === 0 || adding"
+        :adding="adding"
+        :selected-count="selectedCount"
+        :add-button-label="addButtonLabel"
+        @clear="clear"
+        @add="addAll"
+      />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { getFileIcon } from '../assets/file-icons'
-import type { DownloadChild, FileInfo } from '../../../shared/types'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { FileInfo } from '../../../shared/types'
+import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
+import { formatBytes, formatDuration } from '../utils/format'
+import { parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
+import CapturedResultsPanel from './CapturedResultsPanel.vue'
+import LinkInputPanel from './LinkInputPanel.vue'
+import LinkGrabberActionsBar from './LinkGrabberActionsBar.vue'
+import MirrorSearchModal from './MirrorSearchModal.vue'
+import type { CapturedRow, MirrorViewResult, ModuleSummary, RowFileInfo, SelectableChild } from './link-grabber-model'
 
-interface ModuleSummary {
-  id: string
-  name: string
-  icon: string
-  color: string
+type MirrorSearchPhase = 'idle' | 'starting' | 'running' | 'completed' | 'done' | 'error'
+
+interface MirrorSearchState {
+  filename: string
+  totalSearchers: number
+  current: number
+  currentSearcher: string
+  phase: MirrorSearchPhase
+  totalResults: number
+  newResults: number
+  hosters: number
+  durationMs: number
+  startedAt: number
 }
 
-interface SelectableChild extends DownloadChild {
-  selected?: boolean
+interface ActiveMirrorTarget {
+  rowUrl: string
+  filename: string
 }
 
-interface RowFileInfo extends Omit<FileInfo, 'children'> {
-  children?: SelectableChild[]
-}
-
-interface CapturedRow {
-  url: string
-  displayName: string
-  module: ModuleSummary | null
-  info: RowFileInfo | null
-  loading: boolean
-  error: string
-  selected: boolean
-  expanded: boolean
-  sourceUrls: string[]
-  sourceLabels: string[]
+interface StoredMirrorSession {
+  searching: boolean
+  log: string[]
+  results: MirrorViewResult[]
+  state: MirrorSearchState
 }
 
 const emit = defineEmits<{
   (e: 'added'): void
   (e: 'adding-urls', count: number): void
 }>()
+const { t } = useI18n()
 
 const urlsInput = ref('')
 const rows = ref<CapturedRow[]>([])
@@ -259,6 +128,319 @@ const adding = ref(false)
 const lastError = ref('')
 const detectToken = ref(0)
 const actionsRef = ref<HTMLElement | null>(null)
+const addQueueDone = ref(0)
+const addQueueTotal = ref(0)
+let detectTimer: number | null = null
+
+// ── Mirrors ───────────────────────────────────────────────────────────────
+const mirrorsSearching = ref(false)
+const mirrorsLog = ref<string[]>([])
+const mirrorResults = ref<MirrorViewResult[]>([])
+const mirrorNow = ref(Date.now())
+const activeMirrorTarget = ref<ActiveMirrorTarget | null>(null)
+const mirrorSessions = ref<Record<string, StoredMirrorSession>>({})
+const mirrorState = ref<MirrorSearchState>({
+  filename: '',
+  totalSearchers: 0,
+  current: 0,
+  currentSearcher: '',
+  phase: 'idle',
+  totalResults: 0,
+  newResults: 0,
+  hosters: 0,
+  durationMs: 0,
+  startedAt: 0,
+})
+
+let mirrorsCleanup: (() => void) | null = null
+let mirrorsTicker: number | null = null
+
+const mirrorProgressPercent = computed(() => {
+  const total = mirrorState.value.totalSearchers
+  if (total <= 0) return 0
+  return Math.min(100, Math.round((mirrorState.value.current / total) * 100))
+})
+
+const mirrorProgressText = computed(() => {
+  const total = mirrorState.value.totalSearchers
+  if (total <= 0) return '0/0'
+  return `${Math.min(mirrorState.value.current, total)}/${total}`
+})
+
+const mirrorCurrentSearcher = computed(() => {
+  if (mirrorState.value.currentSearcher) return mirrorState.value.currentSearcher
+  return mirrorsSearching.value ? t('mirrorsPreparing') : t('mirrorsWaiting')
+})
+
+const mirrorPhaseLabel = computed(() => {
+  switch (mirrorState.value.phase) {
+    case 'starting':
+      return t('mirrorsPhaseStarting')
+    case 'running':
+      return t('mirrorsPhaseRunning')
+    case 'completed':
+      return mirrorState.value.newResults > 0
+        ? `+${mirrorState.value.newResults} ${t('mirrorsPhaseRoundResults')}`
+        : t('mirrorsPhaseRoundDone')
+    case 'done':
+      return t('mirrorsPhaseDone')
+    case 'error':
+      return t('mirrorsPhaseInterrupted')
+    default:
+      return t('mirrorsReady')
+  }
+})
+
+const mirrorDurationMs = computed(() => {
+  if (mirrorsSearching.value && mirrorState.value.startedAt > 0) {
+    return Math.max(0, mirrorNow.value - mirrorState.value.startedAt)
+  }
+  return mirrorState.value.durationMs
+})
+
+const mirrorElapsedLabel = computed(() => formatDuration(mirrorDurationMs.value))
+
+const mirrorTimingLabel = computed(() => {
+  if (mirrorsSearching.value) return t('mirrorsLiveUpdating')
+  if (mirrorState.value.durationMs > 0) return t('mirrorsLastSearch')
+  return t('mirrorsWaitingSearch')
+})
+
+const mirrorHosterText = computed(() => {
+  if (mirrorState.value.hosters > 0 || mirrorState.value.phase === 'done') {
+    return `${mirrorState.value.hosters} hoster(s)`
+  }
+  return `${mirrorState.value.totalResults} encontrado(s)`
+})
+
+const mirrorProgressHeadline = computed(() => {
+  if (mirrorState.value.currentSearcher) {
+    return `${t('mirrorsSearchingIn')} ${mirrorState.value.currentSearcher}`
+  }
+  return mirrorsSearching.value ? t('mirrorsPreparingScan') : t('mirrorsReady')
+})
+
+function startMirrorsTicker(): void {
+  stopMirrorsTicker()
+  mirrorNow.value = Date.now()
+  mirrorsTicker = window.setInterval(() => {
+    mirrorNow.value = Date.now()
+  }, 400)
+}
+
+function stopMirrorsTicker(): void {
+  if (mirrorsTicker !== null) {
+    window.clearInterval(mirrorsTicker)
+    mirrorsTicker = null
+  }
+}
+
+function currentMirrorSession(): StoredMirrorSession {
+  return {
+    searching: mirrorsSearching.value,
+    log: [...mirrorsLog.value],
+    results: [...mirrorResults.value],
+    state: { ...mirrorState.value },
+  }
+}
+
+function restoreMirrorSession(target: ActiveMirrorTarget): void {
+  const session = mirrorSessions.value[target.rowUrl]
+  if (!session) {
+    mirrorsSearching.value = false
+    mirrorsLog.value = []
+    mirrorResults.value = []
+    mirrorState.value = {
+      filename: target.filename,
+      totalSearchers: 0,
+      current: 0,
+      currentSearcher: '',
+      phase: 'idle',
+      totalResults: 0,
+      newResults: 0,
+      hosters: 0,
+      durationMs: 0,
+      startedAt: 0,
+    }
+    stopMirrorsTicker()
+    return
+  }
+
+  mirrorsSearching.value = session.searching
+  mirrorsLog.value = [...session.log]
+  mirrorResults.value = [...session.results]
+  mirrorState.value = { ...session.state }
+  if (session.searching) {
+    startMirrorsTicker()
+  } else {
+    stopMirrorsTicker()
+  }
+}
+
+function persistMirrorSession(): void {
+  const target = activeMirrorTarget.value
+  if (!target) return
+  mirrorSessions.value = {
+    ...mirrorSessions.value,
+    [target.rowUrl]: currentMirrorSession(),
+  }
+}
+
+function scrollMirrorsLog(): void {
+  nextTick(() => undefined)
+}
+
+function resetMirrorSearch(): void {
+  window.api.mirrors.abort()
+  mirrorsCleanup?.()
+  mirrorsCleanup = null
+  stopMirrorsTicker()
+  mirrorsSearching.value = false
+  mirrorsLog.value = []
+  mirrorResults.value = []
+  mirrorState.value = {
+    filename: activeMirrorTarget.value?.filename ?? '',
+    totalSearchers: 0,
+    current: 0,
+    currentSearcher: '',
+    phase: 'idle',
+    totalResults: 0,
+    newResults: 0,
+    hosters: 0,
+    durationMs: 0,
+    startedAt: 0,
+  }
+  persistMirrorSession()
+}
+
+function finishMirrorSearch(phase: MirrorSearchPhase): void {
+  mirrorsSearching.value = false
+  mirrorState.value.phase = phase
+  stopMirrorsTicker()
+  mirrorsCleanup?.()
+  mirrorsCleanup = null
+  persistMirrorSession()
+}
+
+function pushMirrorLog(message: string): void {
+  mirrorsLog.value.push(message)
+  persistMirrorSession()
+  scrollMirrorsLog()
+}
+
+function pushMirrorResult(result: MirrorViewResult): void {
+  if (mirrorResults.value.some((item) => item.url === result.url)) {
+    return
+  }
+  mirrorResults.value = [...mirrorResults.value, result].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score
+    return a.url.localeCompare(b.url)
+  })
+  persistMirrorSession()
+}
+
+function canSearchMirrors(row: CapturedRow): boolean {
+  return !!row.info?.name && !row.info.isFolder && !row.loading && !row.error
+}
+
+function openMirrors(row: CapturedRow): void {
+  if (!canSearchMirrors(row) || !row.info?.name) {
+    return
+  }
+
+  const nextTarget: ActiveMirrorTarget = {
+    rowUrl: row.url,
+    filename: row.info.name,
+  }
+  const changedTarget = activeMirrorTarget.value?.rowUrl !== nextTarget.rowUrl
+    || activeMirrorTarget.value?.filename !== nextTarget.filename
+
+  if (changedTarget) {
+    persistMirrorSession()
+    window.api.mirrors.abort()
+    mirrorsCleanup?.()
+    mirrorsCleanup = null
+    stopMirrorsTicker()
+  }
+
+  activeMirrorTarget.value = nextTarget
+  restoreMirrorSession(nextTarget)
+}
+
+function closeMirrors(): void {
+  persistMirrorSession()
+  window.api.mirrors.abort()
+  mirrorsCleanup?.()
+  mirrorsCleanup = null
+  stopMirrorsTicker()
+  activeMirrorTarget.value = null
+}
+
+async function searchMirrors(): Promise<void> {
+  const filename = activeMirrorTarget.value?.filename
+  if (!filename || mirrorsSearching.value) return
+
+  resetMirrorSearch()
+  mirrorsSearching.value = true
+  mirrorState.value = {
+    filename,
+    totalSearchers: 0,
+    current: 0,
+    currentSearcher: '',
+    phase: 'starting',
+    totalResults: 0,
+    newResults: 0,
+    hosters: 0,
+    durationMs: 0,
+    startedAt: Date.now(),
+  }
+  startMirrorsTicker()
+
+  mirrorsCleanup = window.api.mirrors.onEvent((event) => {
+    if (event.type === 'start') {
+      mirrorState.value.filename = event.payload.filename || filename
+      mirrorState.value.totalSearchers = event.payload.total
+      mirrorState.value.phase = 'starting'
+    } else if (event.type === 'progress') {
+      mirrorState.value.current = event.payload.current
+      mirrorState.value.totalSearchers = event.payload.total
+      mirrorState.value.currentSearcher = event.payload.searcher
+      mirrorState.value.phase = event.payload.phase === 'completed' ? 'completed' : 'running'
+      mirrorState.value.newResults = event.payload.newResults
+      mirrorState.value.totalResults = event.payload.totalResults
+    } else if (event.type === 'log') {
+      pushMirrorLog(event.payload)
+    } else if (event.type === 'result') {
+      pushMirrorResult(event.payload)
+      mirrorState.value.totalResults = Math.max(mirrorState.value.totalResults, mirrorResults.value.length)
+    } else if (event.type === 'done') {
+      mirrorState.value.filename = event.payload.filename || filename
+      mirrorState.value.totalSearchers = event.payload.searchers
+      mirrorState.value.current = event.payload.searchers
+      mirrorState.value.currentSearcher = t('mirrorsDoneLabel')
+      mirrorState.value.totalResults = event.payload.total
+      mirrorState.value.hosters = event.payload.hosters
+      mirrorState.value.durationMs = event.payload.durationMs
+      finishMirrorSearch('done')
+    } else if (event.type === 'error') {
+      pushMirrorLog(`[erro] ${event.payload}`)
+      finishMirrorSearch('error')
+    }
+  })
+
+  await window.api.mirrors.search(filename).catch((err: Error) => {
+    pushMirrorLog(`[erro] ${err.message}`)
+    finishMirrorSearch('error')
+  })
+}
+
+async function copyMirrorResults(): Promise<void> {
+  await window.api.clipboard.writeText(mirrorResults.value.map((result) => result.url).join('\n'))
+}
+
+async function copyMirrorResult(url: string): Promise<void> {
+  await window.api.clipboard.writeText(url)
+}
 
 interface QueueEntry {
   url: string
@@ -327,17 +509,78 @@ const availableCount = computed(() => rows.value.reduce((sum, row) => sum + rowS
 const selectedUnitCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0))
 const allSelectableChecked = computed(() => availableCount.value > 0 && selectedUnitCount.value === availableCount.value)
 const someSelectableChecked = computed(() => selectedUnitCount.value > 0)
-const onlineCount = computed(() => rows.value.filter((row) => row.module && !row.loading && !row.error).length)
+const onlineCount = computed(() => rows.value.filter((row) => row.availability === 'online').length)
+const offlineCount = computed(() => rows.value.filter((row) => row.availability === 'offline').length)
 const errorCount = computed(() => rows.value.filter((row) => !!row.error).length)
 const folderCount = computed(() => rows.value.filter((row) => row.info?.isFolder).length)
 const fileCount = computed(() => rows.value.filter((row) => row.info && !row.info.isFolder).length)
 const duplicateCount = computed(() => rows.value.filter((row) => row.sourceUrls.length > 1).length)
+const addButtonLabel = computed(() => {
+  if (!adding.value) {
+    return `${t('linkGrabberAddSelected')} ${selectedCount.value} ${t('linkGrabberSelectedSuffix')}`
+  }
+  const total = addQueueTotal.value || selectedEntries.value.length
+  return `${t('linkGrabberQueueing')} ${Math.min(addQueueDone.value, total)}/${total}`
+})
 
 onMounted(async () => {
   await window.api.settings.load().catch(() => null)
 })
 
-watch(urlsInput, () => void detectProviders())
+onUnmounted(() => {
+  if (detectTimer !== null) {
+    window.clearTimeout(detectTimer)
+    detectTimer = null
+  }
+  window.api.mirrors.abort()
+  mirrorsCleanup?.()
+  mirrorsCleanup = null
+  stopMirrorsTicker()
+})
+
+watch(urlsInput, () => {
+  if (detectTimer !== null) {
+    window.clearTimeout(detectTimer)
+  }
+  detectTimer = window.setTimeout(() => {
+    void detectProviders()
+  }, 220)
+})
+
+watch(
+  rows,
+  () => {
+    const target = activeMirrorTarget.value
+    if (!target) {
+      return
+    }
+
+    const row = rows.value.find((item) => item.url === target.rowUrl)
+    if (!row || !canSearchMirrors(row) || !row.info?.name) {
+      closeMirrors()
+      return
+    }
+
+    if (row.info.name !== target.filename && !mirrorsSearching.value) {
+      activeMirrorTarget.value = {
+        ...target,
+        filename: row.info.name,
+      }
+      mirrorState.value.filename = row.info.name
+    }
+  },
+  { deep: true }
+)
+
+watch(activeMirrorTarget, (next, prev) => {
+  if (!next) {
+    return
+  }
+
+  if (!prev || next.rowUrl !== prev.rowUrl || next.filename !== prev.filename) {
+    nextTick(() => undefined)
+  }
+})
 
 watch(
   () => rows.value.every((r) => !r.loading),
@@ -349,20 +592,13 @@ watch(
 )
 
 function parseUrls(text: string): string[] {
-  const seen = new Set<string>()
-  for (const line of text.split('\n')) {
-    const url = normalizeUrlCandidate(line)
-    if (url) seen.add(url)
-  }
-  return [...seen]
+  return parseCapturedUrls(text)
 }
 
-function normalizeUrlCandidate(line: string): string {
-  const trimmed = line.trim()
-  if (!trimmed) return ''
-  const match = trimmed.match(/https?:\/\/\S+/i)
-  if (!match) return ''
-  return match[0].replace(/[),.;]+$/, '')
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
 }
 
 async function detectProviders(): Promise<void> {
@@ -382,14 +618,30 @@ async function detectProviders(): Promise<void> {
     info: null,
     loading: true,
     error: '',
+    availability: 'checking',
+    cachedInfo: false,
     selected: true,
     expanded: false,
     sourceUrls: [url],
     sourceLabels: [],
   }))
 
-  await Promise.all(
-    rows.value.map(async (row, index) => {
+  const queue = rows.value.map((_, index) => index)
+  let processed = 0
+  const workerCount = Math.min(4, queue.length)
+
+  const worker = async (): Promise<void> => {
+    while (queue.length > 0) {
+      const index = queue.shift()
+      if (typeof index !== 'number') {
+        return
+      }
+
+      const row = rows.value[index]
+      if (!row) {
+        continue
+      }
+
       try {
         const module = await window.api.modules.detect(row.url)
         if (token !== detectToken.value) return
@@ -397,25 +649,58 @@ async function detectProviders(): Promise<void> {
 
         if (!module) {
           rows.value[index].loading = false
-          rows.value[index].error = 'Servidor não suportado'
+          rows.value[index].error = t('linkGrabberUnsupportedServer')
+          rows.value[index].availability = 'unknown'
           rows.value[index].selected = false
           return
         }
 
-        const info = await window.api.modules.fileInfo(module.id, row.url)
+        const cached = await window.api.modules.cachedFileInfo(module.id, row.url).catch(() => null)
         if (token !== detectToken.value) return
-        rows.value[index].info = hydrateInfoForSelection(info)
-        rows.value[index].displayName = info.name
-        rows.value[index].selected = isRowChecked(rows.value[index])
-        rows.value[index].loading = false
+
+        if (cached) {
+          rows.value[index].info = hydrateInfoForSelection(cached)
+          rows.value[index].displayName = cached.name
+          rows.value[index].cachedInfo = true
+          rows.value[index].availability = 'checking'
+        }
+
+        try {
+          const info = await window.api.modules.fileInfo(module.id, row.url)
+          if (token !== detectToken.value) return
+          rows.value[index].info = hydrateInfoForSelection(info)
+          rows.value[index].displayName = info.name
+          rows.value[index].selected = isRowChecked(rows.value[index])
+          rows.value[index].loading = false
+          rows.value[index].availability = 'online'
+          rows.value[index].cachedInfo = false
+          rows.value[index].error = ''
+        } catch (error) {
+          if (token !== detectToken.value) return
+          rows.value[index].loading = false
+          rows.value[index].selected = false
+          rows.value[index].availability = cached ? 'offline' : 'unknown'
+          rows.value[index].error = error instanceof Error ? error.message : String(error)
+          if (!cached) {
+            throw error
+          }
+        }
       } catch (error) {
         if (token !== detectToken.value) return
         rows.value[index].loading = false
         rows.value[index].selected = false
         rows.value[index].error = error instanceof Error ? error.message : String(error)
+        rows.value[index].availability = rows.value[index].info ? 'offline' : 'unknown'
+      } finally {
+        processed += 1
+        if (processed % 3 === 0) {
+          await nextFrame()
+        }
       }
-    })
-  )
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
 
   if (token === detectToken.value) {
     rows.value = groupDuplicateRows(rows.value)
@@ -424,13 +709,17 @@ async function detectProviders(): Promise<void> {
 
 async function addAll(): Promise<void> {
   if (selectedEntries.value.length === 0 || adding.value) return
+  const entries = [...selectedEntries.value]
   adding.value = true
+  addQueueDone.value = 0
+  addQueueTotal.value = entries.length
   lastError.value = ''
   let addedCount = 0
-  emit('adding-urls', selectedEntries.value.length)
+  emit('adding-urls', entries.length)
+  emit('added')
   const current = await window.api.settings.load().catch(() => null)
   const outputDir = current?.outputDir ?? '~/Downloads'
-  for (const entry of selectedEntries.value) {
+  for (const entry of entries) {
     try {
       await window.api.downloads.add(
         entry.url,
@@ -441,21 +730,23 @@ async function addAll(): Promise<void> {
         entry.selectedChildren
       )
       addedCount += 1
+      addQueueDone.value = addedCount
+      await nextFrame()
     } catch (err) {
-      lastError.value = `Erro ao adicionar: ${truncateUrl(entry.url)} — ${err instanceof Error ? err.message : String(err)}`
+      lastError.value = `${t('linkGrabberAddError')} ${truncateUrl(entry.url)} — ${err instanceof Error ? err.message : String(err)}`
     }
   }
 
   adding.value = false
-  if (addedCount > 0) {
+  addQueueDone.value = 0
+  addQueueTotal.value = 0
+  if (addedCount === entries.length) {
     urlsInput.value = ''
     rows.value = []
-    emit('added')
   }
 }
 
-function toggleAll(event: Event): void {
-  const checked = (event.target as HTMLInputElement).checked
+function toggleAllChecked(checked: boolean): void {
   for (const row of selectableRows.value) {
     setRowSelection(row, checked)
   }
@@ -465,23 +756,13 @@ function clear(): void {
   urlsInput.value = ''
   rows.value = []
   lastError.value = ''
+  closeMirrors()
 }
 
 function autoResize(event: Event): void {
   const el = event.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
-}
-
-function truncateUrl(url: string): string {
-  try {
-    const u = new URL(url)
-    const parts = u.pathname.split('/').filter(Boolean)
-    const last = parts[parts.length - 1] || u.hostname
-    return last.length > 44 ? last.slice(0, 41) + '...' : last
-  } catch {
-    return url.length > 50 ? url.slice(0, 47) + '...' : url
-  }
 }
 
 function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
@@ -494,7 +775,7 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
       : `url::${row.url}`
 
     const existing = grouped.get(key)
-    const sourceLabel = row.module?.name ?? 'Não suportado'
+    const sourceLabel = row.module?.name ?? t('linkGrabberUnsupported')
 
     if (!existing) {
       grouped.set(key, {
@@ -509,6 +790,9 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
     existing.sourceLabels.push(sourceLabel)
     existing.expanded = existing.expanded || row.expanded
     existing.selected = existing.selected || row.selected
+    if (existing.availability !== 'online' && row.availability === 'online') existing.availability = 'online'
+    if (existing.availability !== 'online' && existing.availability !== 'offline' && row.availability === 'offline') existing.availability = 'offline'
+    existing.cachedInfo = existing.cachedInfo || row.cachedInfo
 
     if (!existing.module && row.module) existing.module = row.module
     if ((!existing.info || !existing.info.children?.length) && row.info) existing.info = row.info
@@ -551,6 +835,26 @@ function selectableChildren(row: CapturedRow): SelectableChild[] {
   return row.info.children.filter((child) => !!child.sourceUrl && !child.isFolder)
 }
 
+function selectableChildrenFromNode(node: DerivedChildNode<SelectableChild>): SelectableChild[] {
+  const children: SelectableChild[] = []
+
+  const visit = (current: DerivedChildNode<SelectableChild>): void => {
+    if (current.isFolder) {
+      for (const child of current.children) {
+        visit(child)
+      }
+      return
+    }
+
+    if (current.original?.sourceUrl && !current.original.isFolder) {
+      children.push(current.original)
+    }
+  }
+
+  visit(node)
+  return children
+}
+
 function rowSelectableUnitCount(row: CapturedRow): number {
   if (!row.module || row.loading || row.error) {
     return 0
@@ -578,6 +882,25 @@ function isRowIndeterminate(row: CapturedRow): boolean {
   return selected > 0 && selected < total
 }
 
+function folderNodeSelectableCount(node: DerivedChildNode<SelectableChild>): number {
+  return selectableChildrenFromNode(node).length
+}
+
+function folderNodeSelectedCount(node: DerivedChildNode<SelectableChild>): number {
+  return selectableChildrenFromNode(node).filter((child) => child.selected !== false).length
+}
+
+function isFolderNodeChecked(node: DerivedChildNode<SelectableChild>): boolean {
+  const total = folderNodeSelectableCount(node)
+  return total > 0 && folderNodeSelectedCount(node) === total
+}
+
+function isFolderNodeIndeterminate(node: DerivedChildNode<SelectableChild>): boolean {
+  const selected = folderNodeSelectedCount(node)
+  const total = folderNodeSelectableCount(node)
+  return selected > 0 && selected < total
+}
+
 function setRowSelection(row: CapturedRow, checked: boolean): void {
   if (supportsChildSelection(row)) {
     for (const child of selectableChildren(row)) {
@@ -587,21 +910,36 @@ function setRowSelection(row: CapturedRow, checked: boolean): void {
   row.selected = checked
 }
 
-function toggleRow(row: CapturedRow, event: Event): void {
-  setRowSelection(row, (event.target as HTMLInputElement).checked)
+function setRowSelectionChecked(payload: { row: CapturedRow; checked: boolean }): void {
+  setRowSelection(payload.row, payload.checked)
 }
 
-function toggleChild(row: CapturedRow, child: SelectableChild, event: Event): void {
-  child.selected = (event.target as HTMLInputElement).checked
-  row.selected = isRowChecked(row)
+function toggleExpanded(row: CapturedRow): void {
+  row.expanded = !row.expanded
+}
+
+function toggleRowChecked(payload: { row: CapturedRow; checked: boolean }): void {
+  setRowSelection(payload.row, payload.checked)
+}
+
+function toggleChildChecked(payload: { row: CapturedRow; child: SelectableChild; checked: boolean }): void {
+  payload.child.selected = payload.checked
+  payload.row.selected = isRowChecked(payload.row)
+}
+
+function toggleFolderNodeChecked(payload: { row: CapturedRow; node: DerivedChildNode<SelectableChild>; checked: boolean }): void {
+  for (const child of selectableChildrenFromNode(payload.node)) {
+    child.selected = payload.checked
+  }
+  payload.row.selected = isRowChecked(payload.row)
 }
 
 function fmtBytes(n: number): string {
-  if (!n || n <= 0) return '0 B'
-  if (n < 1024) return `${n} B`
-  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`
-  return `${(n / 1073741824).toFixed(2)} GB`
+  return formatBytes(n)
+}
+
+function truncateUrl(url: string): string {
+  return shortenUrl(url)
 }
 </script>
 
@@ -863,14 +1201,47 @@ function fmtBytes(n: number): string {
   color: var(--text-muted);
 }
 
-.expand-btn {
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.row-action-btn {
   width: 28px;
   height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid rgba(126, 139, 164, 0.22);
   border-radius: 8px;
   background: var(--bg-card);
   color: #66758a;
   cursor: pointer;
+}
+
+.row-action-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-color) 30%, var(--border-color));
+  color: var(--accent-color);
+}
+
+.row-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.row-action-btn.is-mirror {
+  color: #5b7cff;
+  background: color-mix(in srgb, #5b7cff 8%, var(--bg-card));
+  border-color: rgba(91, 124, 255, 0.2);
+}
+
+.row-action-btn.is-mirror.is-active {
+  color: #fff;
+  background: linear-gradient(90deg, #5b7cff, #6f63ff);
+  border-color: transparent;
+  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.22);
 }
 
 .child-panel {
@@ -914,6 +1285,45 @@ function fmtBytes(n: number): string {
 .children-list {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+}
+
+.children-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+}
+
+.tree-master-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tree-master-check input,
+.child-check input {
+  accent-color: var(--accent-color);
+}
+
+.tree-action-btn {
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .child-row {
@@ -922,6 +1332,7 @@ function fmtBytes(n: number): string {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  padding: 6px 0;
 }
 
 .child-row + .child-row {
@@ -977,12 +1388,430 @@ function fmtBytes(n: number): string {
 
 .is-folder-row {
   background: color-mix(in srgb, var(--bg-card) 82%, rgba(255, 193, 7, 0.07));
+  border-radius: 10px;
+}
+
+.child-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.child-selection-meta {
+  min-width: 48px;
+  text-align: right;
+  color: var(--accent-color);
+  font-weight: 700;
 }
 
 .error-msg {
   margin: 0;
   color: #ef5350;
   font-size: 12px;
+}
+
+/* ── Mirrors modal ─────────────────────────────────────────────────────── */
+.mirrors-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(7px);
+}
+
+.mirrors-modal {
+  width: min(1180px, 100%);
+  max-height: calc(100vh - 44px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid rgba(91, 124, 255, 0.22);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--bg-card) 97%, #5b7cff 3%);
+  box-shadow: 0 26px 70px rgba(15, 23, 42, 0.26);
+  overflow: hidden;
+}
+
+.mirrors-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mirrors-modal-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mirrors-modal-subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mirrors-modal-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mirrors-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mirrors-title-row .pi {
+  color: #6f63ff;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.mirrors-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mirrors-file {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.mirrors-file-card {
+  padding: 11px 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(91, 124, 255, 0.14);
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-secondary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-find-mirrors {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(91, 124, 255, 0.35);
+  background: linear-gradient(90deg, #5b7cff, #6f63ff);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+
+.btn-find-mirrors:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-find-mirrors:not(:disabled):hover {
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.45);
+  transform: translateY(-1px);
+  transition: all 0.15s ease;
+}
+
+.mirrors-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.mirrors-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mirrors-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(91, 124, 255, 0.12);
+  background: color-mix(in srgb, var(--bg-card) 92%, #f4f7ff 8%);
+}
+
+.mirrors-stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+}
+
+.mirrors-stat-card strong {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirrors-stat-card small {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirrors-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(91, 124, 255, 0.12);
+  background: color-mix(in srgb, var(--bg-card) 94%, #eef3ff 6%);
+}
+
+.mirrors-progress-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.mirrors-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(126, 139, 164, 0.14);
+  overflow: hidden;
+}
+
+.mirrors-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #5b7cff, #6f63ff);
+  transition: width 0.25s ease;
+}
+
+.mirrors-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.mirrors-log-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(126, 139, 164, 0.15);
+}
+
+.mirrors-log-head,
+.mirrors-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(126, 139, 164, 0.12);
+  background: color-mix(in srgb, var(--bg-card) 95%, #eef2fb 5%);
+}
+
+.mirrors-log-head span,
+.mirrors-results-head span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.mirrors-log-head small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.mirrors-log {
+  display: block;
+  margin: 0;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-primary) 90%, #000 10%);
+  color: #a0b0c8;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mirrors-results-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(126, 139, 164, 0.15);
+  background: color-mix(in srgb, var(--bg-card) 98%, #fff 2%);
+}
+
+.mirrors-results-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1c9b59;
+}
+
+.mirrors-results-label .pi {
+  font-size: 12px;
+}
+
+.mirrors-copy-btn {
+  border: 1px solid rgba(46, 204, 113, 0.22);
+  background: rgba(46, 204, 113, 0.08);
+  color: #1c9b59;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mirrors-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.mirror-result-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(46, 204, 113, 0.18);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-card) 92%, #ecfff4 8%);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.mirror-result-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(46, 204, 113, 0.34);
+  box-shadow: 0 8px 22px rgba(46, 204, 113, 0.1);
+}
+
+.mirror-result-top,
+.mirror-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mirror-result-source,
+.mirror-result-score,
+.mirror-result-meta {
+  font-size: 11px;
+}
+
+.mirror-result-source {
+  font-weight: 700;
+  color: #1c9b59;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.mirror-result-score {
+  color: var(--text-muted);
+}
+
+.mirror-result-url {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.mirror-result-meta {
+  color: var(--text-muted);
+}
+
+.mirrors-empty {
+  padding: 18px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 980px) {
+  .mirrors-stats,
+  .mirrors-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .mirrors-modal {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+    padding: 14px;
+  }
+
+  .mirrors-stats,
+  .mirrors-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mirrors-modal-header,
+  .mirrors-progress-copy,
+  .mirrors-log-head,
+  .mirrors-results-head,
+  .mirror-result-top,
+  .mirror-result-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .actions-row {

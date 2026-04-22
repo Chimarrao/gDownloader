@@ -120,24 +120,15 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import Tooltip from 'primevue/tooltip'
+import type { DownloadHistoryItem } from '../../../shared/types'
 
 const vTooltip = Tooltip
-
-interface HistoryItem {
-  id: string
-  url: string
-  title: string
-  thumbnail: string
-  date: string
-  formatId: string
-  outputPath?: string
-}
 
 const emit = defineEmits<{
   (e: 'redownload', url: string): void
 }>()
 
-const history = ref<HistoryItem[]>([])
+const history = ref<DownloadHistoryItem[]>([])
 const search = ref('')
 
 const filtered = computed(() => {
@@ -188,7 +179,7 @@ async function handleClear(): Promise<void> {
   await window.api.clearHistory()
 }
 
-function addToHistory(item: HistoryItem): void {
+function addToHistory(item: DownloadHistoryItem): void {
   history.value.unshift(item)
   window.api.saveHistory([...history.value].reverse())
 }

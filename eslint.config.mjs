@@ -26,6 +26,21 @@ export default defineConfig(
     rules: {
       'vue/require-default-prop': 'off',
       'vue/multi-word-component-names': 'off',
+      'no-console': ['warn', { allow: ['error'] }],
+      'no-restricted-imports': ['error', {
+        patterns: [
+          {
+            group: [
+              '**/src/renderer/src/api/client',
+              '**/src/renderer/src/api/types',
+              '**/src/main/downloads-store',
+              '**/src/main/history-store',
+              '**/src/main/settings-store',
+            ],
+            message: 'Use a superfície nova do preload/app-storage; estes módulos legados não devem voltar.',
+          },
+        ],
+      }],
       'vue/block-lang': [
         'error',
         {

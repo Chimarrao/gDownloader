@@ -4,7 +4,11 @@ import googledriveSvg from './provider-icons/googledrive.svg?raw'
 import anonfilesSvg from './provider-icons/anonfiles.svg?raw'
 import onedriveSvg from './provider-icons/onedrive.svg?raw'
 import drimeSvg from './provider-icons/drime.svg?raw'
+import rapidgatorSvg from './provider-icons/rapidgator.svg?raw'
 import teraboxSvg from './provider-icons/terabox.svg?raw'
+import akiraboxSvg from './provider-icons/akirabox.svg?raw'
+import brfilesSvg from './provider-icons/brfiles.svg?raw'
+import katfileSvg from './provider-icons/katfile.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -31,6 +35,10 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#2ec4b6',
     svg: drimeSvg,
   },
+  rapidgator: {
+    color: '#23a2dc',
+    svg: rapidgatorSvg,
+  },
   googledrive: {
     color: '#4285F4',
     svg: googledriveSvg,
@@ -55,6 +63,33 @@ const ICONS: Record<string, ProviderIcon> = {
     <text x="18" y="24" text-anchor="middle" font-size="10" font-weight="bold" fill="#ff7b00" font-family="sans-serif">P</text>
   </svg>`,
   },
+  brupload: {
+    color: '#16a34a',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#16a34a"/>
+      <text x="18" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="Arial, sans-serif">BR</text>
+    </svg>`,
+  },
+  brfiles: {
+    color: '#22c55e',
+    svg: brfilesSvg,
+  },
+  moondl: {
+    color: '#64748b',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#64748b"/>
+      <path d="M10 22C10 16.477 14.477 12 20 12C23.732 12 26.986 14.043 28.715 17.074C27.43 16.338 25.94 15.917 24.353 15.917C19.499 15.917 15.564 19.852 15.564 24.706C15.564 25.338 15.63 25.954 15.756 26.549C12.355 24.994 10 21.557 10 22Z" fill="white"/>
+      <circle cx="23.5" cy="23.5" r="5.5" fill="#e2e8f0"/>
+    </svg>`,
+  },
+  akirabox: {
+    color: '#0f172a',
+    svg: akiraboxSvg,
+  },
+  katfile: {
+    color: '#2563eb',
+    svg: katfileSvg,
+  },
   default: {
     color: '#7c6fff',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
@@ -65,8 +100,32 @@ const ICONS: Record<string, ProviderIcon> = {
   }
 }
 
+function normalizeProviderKey(moduleId: string): string {
+  const raw = moduleId.toLowerCase().replace(/[^a-z]/g, '')
+  const aliases: Record<string, string> = {
+    googledrive: 'googledrive',
+    googledrivecom: 'googledrive',
+    gdrive: 'googledrive',
+    drivegooglecom: 'googledrive',
+    onedrive: 'onedrive',
+    terabox: 'terabox',
+    rapidgator: 'rapidgator',
+    brupload: 'brupload',
+    brfiles: 'brfiles',
+    moondl: 'moondl',
+    akirabox: 'akirabox',
+    katfile: 'katfile',
+    mediafire: 'mediafire',
+    mega: 'mega',
+    pixeldrain: 'pixeldrain',
+    drime: 'drime',
+    fichier: 'fichier',
+  }
+  return aliases[raw] ?? raw
+}
+
 export function getProviderIcon(moduleId: string): ProviderIcon {
-  const key = moduleId.toLowerCase().replace(/[^a-z]/g, '')
+  const key = normalizeProviderKey(moduleId)
   return ICONS[key] ?? ICONS.default
 }
 
@@ -74,4 +133,4 @@ export function getProviderColor(moduleId: string): string {
   return getProviderIcon(moduleId).color
 }
 
-export { ICONS }
+export { ICONS, normalizeProviderKey }

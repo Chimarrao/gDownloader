@@ -33,6 +33,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { formatSpeed } from '../utils/format'
 
 const WIDTH = 120
 const HEIGHT = 36
@@ -73,10 +74,7 @@ const fillPoints = computed(() => {
 })
 
 const formattedSpeed = computed(() => {
-  const bps = props.currentSpeed
-  if (!bps || bps <= 0) return '0 KB/s'
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`
-  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+  return formatSpeed(props.currentSpeed)
 })
 </script>
 

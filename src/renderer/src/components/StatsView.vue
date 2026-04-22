@@ -101,16 +101,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-
-interface HistoryItem {
-  id: string
-  url: string
-  title: string
-  thumbnail: string
-  date: string
-  formatId: string
-  outputPath?: string
-}
+import type { DownloadHistoryItem } from '../../../shared/types'
 
 interface DayStat {
   label: string
@@ -124,7 +115,7 @@ interface FormatStat {
   pct: number
 }
 
-const history = ref<HistoryItem[]>([])
+const history = ref<DownloadHistoryItem[]>([])
 
 onMounted(async () => {
   try {

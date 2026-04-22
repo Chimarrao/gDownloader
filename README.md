@@ -4,175 +4,155 @@
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-stable-CE422B?logo=rust&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white)
-![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black)
-![Windows](https://img.shields.io/badge/Windows-supported-0078D4?logo=windows&logoColor=white)
 
-<!-- keywords: download manager, electron app, rust backend, mega downloader, mediafire downloader, google drive downloader, pixeldrain, gerenciador de downloads, cliente de downloads, desktop app, fila de downloads, axum, vue3, tokio -->
+Gerenciador de downloads desktop com Electron + Vue no frontend e backend local em Rust/Axum, com fila persistente em SQLite.
 
-> Gerenciador de downloads open-source com interface desktop (Electron/Vue 3) e backend em Rust/Axum.
-> Baixe arquivos do Mega, MediaFire, Google Drive, PixelDrain, 1Fichier, Drime, Terabox e links públicos de OneDrive/SharePoint com uma interface limpa, suporte a filas, retries automáticos e controle de velocidade.
+## Visão Geral
 
-> As preferências e contas locais de teste ficam em `settings.json` na raiz do projeto, arquivo ignorado pelo Git.
+- UI desktop em Electron/Vue.
+- `preload` faz a ponte segura entre renderer e Electron/main.
+- `main` cuida de janelas auxiliares, captcha, auth por navegador integrado e bootstrap do backend.
+- backend Rust expõe REST + WebSocket para providers, fila, scheduler, config e cache.
+- SQLite local persiste fila, settings públicas, segredos locais, histórico e cache de metadados.
 
----
+## Onde os dados ficam
 
-## 📦 Provedores suportados
+Desenvolvimento:
 
-| Ícone | Provedor | Tipos suportados | Status | Observações |
-|-------|----------|-----------------|--------|-------------|
-| <img src="src/renderer/src/assets/provider-icons/mega.svg" alt="Mega" width="18" /> | **Mega** | Arquivo único, pasta pública | 🟢 Estável | Download sequencial de pastas; suporte a links `/file/` e formato legado `#!` |
-| <img src="src/renderer/src/assets/provider-icons/mediafire.svg" alt="MediaFire" width="18" /> | **MediaFire** | Arquivo único, pasta pública | 🟢 Estável | Usa API pública `folder/get_content`; suporta subpasta via fragmento `#folderkey` |
-| <img src="src/renderer/src/assets/provider-icons/googledrive.svg" alt="Google Drive" width="18" /> | **Google Drive** | Arquivo único público | 🟡 Parcial | Requer arquivo compartilhado publicamente; falta suporte a arquivos grandes com confirmação |
-| 🟠 | **PixelDrain** | Arquivo único, lista | 🟢 Estável | Suporte a fragmento `#item=N` para listas; sem fragmento usa o primeiro arquivo |
-| 1️⃣ | **1Fichier** | Arquivo único, pasta | 🟡 Parcial | Suporte a pastas, rate limit detectado via texto da página; download gratuito depende de cooldown |
-| <img src="src/renderer/src/assets/provider-icons/onedrive.svg" alt="OneDrive" width="18" /> | **OneDrive / SharePoint** | Arquivo único público | 🟡 Parcial | O provider já reconhece o host; links que caem em `login.microsoftonline.com` exigem autenticação Microsoft e retornam erro claro |
-| <img src="src/renderer/src/assets/provider-icons/terabox.svg" alt="Terabox" width="18" /> | **Terabox** | Arquivo único, pasta pública | 🟡 Parcial | Login via browser integrado (BrowserWindow isolado); captura cookies de sessão automaticamente |
-| 💧 | **Drime** | Arquivo único, pasta pública | 🟡 Parcial | Share público com download resolvido via `shareable_link`; falta rodada maior de smoke com mais amostras |
-| ⚡ | **Rapidgator** | Arquivo único (conta gratuita) | 🟡 Parcial | Suporte a reCaptcha v2 inline e rate limit; conta premium não testada |
-| ☁️ | GoFile | — | ⚪ Planejado | API razoável, mas com mudanças frequentes |
+- banco SQLite: `backend/database/gdownloader.db`
+- logs do backend: `backend/logs/`
 
-**Legenda:** 🟢 Estável · 🟡 Parcial · ⚪ Planejado
+App empacotado:
 
-Para mais detalhes sobre provedores futuros e dificuldades por hoster, veja [docs/provedores-futuros-dificuldades.md](docs/provedores-futuros-dificuldades.md).
+- banco SQLite: `app.getPath('userData')/backend/database/gdownloader.db`
+- logs do backend: `app.getPath('userData')/backend/logs/`
 
----
+O `settings.json` legado só é lido para migração. O app atual usa SQLite como fonte única.
 
-## 🧭 Provedores planejados
+## O que fica salvo no SQLite
 
-### Mapeados primeiro
+- settings públicas: tema, idioma, pasta de saída, concorrência, retries, limite de velocidade, partes paralelas, notificações, zoom e destaque
+- settings seguras: `NoPecha API key`, cookies/sessões locais de contas suportadas
+- fila completa de downloads
+- histórico
+- cache local de `file-info`
+- histórico de migração legada
 
-Drime, GoFile, Sendnow, Terabox, 1Fichier, BRUpload.
+## Providers
 
-### Hosters, mirrors e serviços comuns em sites de download
+### Suportados diretamente
 
-FreeDL, DailyUploads, Uploady, UsersDrive, MixDrop, HexUpload, Clicknupload, UploadCloud, Racaty, KatFile, Rapidgator, NitroFlare, Turbobit, Keep2Share, FileJoker, DDownload, UploadGig, FastClick, Send.cm, Fikper, FileFactory, FileFox, Uploadboy, Up-4ever, MegaUp, BayFiles, AnonFiles-like mirrors, Uloz.to, FileRio, Drop.download, Upload-4ever, ModsFire, GameBanana downloads, Nexus Mods CDN/public links, CurseForge media, MediaFire mirror clones, File-upload.com, UploadEE, MirrorAce, MultiUp, Paste-like download pages, KrakenFiles, Qiwi.gg / Qiwi links, Lumpics / image host downloads, WorkUpload, EasyUpload, UploadNow.io, Uploadrar, DLFree.fr, Desiupload, Alfafile, HitFile, TakeFile, MexaShare, K2S-like mirrors, CosmoBox, FileSpace, Downace, Rosefile, Douploads, Uploadraja, MirrorUpload, MirrorCreator, DepositFiles, Uploaded / Ul.to-like mirrors, Zippyshare-like clones, DailyMotion attachments / mirrors, StreamTape, StreamWish, FileMoon, VidGuard, Voe.sx / Voe-like, doodstream, Uploadrar clones, DLUpload.
+- `Mega`
+- `MediaFire`
+- `Google Drive`
+- `PixelDrain`
+- `1Fichier`
+- `Drime`
+- `OneDrive / SharePoint`
+- `Rapidgator`
 
-### Android, software, mods, datasets e arquivos públicos
+### Suportados com fluxo assistido por navegador
 
-AndroidFileHost, SourceForge mirror pages, Fosshub, APKMirror downloads, APKPure files, APKCombo downloads, Pling / OpenDesktop files, ModDB files, IndieDB files, Archive.org direct item files.
+- `TeraBox`
+- `BRupload`
+- `BRFiles`
+- `AkiraBox`
+- `Katfile`
 
-### Hosts simples, temporários e anônimos
+### Planejados ou dependentes de ajuste do host
 
-Catbox, Litterbox, Pomf-like hosts, Pomf2 / uguu-like hosts, Uguu.se, file.io, tmpfiles.org, Temp.sh, AnonTransfer, Transfer.sh clones, Oshi.at, fileditch, pixeldrain-like mirrors.
+- nenhum host listado aqui no momento
+- quando o host muda HTML, captcha, cooldown ou challenge, isso vira manutenção do provider atual
 
-### Clouds e wrappers que aparecem como mirror secundário
+### Observações por host
 
-OneDrive, Proton Drive, Dropbox, pCloud, Box, Google Drive, MediaFire, Mega, PixelDrain, Nextcloud/public shares, onedrive short-link wrappers.
+- `TeraBox`: suporta arquivo e pasta. Usa navegador integrado quando o host exige sessão real. Se o host criar uma cópia temporária na conta para liberar o download, o app tenta limpar depois.
+- `BRupload`: usa navegador integrado para contornar fluxo real do host. Conta free pode ser conectada dentro do app e a sessão fica só no SQLite local.
+- `BRFiles`: suporta arquivo e pasta. Para pasta, o app retoma de onde parou quando o host impõe espera por IP.
+- `Rapidgator`: mostra mensagens claras para arquivo removido, captcha, rate limit e premium obrigatório.
+- `AkiraBox`: usa helper de navegador por causa de Cloudflare/challenge.
+- `Katfile`: usa helper de navegador; links removidos retornam erro explícito.
 
----
+## Captcha, conta e rate-limit
 
-## 🛠 Tech Stack
+- Se houver `NoPecha` configurado, o app tenta resolver automaticamente primeiro.
+- Se não resolver, o captcha abre em uma janela modal da própria página do host, não em `localhost`.
+- Quando o host limita por IP ou por plano gratuito, o backend tenta extrair o tempo real de espera e a UI mostra contagem regressiva.
+- Bloqueios de rate-limit não devem consumir as tentativas normais de erro do download.
 
-| Camada | Tecnologia |
-|--------|-----------|
-| Interface desktop | [Electron 39](https://www.electronjs.org/) |
-| Framework frontend | [Vue 3](https://vuejs.org/) + [TypeScript 5](https://www.typescriptlang.org/) |
-| UI components | [PrimeVue 4](https://primevue.org/) |
-| Build frontend | [electron-vite](https://electron-vite.org/) + [Vite 7](https://vitejs.dev/) |
-| Backend HTTP | [Rust](https://www.rust-lang.org/) + [Axum](https://github.com/tokio-rs/axum) |
-| Async runtime | [Tokio](https://tokio.rs/) |
-| Comunicação | WebSocket (progresso em tempo real) + REST |
-| Persistência | SQLite via [rusqlite](https://github.com/rusqlite/rusqlite) (modo WAL; retomada após reinício) |
+## Cache local de metadados
 
----
+No capturador de links:
 
-## 📋 Requisitos
+- o app consulta primeiro o cache local de `file-info`
+- depois sempre faz checagem online
+- a UI mostra se o item está `online`, `offline` ou só veio do `cache local`
 
-- **Node.js** >= 20
-- **npm** >= 10
-- **Rust** (stable, via [rustup](https://rustup.rs/))
-- **cargo-watch** (opcional, para recompilação automática do backend em dev): `cargo install cargo-watch`
-- **Plataformas testadas:** macOS (fluxo principal validado); Linux e Windows com base técnica preparada
+Isso acelera a leitura sem esconder quando o arquivo já caiu do host.
 
----
+## Arquitetura resumida
 
-## 🚀 Instalação (desenvolvimento)
+```text
+Renderer (Vue)
+  -> Preload (IPC + fetch REST + WS)
+    -> Electron Main
+      -> Backend Rust (Axum)
+        -> Providers / Scheduler / SQLite
+```
+
+Fluxos especiais:
+
+- auth/browser helper: `TeraBox`, `BRupload`, `AkiraBox`, `Katfile`
+- mirrors: SSE do backend Rust
+- progresso da fila: WebSocket
+
+## Requisitos
+
+- Node.js 20+
+- npm 10+
+- Rust stable
+
+## Desenvolvimento
 
 ```bash
-# 1. Clone o repositório
-git clone https://github.com/lucasreolon/gDownloader.git
-cd gDownloader
-
-# 2. Instale as dependências do frontend
 npm install
-
-# 3. Compile o backend Rust
 cd backend && cargo build --release && cd ..
-
-# 4. Inicie em modo desenvolvimento (frontend + backend em paralelo)
 npm run dev
 ```
 
-> O comando `npm run dev` inicia o backend Rust com `cargo watch` e o Electron/Vue com hot-reload simultaneamente.
-
-### Build para distribuição
+## Verificações úteis
 
 ```bash
-# Build completo (typecheck + electron-vite + cargo --release)
-npm run build
-
-# Empacotar por plataforma
-npm run build:mac    # macOS (.dmg)
-npm run build:win    # Windows (.exe)
-npm run build:linux  # Linux (.AppImage / .deb)
+npm run typecheck:web
+npm run typecheck:node
+cd backend && cargo check
+cd backend && cargo test
+npx electron-vite build
 ```
 
----
+## Troubleshooting
 
-## ⚙️ Configurações
+### O app mostra captcha e volta para a mesma página
 
-Acessíveis pelo painel de configurações dentro do app:
+- alguns hosts exigem fluxo real do navegador
+- resolva o desafio na janela do host
+- se houver `NoPecha`, configure a chave nas settings para a tentativa automática
 
-- **Diretório de destino** — pasta padrão para salvar os downloads
-- **Downloads simultâneos** — limite de quantos downloads rodam em paralelo
-- **Limite de velocidade** — throttle global em KB/s (0 = sem limite)
-- **Retries automáticos** — número de tentativas em caso de falha
-- **Notificações nativas** — alertar ao concluir ou falhar um download
-- **Tema** — dark / light
-- **Cor de destaque** — personalize a cor primária da interface via color picker
-- **NoPecha API key** — resolução automática de captchas (reCaptcha v2 / hCaptcha) via [NoPecha](https://nopecha.com/)
-- **Contas** — Terabox: login via browser integrado (não armazenamos senha); captura cookies de sessão automaticamente
+### O download ficou aguardando por muito tempo
 
----
+- isso costuma ser rate-limit por IP ou limite do plano gratuito do host
+- veja o contador no item da fila; ele usa `retry_at` quando o host informa tempo
 
-## 🧪 Testes
+### O arquivo aparece no cache, mas offline no host
 
-### Backend (Rust)
+- isso é esperado
+- o cache local acelera a leitura, mas a checagem online continua rodando para informar disponibilidade real
 
-```bash
-cd backend
+### Conta e cookies ficam onde?
 
-# Todos os testes (unitários + integração)
-cargo test
+- só no SQLite local do app
+- não devem voltar no payload normal de `settings`
 
-# Testes com links reais (smoke tests)
-# Copie o arquivo de exemplo e preencha com seus links:
-cp .env.test.example .env.test.local
-cargo test -- --include-ignored
-```
+## Observação
 
-Smoke tests reais cobertos hoje:
-
-- leitura de metadados de arquivo/pasta via `.env.test.local`
-- início de download e aborto controlado após o primeiro progresso
-
-Links reais já preparados para esse fluxo:
-
-- `TEST_MEDIAFIRE_FILE_URL`
-- `TEST_MEDIAFIRE_FOLDER_URL`
-- `TEST_MEGA_FILE_URL`
-- `TEST_MEGA_FOLDER_URL`
-- `TEST_PIXELDRAIN_URL`
-
-### Frontend (TypeScript)
-
-```bash
-# Verificação de tipos
-npm run typecheck
-
-# Testes unitários (Vitest)
-npm run test
-```
-
-> Links reais de teste ficam em `backend/.env.test.local`, ignorado pelo Git. Use `backend/.env.test.example` como modelo.
+Alguns hosters mudam HTML, countdown, captcha e política de limite com frequência. O projeto tenta expor erro claro e manter o fluxo resiliente, mas regressões por mudança do host são sempre possíveis.

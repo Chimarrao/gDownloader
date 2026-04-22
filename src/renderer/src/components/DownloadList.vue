@@ -14,8 +14,14 @@
     </div>
 
     <!-- Download items -->
-    <div v-if="items.length > 0 || (skeletonCount ?? 0) > 0" class="items-container">
       <div
+        v-if="items.length > 0 || (skeletonCount ?? 0) > 0"
+        ref="itemsContainerRef"
+        class="items-container"
+        @scroll="onListScroll"
+      >
+      <div
+        v-if="items.length === 0"
         v-for="i in (skeletonCount ?? 0)"
         :key="`skeleton-${i}`"
         class="download-card skeleton-card"
@@ -27,18 +33,33 @@
 
       <div v-if="items.length > 0" class="list-toolbar">
         <span class="list-count">{{ items.length }} item(ns) na sessão</span>
-        <button
-          class="toolbar-btn"
-          :disabled="finishedCount === 0"
-          title="Remover downloads encerrados da lista"
-          @click="clearFinished"
-        >
-          Limpar concluídos
-        </button>
+        <div class="toolbar-actions">
+          <label class="toolbar-sort">
+            <span>Ordenar</span>
+            <select v-model="sortMode" class="toolbar-select">
+              <option
+                v-for="option in sortOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <button
+            class="toolbar-btn"
+            :disabled="finishedCount === 0"
+            title="Remover downloads encerrados da lista"
+            @click="clearFinished"
+          >
+            Limpar concluídos
+          </button>
+        </div>
       </div>
-      <transition-group name="item" tag="div" class="items-stack">
+      <div class="items-stack">
+        <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <div
-          v-for="item in orderedItems"
+          v-for="item in visibleItems"
           :key="item.id"
           class="download-card"
           :class="`status-bg-${item.status}`"
@@ -66,7 +87,7 @@
               <div class="item-actions">
                 <span class="status-badge" :class="`badge-${item.status}`">
                   <span class="badge-dot" :class="`dot-${item.status}`"></span>
-                  {{ statusText(item) }}
+                  {{ statusTextValue(item) }}
                 </span>
                 <button
                   class="action-btn"
@@ -84,7 +105,7 @@
                   <i class="pi" :class="isExpanded(item.id) ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
                 </button>
                 <button
-                  v-if="item.status === 'pending' || item.status === 'downloading'"
+                  v-if="actionsFor(item).canPause"
                   class="action-btn"
                   title="Pausar"
                   @click="pause(item.id)"
@@ -92,7 +113,7 @@
                   <i class="pi pi-pause"></i>
                 </button>
                 <button
-                  v-if="item.status === 'paused'"
+                  v-if="actionsFor(item).canResume"
                   class="action-btn"
                   title="Retomar"
                   @click="resume(item.id)"
@@ -100,7 +121,15 @@
                   <i class="pi pi-play"></i>
                 </button>
                 <button
-                  v-if="item.status === 'pending' || item.status === 'downloading' || item.status === 'paused' || item.status === 'rate_limited' || item.status === 'waiting_captcha'"
+                  v-if="actionsFor(item).canOpenCaptcha"
+                  class="action-btn"
+                  title="Resolver captcha"
+                  @click="openCaptcha(item.id)"
+                >
+                  <i class="pi pi-shield"></i>
+                </button>
+                <button
+                  v-if="actionsFor(item).canCancel"
                   class="cancel-btn"
                   title="Cancelar"
                   @click="cancel(item.id)"
@@ -108,7 +137,7 @@
                   <i class="pi pi-times"></i>
                 </button>
                 <button
-                  v-if="item.status === 'paused' || item.status === 'error' || item.status === 'cancelled' || item.status === 'rate_limited'"
+                  v-if="actionsFor(item).canRetry"
                   class="action-btn"
                   title="Tentar novamente"
                   @click="retry(item.id)"
@@ -116,7 +145,15 @@
                   <i class="pi pi-refresh"></i>
                 </button>
                 <button
-                  v-if="item.status === 'paused' || item.status === 'error' || item.status === 'cancelled' || item.status === 'complete'"
+                  v-if="actionsFor(item).canForce"
+                  class="action-btn"
+                  title="Forçar download agora"
+                  @click="force(item.id)"
+                >
+                  <i class="pi pi-bolt"></i>
+                </button>
+                <button
+                  v-if="actionsFor(item).canRestart"
                   class="action-btn"
                   title="Reiniciar"
                   @click="restart(item.id)"
@@ -132,7 +169,7 @@
                   <i class="pi pi-folder-plus"></i>
                 </button>
                 <button
-                  v-if="item.status === 'complete' && item.outputPath"
+                  v-if="actionsFor(item).canOpenFolder"
                   class="open-btn"
                   title="Mostrar na pasta"
                   @click="openFolder(item.outputPath!)"
@@ -142,8 +179,16 @@
                 <button
                   v-if="isTerminal(item.status)"
                   class="action-btn"
-                  title="Remover"
+                  title="Remover da lista"
                   @click="remove(item.id)"
+                >
+                  <i class="pi pi-trash"></i>
+                </button>
+                <button
+                  v-if="actionsFor(item).canRemoveWithFiles"
+                  class="action-btn"
+                  title="Remover da lista e apagar arquivos físicos"
+                  @click="removeWithFiles(item.id)"
                 >
                   <i class="pi pi-trash"></i>
                 </button>
@@ -168,9 +213,9 @@
 
               <template v-if="item.status === 'downloading'">
                 <span class="meta-sep">·</span>
-                <span class="meta-speed">{{ formatSpeed(item.speedBps) }}</span>
+                <span class="meta-speed">{{ formatSpeed(effectiveSpeedValue(item)) }}</span>
                 <span class="meta-sep">·</span>
-                <span class="meta-eta">{{ formatEta(item.etaSec) }} restante</span>
+                <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} restante</span>
               </template>
 
               <template v-else-if="item.status === 'rate_limited'">
@@ -189,11 +234,11 @@
                 </span>
               </template>
 
-              <template v-else-if="isWaitingRetry(item)">
+              <template v-else-if="isWaitingRetryNow(item)">
                 <span class="meta-sep">·</span>
                 <span class="meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ formatEta(retryCountdown(item)) }} para tentar novamente
+                  {{ formatEta(retryCountdownNow(item)) }} para tentar novamente
                 </span>
               </template>
 
@@ -210,7 +255,7 @@
                 <span class="meta-size">{{ item.children?.length }} item(ns)</span>
               </template>
 
-              <template v-if="isWaitingRetry(item) && item.error">
+              <template v-if="isWaitingRetryNow(item) && item.error">
                 <span class="meta-sep">·</span>
                 <span class="meta-wait-reason" :title="item.error">{{ item.error }}</span>
               </template>
@@ -228,21 +273,6 @@
               </template>
             </div>
 
-            <!-- Row 4: captcha inline (only for waiting_captcha status) -->
-            <div v-if="item.status === 'waiting_captcha' && item.captchaSitekey" class="captcha-row">
-              <div class="captcha-header">
-                <i class="pi pi-shield"></i>
-                <span>Verificação de captcha necessária</span>
-              </div>
-              <iframe
-                :src="captchaUrl(item)"
-                class="captcha-frame"
-                frameborder="0"
-                scrolling="no"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-              ></iframe>
-            </div>
-
             <!-- Row 5: output path (clickable) -->
             <div
               v-if="item.outputPath"
@@ -258,6 +288,10 @@
               v-show="item.isFolder && isExpanded(item.id) && (item.children?.length ?? 0) > 0"
               class="folder-children"
             >
+              <div class="folder-tree-header">
+                <span>Árvore de arquivos</span>
+                <span>{{ item.children?.length ?? 0 }} item(ns)</span>
+              </div>
               <div
                 v-for="node in childNodes(item.children)"
                 :key="`${item.id}:${node.key}`"
@@ -304,18 +338,75 @@
             </div>
           </div>
         </div>
-      </transition-group>
+        <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
+      </div>
+    </div>
+
+    <div v-if="activeCaptchaItem" class="captcha-modal-backdrop" @click.self="closeCaptchaModal">
+      <div
+        ref="captchaModalRef"
+        class="captcha-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="captcha-dialog-title"
+        tabindex="-1"
+        @keydown="onCaptchaDialogKeydown"
+      >
+        <div class="captcha-modal-header">
+          <div>
+            <strong id="captcha-dialog-title">Captcha necessário</strong>
+            <p>Se houver NoPecha configurado, o app tenta antes. Se não, o captcha abre na própria página do host.</p>
+          </div>
+          <button class="action-btn" title="Fechar" @click="closeCaptchaModal">
+            <i class="pi pi-times"></i>
+          </button>
+        </div>
+
+        <div class="captcha-modal-file" :title="activeCaptchaItem.title">
+          {{ activeCaptchaItem.title || activeCaptchaItem.url }}
+        </div>
+        <div class="captcha-modal-body">
+          <p>
+            O app abre uma janela modal do próprio host para evitar bloqueios de domínio do captcha.
+            Resolva lá e a fila continua sozinha.
+          </p>
+          <button
+            ref="captchaPrimaryButtonRef"
+            class="captcha-modal-open-btn"
+            :disabled="captchaWindowBusy"
+            @click="reopenCaptchaWindow"
+          >
+            <i class="pi" :class="captchaWindowBusy ? 'pi-spin pi-spinner' : 'pi-external-link'"></i>
+            {{ captchaWindowBusy ? 'Aguardando resolução...' : 'Abrir janela do host' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadChild, DownloadItem } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
 import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
+import {
+  childStatusText,
+  compareDownloads,
+  DOWNLOAD_SORT_OPTIONS,
+  effectiveEta,
+  effectiveSpeed,
+  getDownloadActions,
+  isTerminal,
+  isWaitingRetry,
+  retryCountdown,
+  statusText,
+  type DownloadSortMode,
+} from '../utils/download-display'
+import { formatBytes, formatEta, formatSpeed } from '../utils/format'
+import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 
 interface ModuleSummary {
   id: string
@@ -341,8 +432,16 @@ const emit = defineEmits<{
 const items = ref<DownloadItem[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
-const backendPort = ref<number>(0)
+const activeCaptchaId = ref<string | null>(null)
+const captchaWindowBusy = ref(false)
+const captchaModalRef = ref<HTMLElement | null>(null)
+const captchaPrimaryButtonRef = ref<HTMLElement | null>(null)
+const sortMode = ref<DownloadSortMode>('newest')
+const itemsContainerRef = ref<HTMLElement | null>(null)
+const listScrollTop = ref(0)
 const unsubs: Array<() => void> = []
+const captchaAttemptedIds = new Set<string>()
+const itemIndexById = ref<Record<string, number>>({})
 // Mutex: at most one hydrate() runs at a time; hydrateQueued ensures one follow-up
 // run executes after the in-flight one finishes.
 let hydrateQueued = false
@@ -352,11 +451,48 @@ let lastSpeedEmit = 0
 const nowTick = ref(Date.now())
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
+const sortOptions = DOWNLOAD_SORT_OPTIONS
 
 // ── Computed ───────────────────────────────────────────────
-const orderedItems = computed(() => [...items.value].sort((a, b) => b.addedAt - a.addedAt))
+const orderedItems = computed(() =>
+  [...items.value].sort((left, right) => compareDownloads(left, right, sortMode.value, nowTick.value))
+)
 const finishedCount = computed(() =>
   items.value.filter((item) => isTerminal(item.status)).length
+)
+const activeCaptchaItem = computed(() =>
+  items.value.find((item) => item.id === activeCaptchaId.value && item.status === DownloadStatusEnum.WaitingCaptcha) ?? null
+)
+
+const virtualizationEnabled = computed(() =>
+  orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
+)
+const estimatedRowHeight = 148
+const overscan = 6
+const visibleRange = computed(() => {
+  if (!virtualizationEnabled.value) {
+    return { start: 0, end: orderedItems.value.length }
+  }
+  const viewportHeight = itemsContainerRef.value?.clientHeight ?? 900
+  const start = Math.max(0, Math.floor(listScrollTop.value / estimatedRowHeight) - overscan)
+  const visibleCount = Math.ceil(viewportHeight / estimatedRowHeight) + overscan * 2
+  return {
+    start,
+    end: Math.min(orderedItems.value.length, start + visibleCount),
+  }
+})
+const visibleItems = computed(() =>
+  virtualizationEnabled.value
+    ? orderedItems.value.slice(visibleRange.value.start, visibleRange.value.end)
+    : orderedItems.value
+)
+const topSpacerHeight = computed(() =>
+  virtualizationEnabled.value ? visibleRange.value.start * estimatedRowHeight : 0
+)
+const bottomSpacerHeight = computed(() =>
+  virtualizationEnabled.value
+    ? Math.max(0, (orderedItems.value.length - visibleRange.value.end) * estimatedRowHeight)
+    : 0
 )
 
 // ── Lifecycle ──────────────────────────────────────────────
@@ -364,26 +500,17 @@ onMounted(async () => {
   isMounted = true
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
+    const totalSpeed = items.value
+      .filter((item) => item.status === DownloadStatusEnum.Downloading)
+      .reduce((sum, item) => sum + effectiveSpeedValue(item), 0)
+    emit('global-speed', totalSpeed)
   }, 1000)
   hydrateTimer = window.setInterval(() => {
     if (!isMounted) return
+    const hasLiveQueue = items.value.some((item) => !isTerminal(item.status))
+    if (!hasLiveQueue && items.value.length > 0) return
     void hydrate()
-  }, 1500)
-
-  // Get backend port for captcha iframe URLs
-  backendPort.value = await window.api.getBackendPort().catch(() => 0)
-
-  // Listen for captcha tokens from inline iframe
-  const onCaptchaMessage = (ev: MessageEvent): void => {
-    if (!ev.data || typeof ev.data !== 'object') return
-    if (ev.data.type !== 'captcha-token') return
-    const { id, token } = ev.data as { type: string; id: string; token: string }
-    if (id && token) {
-      void window.api.captcha.submit(id, token).catch(() => null)
-    }
-  }
-  window.addEventListener('message', onCaptchaMessage)
-  unsubs.push(() => window.removeEventListener('message', onCaptchaMessage))
+  }, 4000)
 
   // Load module metadata for labels
   const modules = await window.api.modules.list().catch(() => [])
@@ -414,7 +541,7 @@ onMounted(async () => {
         child_eta?: number
       }
       if (!ev?.id) return
-      const idx = items.value.findIndex((i) => i.id === ev.id)
+      const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
         const total = ev.total ?? items.value[idx].size
         const bytes = ev.bytes ?? 0
@@ -467,6 +594,7 @@ onMounted(async () => {
           percent: aggregatedPercent,
           speedBps: aggregatedChildSpeed,
           etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0),
+          lastProgressAt: Date.now(),
           status: (ev.status as DownloadItem['status']) ?? items.value[idx].status,
           size: total > 0 ? total : items.value[idx].size,
           // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.
@@ -477,8 +605,8 @@ onMounted(async () => {
         if (now - lastSpeedEmit >= 120) {
           lastSpeedEmit = now
           const totalSpeed = items.value
-            .filter((i) => i.status === 'downloading')
-            .reduce((sum, i) => sum + (i.speedBps ?? 0), 0)
+            .filter((i) => i.status === DownloadStatusEnum.Downloading)
+            .reduce((sum, i) => sum + effectiveSpeedValue(i), 0)
           emit('global-speed', totalSpeed)
         }
       } else {
@@ -492,7 +620,7 @@ onMounted(async () => {
     window.api.downloads.on('download:complete', (event: unknown) => {
       const ev = event as { id: string; path?: string; outputPath?: string }
       if (!ev?.id) return
-      const idx = items.value.findIndex((i) => i.id === ev.id)
+      const idx = itemIndexById.value[ev.id] ?? -1
       const outputPath = ev.path ?? ev.outputPath ?? ''
       if (idx >= 0) {
         items.value[idx] = {
@@ -513,7 +641,7 @@ onMounted(async () => {
     window.api.downloads.on('download:error', (event: unknown) => {
       const ev = event as { id: string; message?: string; error?: string }
       if (!ev?.id) return
-      const idx = items.value.findIndex((i) => i.id === ev.id)
+      const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
         items.value[idx] = {
           ...items.value[idx],
@@ -545,13 +673,14 @@ onMounted(async () => {
         upsertById(ev.id, {
           status: ev.status,
           retryAt: ev.retry_at ? ev.retry_at * 1000 : undefined,
-          captchaType: ev.captcha_type ?? null,
-          captchaSitekey: ev.captcha_sitekey ?? null,
-          captchaPageUrl: ev.captcha_page_url ?? null,
+          captchaType: ev.captcha_type ?? undefined,
+          captchaSitekey: ev.captcha_sitekey ?? undefined,
+          captchaPageUrl: ev.captcha_page_url ?? undefined,
           error: ev.error ?? '',
           speedBps: 0,
           etaSec: 0,
         })
+        void maybeResolveCaptchaById(ev.id)
       } else {
         void hydrate()
       }
@@ -581,6 +710,16 @@ onUnmounted(() => {
   for (const unsub of unsubs) unsub()
 })
 
+watch(activeCaptchaItem, (item) => {
+  if (!item) {
+    return
+  }
+  nextTick(() => {
+    captchaPrimaryButtonRef.value?.focus()
+    focusFirstDialogElement(captchaModalRef.value)
+  })
+})
+
 // ── Data methods ───────────────────────────────────────────
 async function hydrate(): Promise<void> {
   if (hydrateInFlight) {
@@ -608,6 +747,23 @@ async function hydrate(): Promise<void> {
       }
     }
 
+    rebuildItemIndex()
+
+    for (const item of items.value) {
+      if (item.status !== DownloadStatusEnum.WaitingCaptcha) {
+        captchaAttemptedIds.delete(item.id)
+        if (activeCaptchaId.value === item.id) {
+          activeCaptchaId.value = null
+        }
+      }
+    }
+
+    for (const item of items.value) {
+      if (item.status === DownloadStatusEnum.WaitingCaptcha) {
+        void maybeResolveCaptcha(item)
+      }
+    }
+
     emit('count-change', items.value.length)
     emit('skeleton-done')
   } finally {
@@ -620,12 +776,20 @@ async function hydrate(): Promise<void> {
 }
 
 function upsertById(id: string, patch: Partial<DownloadItem>): void {
-  const idx = items.value.findIndex((item) => item.id === id)
+  const idx = itemIndexById.value[id] ?? -1
   if (idx === -1) {
     void hydrate()
     return
   }
   items.value[idx] = { ...items.value[idx], ...patch }
+}
+
+function rebuildItemIndex(): void {
+  itemIndexById.value = Object.fromEntries(items.value.map((item, index) => [item.id, index]))
+}
+
+function onListScroll(): void {
+  listScrollTop.value = itemsContainerRef.value?.scrollTop ?? 0
 }
 
 // ── Actions ────────────────────────────────────────────────
@@ -649,6 +813,11 @@ async function retry(id: string): Promise<void> {
   await hydrate()
 }
 
+async function force(id: string): Promise<void> {
+  await window.api.downloads.force(id).catch(() => null)
+  await hydrate()
+}
+
 async function restart(id: string): Promise<void> {
   await window.api.downloads.restart(id).catch(() => null)
   await hydrate()
@@ -656,6 +825,14 @@ async function restart(id: string): Promise<void> {
 
 async function remove(id: string): Promise<void> {
   await window.api.downloads.remove(id).catch(() => null)
+  await hydrate()
+}
+
+async function removeWithFiles(id: string): Promise<void> {
+  if (!window.confirm('Remover da lista e apagar os arquivos físicos deste download?')) {
+    return
+  }
+  await window.api.downloads.removeWithFiles(id).catch(() => null)
   await hydrate()
 }
 
@@ -694,6 +871,60 @@ function toggleFolder(id: string): void {
   }
 }
 
+function effectiveSpeedValue(item: DownloadItem): number {
+  return effectiveSpeed(item, nowTick.value)
+}
+
+function effectiveEtaValue(item: DownloadItem): number {
+  return effectiveEta(item, nowTick.value)
+}
+
+function isWaitingRetryNow(item: DownloadItem): boolean {
+  return isWaitingRetry(item, nowTick.value)
+}
+
+function retryCountdownNow(item: DownloadItem): number {
+  return retryCountdown(item, nowTick.value)
+}
+
+function statusTextValue(item: DownloadItem): string {
+  return statusText(item, nowTick.value)
+}
+
+function actionsFor(item: DownloadItem): Record<string, boolean> {
+  return getDownloadActions(item)
+}
+
+function openCaptcha(id: string): void {
+  activeCaptchaId.value = id
+  const item = items.value.find((entry) => entry.id === id)
+  if (item) {
+    void openCaptchaWindow(item)
+  }
+}
+
+function closeCaptchaModal(): void {
+  activeCaptchaId.value = null
+}
+
+function onCaptchaDialogKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeCaptchaModal()
+    return
+  }
+
+  trapDialogTab(event, captchaModalRef.value)
+}
+
+function reopenCaptchaWindow(): void {
+  if (!activeCaptchaItem.value) {
+    return
+  }
+  void openCaptchaWindow(activeCaptchaItem.value)
+}
+
 function isExpanded(id: string): boolean {
   return !!expandedFolders.value[id]
 }
@@ -707,12 +938,6 @@ function childNodes(children?: DownloadChild[]): DerivedChildNode[] {
     return []
   }
   return flattenChildTree(buildChildTree(children))
-}
-
-function isTerminal(status: DownloadItem['status']): boolean {
-  return status === DownloadStatusEnum.Complete
-    || status === DownloadStatusEnum.Error
-    || status === DownloadStatusEnum.Cancelled
 }
 
 function isExtractableArchive(filePath: string): boolean {
@@ -745,76 +970,10 @@ function getProgressColor(item: DownloadItem): string {
   if (item.status === 'error') return '#ef4444'
   if (item.status === 'complete') return 'linear-gradient(90deg, #22c55e, #4ade80)'
   if (item.status === 'cancelled') return '#666'
-  if (isWaitingRetry(item)) return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
+  if (isWaitingRetryNow(item)) return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
   // Use provider color for active downloads
   const color = modulesById.value[item.moduleId]?.color ?? getProviderColor(item.moduleId)
   return `linear-gradient(90deg, ${color}, ${color}cc)`
-}
-
-function statusText(item: DownloadItem): string {
-  const map: Record<string, string> = {
-    pending: 'Na fila',
-    downloading: 'Baixando',
-    complete: 'Concluído',
-    error: 'Erro',
-    cancelled: 'Cancelado',
-    paused: 'Pausado',
-    rate_limited: 'Limite de taxa',
-    waiting_captcha: 'Captcha',
-  }
-  if (isWaitingRetry(item)) {
-    return 'Aguardando retry'
-  }
-  return map[item.status] ?? item.status
-}
-
-function isWaitingRetry(item: DownloadItem): boolean {
-  return item.status === DownloadStatusEnum.Pending
-    && typeof item.retryAt === 'number'
-    && item.retryAt > nowTick.value
-}
-
-function retryCountdown(item: DownloadItem): number {
-  if (!item.retryAt) return 0
-  return Math.max(0, Math.ceil((item.retryAt - nowTick.value) / 1000))
-}
-
-function captchaUrl(item: DownloadItem): string {
-  if (!backendPort.value || !item.captchaSitekey) return ''
-  const params = new URLSearchParams({
-    type: item.captchaType ?? 'recaptcha2',
-    sitekey: item.captchaSitekey,
-    pageurl: item.captchaPageUrl ?? item.url,
-    id: item.id,
-  })
-  return `http://127.0.0.1:${backendPort.value}/captcha?${params.toString()}`
-}
-
-function formatBytes(n: number): string {
-  if (!n || n < 0) return '0 B'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
-
-function formatSpeed(bps: number): string {
-  if (!bps || bps <= 0) return '0 KB/s'
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(0)} KB/s`
-  return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
-}
-
-function formatEta(secs: number): string {
-  if (!secs || secs <= 0) return '--'
-  if (secs < 60) return `${Math.round(secs)}s`
-  if (secs < 3600) {
-    const m = Math.floor(secs / 60)
-    const s = Math.round(secs % 60)
-    return `${m}m ${s}s`
-  }
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  return `${h}h ${m}m`
 }
 
 function childPercent(child: Pick<DownloadChild, 'size' | 'bytesDownloaded'>): number {
@@ -823,15 +982,61 @@ function childPercent(child: Pick<DownloadChild, 'size' | 'bytesDownloaded'>): n
   return Math.max(0, Math.min(100, Math.floor((bytes / child.size) * 100)))
 }
 
-function childStatusText(status?: DownloadChild['status']): string {
-  if (!status) return 'Na fila'
-  if (status === DownloadStatusEnum.Pending) return 'Na fila'
-  if (status === DownloadStatusEnum.Downloading) return 'Baixando'
-  if (status === DownloadStatusEnum.Complete) return 'Concluído'
-  if (status === DownloadStatusEnum.Error) return 'Erro'
-  if (status === DownloadStatusEnum.Cancelled) return 'Cancelado'
-  if (status === DownloadStatusEnum.Paused) return 'Pausado'
-  return String(status)
+async function openCaptchaWindow(item: DownloadItem): Promise<void> {
+  if (captchaWindowBusy.value) {
+    return
+  }
+
+  captchaWindowBusy.value = true
+  try {
+    const token = await window.api.captcha.openWindow({
+      provider: item.moduleId,
+      pageUrl: item.captchaPageUrl ?? item.url,
+      sourceUrl: item.url,
+    }).catch(() => null)
+
+    if (!token) {
+      return
+    }
+
+    await window.api.captcha.submit(item.id, token).catch(() => null)
+    if (activeCaptchaId.value === item.id) {
+      activeCaptchaId.value = null
+    }
+  } finally {
+    captchaWindowBusy.value = false
+  }
+}
+
+async function maybeResolveCaptcha(item: DownloadItem): Promise<void> {
+  if (item.status !== DownloadStatusEnum.WaitingCaptcha || !item.captchaSitekey || captchaAttemptedIds.has(item.id)) {
+    return
+  }
+
+  captchaAttemptedIds.add(item.id)
+  const token = await window.api.captcha.nopechaSolve({
+    type: item.captchaType ?? 'recaptcha2',
+    sitekey: item.captchaSitekey,
+    pageurl: item.captchaPageUrl ?? item.url,
+  }).catch(() => null)
+
+  if (token) {
+    await window.api.captcha.submit(item.id, token).catch(() => null)
+    return
+  }
+
+  if (!activeCaptchaId.value) {
+    activeCaptchaId.value = item.id
+    void openCaptchaWindow(item)
+  }
+}
+
+async function maybeResolveCaptchaById(id: string): Promise<void> {
+  const item = items.value.find((entry) => entry.id === id)
+  if (!item) {
+    return
+  }
+  await maybeResolveCaptcha(item)
 }
 </script>
 
@@ -908,6 +1113,32 @@ function childStatusText(status?: DownloadChild['status']): string {
   color: var(--text-muted);
 }
 
+.toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.toolbar-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.toolbar-select {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+}
+
 .toolbar-btn {
   border: 1px solid var(--border-color);
   background: var(--bg-card);
@@ -948,6 +1179,8 @@ function childStatusText(status?: DownloadChild['status']): string {
   width: 100%;
   box-sizing: border-box;
   align-self: stretch;
+  content-visibility: auto;
+  contain: layout paint style;
 }
 
 .download-card::before {
@@ -1300,6 +1533,18 @@ function childStatusText(status?: DownloadChild['status']): string {
   transition: opacity 0.2s ease;
 }
 
+.folder-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
 .child-row {
   display: flex;
   align-items: flex-start;
@@ -1392,7 +1637,100 @@ function childStatusText(status?: DownloadChild['status']): string {
   padding: 4px 6px;
 }
 
-/* ── Captcha inline ─────────────────────────────────────────── */
+/* ── Captcha modal ──────────────────────────────────────────── */
+.captcha-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.captcha-modal {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, #8b5cf6 24%, var(--border-color));
+  background: var(--bg-card);
+  box-shadow: 0 22px 50px rgba(15, 23, 42, 0.24);
+}
+
+.captcha-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.captcha-modal-header strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.captcha-modal-header p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.captcha-modal-file {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 86%, var(--bg-secondary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.captcha-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--accent-primary, #5b6cff) 20%, var(--border-color));
+}
+
+.captcha-modal-body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.captcha-modal-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-primary, #5b6cff), color-mix(in srgb, var(--accent-primary, #5b6cff) 72%, #ffffff));
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.captcha-modal-open-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
 .captcha-row {
   display: flex;
   flex-direction: column;
@@ -1426,31 +1764,6 @@ function childStatusText(status?: DownloadChild['status']): string {
   gap: 5px;
   color: #8b5cf6;
   font-weight: 600;
-}
-
-/* ── List transitions ───────────────────────────────────────── */
-.item-enter-active {
-  animation: slide-in-up 0.2s ease;
-}
-
-.item-leave-active {
-  animation: slide-in-up 0.15s ease reverse;
-}
-
-.item-move {
-  transition: transform 0.2s ease;
-  will-change: transform;
-}
-
-@keyframes slide-in-up {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 @keyframes pulse-glow {
