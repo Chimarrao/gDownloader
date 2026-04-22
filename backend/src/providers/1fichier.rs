@@ -3,14 +3,14 @@ use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Duration;
 
-use crate::models::FileInfo;
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use crate::models::{FileChildInfo, FileInfo};
+use super::{apply_speed_limit, host_matches, rate_limit_error, unsupported_error, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct FichierProvider;
 
 impl FichierProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("1fichier.com/")
+        host_matches(url, &["1fichier.com", "www.1fichier.com"])
     }
 
     fn extract_download_page(url: &str) -> Option<String> {
@@ -128,40 +128,121 @@ impl FichierProvider {
     }
 
     /// Extrai links de arquivos de uma página de pasta do 1fichier.
-    fn extract_folder_children(html: &str) -> Vec<crate::models::FileChildInfo> {
-        let mut children = Vec::new();
-        let mut cursor = html;
-        while let Some(href_pos) = cursor.find("href=\"https://1fichier.com/?") {
-            let rest = &cursor[href_pos + 6..];
-            let end = match rest.find('"') {
-                Some(e) => e,
-                None => break,
-            };
-            let url = rest[..end].to_string();
-            // Extract the link text (filename)
-            let after_quote = &rest[end..];
-            if let Some(text_start) = after_quote.find('>') {
-                let after = &after_quote[text_start + 1..];
-                let name_end = after.find('<').unwrap_or(after.len());
-                let filename = after[..name_end].trim().to_string();
-                if !filename.is_empty() && filename.len() < 256 {
-                    children.push(crate::models::FileChildInfo {
-                        filename,
-                        size: 0,
-                        mime_type: None,
-                        is_folder: false,
-                        path: None,
-                        source_url: Some(url),
-                        bytes_downloaded: None,
-                        speed_bps: None,
-                        eta_secs: None,
-                        status: None,
-                    });
+    fn extract_folder_children(html: &str) -> Vec<FileChildInfo> {
+        let Some(re) = regex::Regex::new(
+            r#"(?is)<tr>\s*<td[^>]*class="normal alg file-obj"[^>]*>\s*<a href="(https://1fichier\.com/\?[^"]+)"[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*class="normal"[^>]*>([^<]+)</td>"#,
+        )
+        .ok() else {
+            return Vec::new();
+        };
+
+        re.captures_iter(html)
+            .filter_map(|captures| {
+                let url = captures[1].trim().to_string();
+                let filename = <Self as ProviderDefaults>::safe_filename(
+                    &Self::decode_basic_html_entities(captures[2].trim()),
+                    "arquivo_1fichier",
+                );
+                let size = Self::parse_human_size(&Self::decode_basic_html_entities(captures[3].trim()));
+
+                if filename.is_empty() || url.is_empty() {
+                    return None;
                 }
-            }
-            cursor = &rest[end + 1..];
+
+                Some(FileChildInfo {
+                    filename: filename.clone(),
+                    size,
+                    mime_type: None,
+                    is_folder: false,
+                    path: Some(filename),
+                    source_url: Some(url),
+                    bytes_downloaded: None,
+                    speed_bps: None,
+                    eta_secs: None,
+                    status: None,
+                })
+            })
+            .collect()
+    }
+
+    async fn download_single_file(
+        client: &reqwest::Client,
+        page_url: &str,
+        dest_path: &str,
+        speed_limit_bps: Option<u64>,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+    ) -> Result<u64> {
+        let landing = client.get(page_url).send().await?.error_for_status()?.text().await?;
+
+        if Self::has_free_slot_error(&landing) {
+            return Err(Self::free_slot_error());
         }
-        children
+
+        let wait_seconds = Self::extract_wait_seconds(&landing).unwrap_or(0);
+        if wait_seconds > 90 {
+            return Err(rate_limit_error(wait_seconds, format!("1Fichier: aguarde {} minutos", wait_seconds / 60)));
+        } else if wait_seconds > 0 {
+            tokio::time::sleep(Duration::from_secs(wait_seconds)).await;
+        }
+
+        let response = client
+            .post(page_url)
+            .form(&[("dl_no_ssl", "on")])
+            .send()
+            .await?
+            .error_for_status()?;
+
+        if Self::is_binary_response(&response) {
+            return Self::stream_response_to_file(response, dest_path, speed_limit_bps, progress_tx).await;
+        }
+
+        let html = response.text().await?;
+        if Self::has_free_slot_error(&html) {
+            return Err(Self::free_slot_error());
+        }
+
+        let direct_url = Self::extract_direct_link(&html)
+            .ok_or_else(|| unsupported_error("1Fichier"))?;
+
+        let resp = client.get(&direct_url).send().await?.error_for_status()?;
+        Self::stream_response_to_file(resp, dest_path, speed_limit_bps, progress_tx).await
+    }
+
+    async fn stream_response_to_file(
+        response: reqwest::Response,
+        dest_path: &str,
+        speed_limit_bps: Option<u64>,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+    ) -> Result<u64> {
+        let total = response.content_length().unwrap_or(0);
+        let mut file = tokio::fs::File::create(dest_path).await?;
+        let mut stream = response.bytes_stream();
+        let mut downloaded = 0u64;
+        let mut session_downloaded = 0u64;
+        let started_at = tokio::time::Instant::now();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            let chunk_len = chunk.len() as u64;
+            downloaded += chunk_len;
+            session_downloaded += chunk_len;
+
+            let _ = progress_tx.send(ProgressUpdate {
+                bytes_downloaded: downloaded,
+                total_bytes: total,
+                child_path: None,
+                child_filename: None,
+                child_bytes_downloaded: None,
+                child_total_bytes: None,
+                child_speed_bps: None,
+                child_eta_secs: None,
+            }).await;
+            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+        }
+
+        file.flush().await?;
+        Ok(downloaded)
     }
 
     fn extract_direct_link(html: &str) -> Option<String> {
@@ -220,18 +301,20 @@ impl Provider for FichierProvider {
             // Rate limit
             if let Some(secs) = Self::extract_wait_seconds(&html) {
                 if secs > 90 {
-                    return Err(anyhow!("RATE_LIMIT:{}:1Fichier: aguarde {} minutos", secs, secs / 60));
+                    return Err(rate_limit_error(secs, format!("1Fichier: aguarde {} minutos", secs / 60)));
                 }
             }
 
             // Folder detection
             if Self::is_folder_page(&page_url, &html) {
                 let children = Self::extract_folder_children(&html);
-                let folder_name = Self::extract_between(&html, "<title>", "</title>")
+                let folder_name = Self::extract_between(&html, "<div class=\"bh3 alc\">", "</div>")
+                    .or_else(|| Self::extract_between(&html, "<title>", "</title>"))
                     .unwrap_or_else(|| "pasta_1fichier".to_string());
+                let total_size = children.iter().map(|child| child.size).sum();
                 return Ok(FileInfo {
                     filename: <Self as ProviderDefaults>::safe_filename(&folder_name, "pasta_1fichier"),
-                    size: 0,
+                    size: total_size,
                     mime_type: None,
                     is_folder: true,
                     children: if children.is_empty() { None } else { Some(children) },
@@ -257,7 +340,7 @@ impl Provider for FichierProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         _parallel_parts: usize,
-        _selected_children: Option<Vec<String>>,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
@@ -267,94 +350,99 @@ impl Provider for FichierProvider {
             let client = <Self as ProviderDefaults>::http_client()?;
             let landing = client.get(&page_url).send().await?.error_for_status()?.text().await?;
 
-            if Self::has_free_slot_error(&landing) {
-                return Err(Self::free_slot_error());
-            }
-
-            let wait_seconds = Self::extract_wait_seconds(&landing).unwrap_or(0);
-            if wait_seconds > 90 {
-                return Err(anyhow!("RATE_LIMIT:{}:1Fichier: aguarde {} minutos", wait_seconds, wait_seconds / 60));
-            } else if wait_seconds > 0 {
-                tokio::time::sleep(Duration::from_secs(wait_seconds)).await;
-            }
-
-            let response = client
-                .post(&page_url)
-                .form(&[("dl_no_ssl", "on")])
-                .send()
-                .await?
-                .error_for_status()?;
-
-            if Self::is_binary_response(&response) {
-                let total = response.content_length().unwrap_or(0);
-                let mut file = tokio::fs::File::create(dest_path).await?;
-                let mut stream = response.bytes_stream();
-                let mut downloaded = 0u64;
-                let mut session_downloaded = 0u64;
-                let started_at = tokio::time::Instant::now();
-
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk?;
-                    file.write_all(&chunk).await?;
-                    let chunk_len = chunk.len() as u64;
-                    downloaded += chunk_len;
-                    session_downloaded += chunk_len;
-
-                    let _ = progress_tx.send(ProgressUpdate {
-                        bytes_downloaded: downloaded,
-                        total_bytes: total,
-                        child_path: None,
-                        child_filename: None,
-                        child_bytes_downloaded: None,
-                        child_total_bytes: None,
-                        child_speed_bps: None,
-                        child_eta_secs: None,
-                    }).await;
-                    apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+            if Self::is_folder_page(&page_url, &landing) {
+                let mut children = Self::extract_folder_children(&landing);
+                if let Some(selected) = selected_children {
+                    let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
+                    children.retain(|child| child.source_url.as_ref().map(|url| selected_set.contains(url)).unwrap_or(false));
                 }
 
-                file.flush().await?;
-                return Ok(downloaded);
+                if children.is_empty() {
+                    return Err(anyhow!("Pasta do 1Fichier vazia ou sem arquivos selecionados"));
+                }
+
+                tokio::fs::create_dir_all(dest_path).await?;
+
+                let total_size: u64 = children.iter().map(|child| child.size).sum();
+                let mut downloaded_total = 0u64;
+
+                for child in &children {
+                    let child_url = child.source_url.clone().ok_or_else(|| anyhow!("Item da pasta do 1Fichier sem URL"))?;
+                    let child_path = child.path.clone().unwrap_or_else(|| child.filename.clone());
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), child_path);
+
+                    if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {
+                        tokio::fs::create_dir_all(parent_dir).await?;
+                    }
+
+                    if let Ok(metadata) = tokio::fs::metadata(&output_path).await {
+                        let existing_len = metadata.len();
+                        if child.size > 0 && existing_len >= child.size {
+                            downloaded_total = downloaded_total.saturating_add(child.size);
+                            let _ = progress_tx.send(ProgressUpdate {
+                                bytes_downloaded: downloaded_total,
+                                total_bytes: total_size,
+                                child_path: Some(child_path.clone()),
+                                child_filename: Some(child.filename.clone()),
+                                child_bytes_downloaded: Some(child.size),
+                                child_total_bytes: Some(child.size),
+                                child_speed_bps: Some(0),
+                                child_eta_secs: Some(0),
+                            }).await;
+                            continue;
+                        }
+                    }
+
+                    let base_downloaded = downloaded_total;
+                    let child_filename = child.filename.clone();
+                    let child_total = child.size;
+                    let child_started_at = tokio::time::Instant::now();
+                    let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<ProgressUpdate>(64);
+                    let child_client = client.clone();
+                    let child_speed_limit = speed_limit_bps;
+                    let child_dest = output_path.clone();
+
+                    let child_task = tokio::spawn(async move {
+                        Self::download_single_file(&child_client, &child_url, &child_dest, child_speed_limit, child_tx).await
+                    });
+
+                    while let Some(update) = child_rx.recv().await {
+                        let child_downloaded = update.bytes_downloaded;
+                        let total_downloaded = base_downloaded + child_downloaded;
+                        let child_elapsed = child_started_at.elapsed().as_secs_f64();
+                        let child_speed = if child_elapsed > 0.0 {
+                            (child_downloaded as f64 / child_elapsed) as u64
+                        } else {
+                            0
+                        };
+                        let child_eta = if child_speed > 0 && child_total > child_downloaded {
+                            (child_total - child_downloaded) / child_speed
+                        } else {
+                            0
+                        };
+
+                        let _ = progress_tx.send(ProgressUpdate {
+                            bytes_downloaded: total_downloaded,
+                            total_bytes: total_size,
+                            child_path: Some(child_path.clone()),
+                            child_filename: Some(child_filename.clone()),
+                            child_bytes_downloaded: Some(child_downloaded),
+                            child_total_bytes: Some(child_total),
+                            child_speed_bps: Some(child_speed),
+                            child_eta_secs: Some(child_eta),
+                        }).await;
+                    }
+
+                    let child_bytes = child_task
+                        .await
+                        .map_err(|error| anyhow!("Falha interna ao baixar item do 1Fichier: {error}"))??;
+                    downloaded_total = base_downloaded + child_bytes;
+                }
+
+                return Ok(downloaded_total);
             }
 
-            let html = response.text().await?;
-            if Self::has_free_slot_error(&html) {
-                return Err(Self::free_slot_error());
-            }
-
-            let direct_url = Self::extract_direct_link(&html)
-                .ok_or_else(|| anyhow!("1fichier exigiu uma etapa adicional que ainda não foi resolvida automaticamente"))?;
-
-            let resp = client.get(&direct_url).send().await?.error_for_status()?;
-            let total = resp.content_length().unwrap_or(0);
-            let mut file = tokio::fs::File::create(dest_path).await?;
-            let mut stream = resp.bytes_stream();
-            let mut downloaded = 0u64;
-            let mut session_downloaded = 0u64;
-            let started_at = tokio::time::Instant::now();
-
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk?;
-                file.write_all(&chunk).await?;
-                let chunk_len = chunk.len() as u64;
-                downloaded += chunk_len;
-                session_downloaded += chunk_len;
-
-                let _ = progress_tx.send(ProgressUpdate {
-                    bytes_downloaded: downloaded,
-                    total_bytes: total,
-                    child_path: None,
-                    child_filename: None,
-                    child_bytes_downloaded: None,
-                    child_total_bytes: None,
-                    child_speed_bps: None,
-                    child_eta_secs: None,
-                }).await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
-            }
-
-            file.flush().await?;
-            Ok(downloaded)
+            Self::download_single_file(&client, &page_url, dest_path, speed_limit_bps, progress_tx).await
         })
     }
 }
@@ -389,5 +477,26 @@ mod tests {
     fn detects_free_slot_error() {
         let html = "All free guest slots are currently in use.";
         assert!(FichierProvider::has_free_slot_error(html));
+    }
+
+    #[test]
+    fn extracts_folder_children_with_sizes() {
+        let html = r#"
+            <tr>
+              <td class="normal alg file-obj"><a href="https://1fichier.com/?abc123">Primeiro.rar</a></td>
+              <td class="normal">17.06 GB</td>
+            </tr>
+            <tr>
+              <td class="normal alg file-obj"><a href="https://1fichier.com/?def456">Segundo.rar</a></td>
+              <td class="normal">6.73 GB</td>
+            </tr>
+        "#;
+
+        let children = FichierProvider::extract_folder_children(html);
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].filename, "Primeiro.rar");
+        assert_eq!(children[0].source_url.as_deref(), Some("https://1fichier.com/?abc123"));
+        assert!(children[0].size > 18_000_000_000 - 2_000_000_000);
+        assert!(children[1].size > 7_000_000_000 - 500_000_000);
     }
 }

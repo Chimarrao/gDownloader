@@ -4,13 +4,13 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct GDriveProvider;
 
 impl GDriveProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("drive.google.com")
+        host_matches(url, &["drive.google.com"])
     }
 
     // Extrai o ID do arquivo de diferentes formatos de URL do Google Drive
@@ -46,6 +46,88 @@ impl GDriveProvider {
         format!("https://drive.google.com/uc?export=download&id={id}&confirm=t")
     }
 
+    fn is_binary_response(resp: &reqwest::Response) -> bool {
+        resp.headers().get("content-disposition").is_some()
+            || resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(|value| !value.to_ascii_lowercase().contains("text/html"))
+                .unwrap_or(false)
+    }
+
+    fn decode_html(value: &str) -> String {
+        value
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#039;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+    }
+
+    fn extract_confirm_download_url(html: &str) -> Option<String> {
+        let action = regex::Regex::new(r#"id="download-form"[^>]*action="([^"]+)""#)
+            .ok()?
+            .captures(html)
+            .map(|captures| captures[1].to_string())?;
+
+        let mut url = reqwest::Url::parse(&action).ok()?;
+        for captures in regex::Regex::new(r#"type="hidden"\s+name="([^"]+)"\s+value="([^"]*)""#)
+            .ok()?
+            .captures_iter(html)
+        {
+            url.query_pairs_mut()
+                .append_pair(&captures[1], &Self::decode_html(&captures[2]));
+        }
+
+        Some(url.to_string())
+    }
+
+    fn extract_warning_page_metadata(html: &str, fallback_id: &str) -> (String, u64) {
+        let filename = regex::Regex::new(r#"<span class="uc-name-size"><a [^>]+>([^<]+)</a>"#)
+            .ok()
+            .and_then(|re| re.captures(html))
+            .map(|captures| Self::decode_html(&captures[1]))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("gdrive_{fallback_id}"));
+
+        let size = regex::Regex::new(r#"\(([^)]+)\)\s+is too large"#)
+            .ok()
+            .and_then(|re| re.captures(html))
+            .map(|captures| super::parse_human_size(&captures[1]))
+            .unwrap_or(0);
+
+        (filename, size)
+    }
+
+    async fn resolve_download_url(client: &reqwest::Client, id: &str) -> Result<(String, Option<String>, u64)> {
+        let initial_url = Self::download_url(id);
+        let response = client.get(&initial_url).send().await?.error_for_status()?;
+
+        if Self::is_binary_response(&response) {
+            let filename = response
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| {
+                    if let Some(pos) = s.find("filename=\"") {
+                        let start = pos + 10;
+                        let end = s[start..].find('"')? + start;
+                        Some(s[start..end].to_string())
+                    } else {
+                        None
+                    }
+                });
+            return Ok((initial_url, filename, response.content_length().unwrap_or(0)));
+        }
+
+        let html = response.text().await?;
+        let (filename, size) = Self::extract_warning_page_metadata(&html, id);
+        let confirm_url = Self::extract_confirm_download_url(&html)
+            .ok_or_else(|| anyhow!("Google Drive não expôs o link final de confirmação"))?;
+        Ok((confirm_url, Some(filename), size))
+    }
+
 }
 
 impl ProviderDefaults for GDriveProvider {}
@@ -61,10 +143,7 @@ impl Provider for GDriveProvider {
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
             let client = <Self as ProviderDefaults>::http_client()?;
-            let download_url = Self::download_url(&id);
-
-            // HEAD request = só os headers, sem baixar o body
-            // Usado para obter Content-Length e Content-Disposition sem desperdiçar banda
+            let (download_url, hinted_filename, hinted_size) = Self::resolve_download_url(&client, &id).await?;
             let resp = client.head(&download_url).send().await?;
 
             // Tenta extrair o nome do arquivo do header Content-Disposition
@@ -85,11 +164,12 @@ impl Provider for GDriveProvider {
                         None
                     }
                 })
+                .or(hinted_filename)
                 .unwrap_or_else(|| format!("gdrive_{id}"));
 
             Ok(FileInfo {
                 filename,
-                size: resp.content_length().unwrap_or(0),
+                size: resp.content_length().unwrap_or(hinted_size),
                 mime_type: resp
                     .headers()
                     .get("content-type")
@@ -116,7 +196,7 @@ impl Provider for GDriveProvider {
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
             let client = <Self as ProviderDefaults>::http_client()?;
-            let download_url = Self::download_url(&id);
+            let (download_url, _hinted_filename, _hinted_size) = Self::resolve_download_url(&client, &id).await?;
 
             let existing_bytes = tokio::fs::metadata(dest_path)
                 .await

@@ -5,13 +5,14 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, path_segments, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct DrimeProvider;
 
 impl DrimeProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("app.drime.cloud/drive/s/")
+        host_matches(url, &["app.drime.cloud"])
+            && matches!(path_segments(url).as_slice(), [first, second, _hash, ..] if first == "drive" && second == "s")
     }
 
     fn extract_share_hash(url: &str) -> Option<String> {

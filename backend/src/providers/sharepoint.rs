@@ -4,25 +4,26 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, unsupported_error, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct SharePointProvider;
 
 impl SharePointProvider {
     pub fn matches(url: &str) -> bool {
-        let lower = url.to_ascii_lowercase();
-        lower.contains("sharepoint.com/")
-            || lower.contains("my.sharepoint.com/")
-            || lower.contains("onedrive.live.com/")
-            || lower.contains("1drv.ms/")
+        host_matches(url, &["onedrive.live.com", "1drv.ms"])
+            || reqwest::Url::parse(url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+                .map(|host| host.ends_with("sharepoint.com"))
+                .unwrap_or(false)
     }
 
     fn auth_required_error() -> anyhow::Error {
-        anyhow!("Link do OneDrive/SharePoint exige autenticação Microsoft ou não está compartilhado publicamente")
+        unsupported_error("OneDrive/SharePoint")
     }
 
     fn direct_download_error() -> anyhow::Error {
-        anyhow!("Link do OneDrive/SharePoint foi reconhecido, mas não expôs um download público direto")
+        unsupported_error("OneDrive/SharePoint")
     }
 
     fn build_download_url(url: &str) -> Result<reqwest::Url> {

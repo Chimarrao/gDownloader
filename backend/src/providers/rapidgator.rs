@@ -1,15 +1,20 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use super::{
+    apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches, parse_human_size,
+    path_segments, premium_required_error, rate_limit_error, removed_error, ProgressUpdate, Provider, ProviderDefaults,
+};
 
 pub struct RapidgatorProvider;
 
 impl RapidgatorProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("rapidgator.net/file/")
+        host_matches(url, &["rapidgator.net", "www.rapidgator.net"])
+            && matches!(path_segments(url).as_slice(), [first, _id, ..] if first == "file")
     }
 
     /// Extrai o ID do arquivo da URL.
@@ -24,23 +29,18 @@ impl RapidgatorProvider {
 
     /// Extrai captcha_token embutido na URL como fragmento: #captcha_token=XXX
     fn extract_captcha_token(url: &str) -> Option<String> {
-        let fragment = url.split('#').nth(1)?;
-        for part in fragment.split('&') {
-            if let Some(val) = part.strip_prefix("captcha_token=") {
-                return Some(val.to_string());
-            }
-        }
-        None
+        extract_fragment_value(url, "captcha_token")
     }
 
     /// Detecta o sitekey do reCaptcha v2 na página.
     fn detect_recaptcha_sitekey(html: &str) -> Option<String> {
-        // <div class="g-recaptcha" data-sitekey="XXXX">
-        let marker = "data-sitekey=\"";
-        let start = html.find(marker)? + marker.len();
-        let rest = &html[start..];
-        let end = rest.find('"')?;
-        Some(rest[..end].to_string())
+        let re = regex::Regex::new(r#"g-recaptcha[^>]+data-sitekey=["']([^"']+)["']"#).ok()?;
+        re.captures(html).map(|captures| captures[1].to_string())
+    }
+
+    fn detect_hcaptcha_sitekey(html: &str) -> Option<String> {
+        let re = regex::Regex::new(r#"h-captcha[^>]+data-sitekey=["']([^"']+)["']"#).ok()?;
+        re.captures(html).map(|captures| captures[1].to_string())
     }
 
     /// Parseia tempo de espera do HTML do Rapidgator.
@@ -106,21 +106,136 @@ impl RapidgatorProvider {
     }
 
     fn parse_human_size(s: &str) -> u64 {
-        let s = s.trim();
-        let mut parts = s.split_whitespace();
-        let n: f64 = parts
-            .next()
-            .map(|raw| raw.replace(',', "."))
-            .and_then(|raw| raw.parse().ok())
-            .unwrap_or(0.0);
-        let unit = parts.next().unwrap_or("").to_ascii_uppercase();
-        let mult = match unit.as_str() {
-            "KB" => 1024.0,
-            "MB" => 1024.0 * 1024.0,
-            "GB" => 1024.0 * 1024.0 * 1024.0,
-            _ => 1.0,
-        };
-        (n * mult).round() as u64
+        parse_human_size(s)
+    }
+
+    fn extract_size(html: &str) -> u64 {
+        let lower = html.to_lowercase();
+        if let Some(pos) = lower.find("file size:") {
+            let slice = &html[pos..html.len().min(pos + 300)];
+            let size_re = regex::Regex::new(r#"([0-9]+(?:[.,][0-9]+)?)\s*(KB|MB|GB|TB)"#).ok();
+            if let Some(captures) = size_re.and_then(|re| re.captures(slice)) {
+                return Self::parse_human_size(&format!("{} {}", &captures[1], &captures[2]));
+            }
+        }
+
+        for unit in &["kb", "mb", "gb", "tb"] {
+            if let Some(pos) = lower.find(unit) {
+                let before = &html[..pos].trim_end();
+                let start = before
+                    .rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != ',')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let num_str = &before[start..];
+                if !num_str.is_empty() {
+                    return Self::parse_human_size(&format!("{} {}", num_str, unit.to_uppercase()));
+                }
+            }
+        }
+
+        0
+    }
+
+    fn is_removed_page(html: &str) -> bool {
+        let lower = html.to_lowercase();
+        lower.contains("file not found")
+            || lower.contains("file was removed")
+            || lower.contains("download file not found")
+            || lower.contains("error 404")
+    }
+
+    fn extract_numeric_fid(html: &str) -> Option<String> {
+        let re = regex::Regex::new(r#"var\s+fid\s*=\s*(\d+)"#).ok()?;
+        re.captures(html).map(|captures| captures[1].to_string())
+    }
+
+    fn extract_js_string_var(html: &str, name: &str) -> Option<String> {
+        let pattern = format!(r#"var\s+{}\s*=\s*'([^']*)'"#, regex::escape(name));
+        let re = regex::Regex::new(&pattern).ok()?;
+        re.captures(html).map(|captures| captures[1].to_string())
+    }
+
+    fn extract_js_number_var(html: &str, name: &str) -> Option<u64> {
+        let pattern = format!(r#"var\s+{}\s*=\s*(\d+)"#, regex::escape(name));
+        let re = regex::Regex::new(&pattern).ok()?;
+        re.captures(html)
+            .and_then(|captures| captures.get(1))
+            .and_then(|value| value.as_str().parse::<u64>().ok())
+    }
+
+    fn absolute_url(path_or_url: &str) -> String {
+        if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+            return path_or_url.to_string();
+        }
+
+        format!("https://rapidgator.net{}", path_or_url)
+    }
+
+    fn is_free_limit_block(html: &str, size: u64) -> bool {
+        size > 1024 * 1024 * 1024
+            && html.to_lowercase().contains("download files up to 1 gb in free mode")
+    }
+
+    fn extract_ready_download_link(html: &str) -> Option<String> {
+        let from_var = regex::Regex::new(r#"download_link\s*=\s*'([^']+)'"#)
+            .ok()
+            .and_then(|re| re.captures(html))
+            .map(|captures| captures[1].to_string());
+
+        from_var.or_else(|| {
+            let re = regex::Regex::new(r#"href=["'](https?://[^"']+)["'][^>]*class=["'][^"']*btn-download"#).ok()?;
+            re.captures(html).map(|captures| captures[1].to_string())
+        })
+    }
+
+    async fn resolve_captcha_page(
+        client: &reqwest::Client,
+        captcha_page_url: &str,
+        referer: &str,
+        captcha_token: Option<&str>,
+    ) -> Result<Option<String>> {
+        if let Some(token) = captcha_token {
+            let response = client
+                .post(captcha_page_url)
+                .header("Referer", referer)
+                .form(&[
+                    ("g-recaptcha-response", token),
+                    ("h-captcha-response", token),
+                    ("captcha_token", token),
+                ])
+                .send()
+                .await?;
+
+            let final_url = response.url().to_string();
+            let html = response.error_for_status()?.text().await?;
+
+            if !final_url.contains("/download/captcha") {
+                return Ok(Some(final_url));
+            }
+
+            if let Some(direct_url) = Self::extract_ready_download_link(&html) {
+                return Ok(Some(direct_url));
+            }
+        }
+
+        let captcha_html = client
+            .get(captcha_page_url)
+            .header("Referer", referer)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+
+        if let Some(sitekey) = Self::detect_recaptcha_sitekey(&captcha_html) {
+            return Err(captcha_required_error("recaptcha2", &sitekey, captcha_page_url));
+        }
+
+        if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&captcha_html) {
+            return Err(captcha_required_error("hcaptcha", &sitekey, captcha_page_url));
+        }
+
+        Ok(Self::extract_ready_download_link(&captcha_html))
     }
 }
 
@@ -139,42 +254,34 @@ impl Provider for RapidgatorProvider {
             let client = <Self as ProviderDefaults>::http_client()?;
             let resp = client.get(url).send().await?.error_for_status()?.text().await?;
 
+            if Self::is_removed_page(&resp) {
+                return Err(removed_error("Rapidgator"));
+            }
+
             // Rate limit check
             if let Some(secs) = Self::parse_wait_time(&resp) {
-                return Err(anyhow!("RATE_LIMIT:{}:Rapidgator: aguarde {} hora(s)", secs, secs / 3600));
+                return Err(rate_limit_error(secs, format!("Rapidgator: aguarde {} hora(s)", secs / 3600)));
             }
 
             // Captcha check
             if let Some(sitekey) = Self::detect_recaptcha_sitekey(&resp) {
-                return Err(anyhow!(
-                    "CAPTCHA_REQUIRED:recaptcha2:{}:{}",
-                    sitekey,
-                    url.split('#').next().unwrap_or(url)
+                return Err(captcha_required_error(
+                    "recaptcha2",
+                    &sitekey,
+                    url.split('#').next().unwrap_or(url),
+                ));
+            }
+            if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&resp) {
+                return Err(captcha_required_error(
+                    "hcaptcha",
+                    &sitekey,
+                    url.split('#').next().unwrap_or(url),
                 ));
             }
 
             let filename = Self::extract_filename(&resp)
                 .unwrap_or_else(|| "arquivo_rapidgator".to_string());
-
-            // Extract size from page
-            let size = {
-                let lower = resp.to_lowercase();
-                let mut found = 0u64;
-                for unit in &["kb", "mb", "gb"] {
-                    if let Some(pos) = lower.find(unit) {
-                        let before = &resp[..pos].trim_end();
-                        let start = before.rfind(|c: char| !c.is_ascii_digit() && c != '.' && c != ',')
-                            .map(|p| p + 1)
-                            .unwrap_or(0);
-                        let num_str = &before[start..];
-                        if !num_str.is_empty() {
-                            found = Self::parse_human_size(&format!("{} {}", num_str, unit.to_uppercase()));
-                            break;
-                        }
-                    }
-                }
-                found
-            };
+            let size = Self::extract_size(&resp);
 
             Ok(FileInfo {
                 filename: <Self as ProviderDefaults>::safe_filename(&filename, "arquivo_rapidgator"),
@@ -200,96 +307,211 @@ impl Provider for RapidgatorProvider {
             let captcha_token = Self::extract_captcha_token(url);
             let clean_url = url.split('#').next().unwrap_or(url);
 
-            let file_id = Self::file_id(clean_url)
+            Self::file_id(clean_url)
                 .ok_or_else(|| anyhow!("URL do Rapidgator inválida"))?;
 
             let client = <Self as ProviderDefaults>::http_client()?;
             let page = client.get(clean_url).send().await?.error_for_status()?.text().await?;
 
-            // Rate limit
-            if let Some(secs) = Self::parse_wait_time(&page) {
-                return Err(anyhow!("RATE_LIMIT:{}:Rapidgator: aguarde {} hora(s)", secs, secs / 3600));
+            if Self::is_removed_page(&page) {
+                return Err(removed_error("Rapidgator"));
             }
 
-            // Captcha required
-            if Self::detect_recaptcha_sitekey(&page).is_some() && captcha_token.is_none() {
+            // Rate limit
+            if let Some(secs) = Self::parse_wait_time(&page) {
+                return Err(rate_limit_error(secs, format!("Rapidgator: aguarde {} hora(s)", secs / 3600)));
+            }
+
+            if captcha_token.is_none() && Self::detect_recaptcha_sitekey(&page).is_some() {
                 let sitekey = Self::detect_recaptcha_sitekey(&page).unwrap_or_default();
+                return Err(captcha_required_error("recaptcha2", &sitekey, clean_url));
+            }
+            if captcha_token.is_none() && Self::detect_hcaptcha_sitekey(&page).is_some() {
+                let sitekey = Self::detect_hcaptcha_sitekey(&page).unwrap_or_default();
+                return Err(captcha_required_error("hcaptcha", &sitekey, clean_url));
+            }
+
+            let size = Self::extract_size(&page);
+            let numeric_fid = Self::extract_numeric_fid(&page)
+                .ok_or_else(|| anyhow!("Rapidgator não expôs o identificador interno deste arquivo"))?;
+            let start_timer_url = Self::extract_js_string_var(&page, "startTimerUrl").unwrap_or_default();
+            let get_download_url = Self::extract_js_string_var(&page, "getDownloadUrl")
+                .unwrap_or_else(|| "/download/AjaxGetDownloadLink".to_string());
+            let captcha_page_url = Self::extract_js_string_var(&page, "captchaUrl").unwrap_or_default();
+            let page_wait_secs = Self::extract_js_number_var(&page, "secs").unwrap_or(0);
+
+            if start_timer_url.is_empty() {
+                if Self::is_free_limit_block(&page, size) {
+                    return Err(premium_required_error(
+                        "Rapidgator",
+                        "o modo grátis atual só libera até 1 GB",
+                    ));
+                }
+
+                if let Some(direct_url) = Self::extract_ready_download_link(&page) {
+                    let resp = client.get(&direct_url).send().await?.error_for_status()?;
+                    let total = resp.content_length().unwrap_or(size);
+                    let mut file = tokio::fs::File::create(dest_path).await?;
+                    let mut stream = resp.bytes_stream();
+                    let mut downloaded = 0u64;
+                    let mut session_downloaded = 0u64;
+                    let started_at = tokio::time::Instant::now();
+
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk?;
+                        file.write_all(&chunk).await?;
+                        let len = chunk.len() as u64;
+                        downloaded += len;
+                        session_downloaded += len;
+
+                        let _ = progress_tx.send(ProgressUpdate {
+                            bytes_downloaded: downloaded,
+                            total_bytes: total,
+                            child_path: None,
+                            child_filename: None,
+                            child_bytes_downloaded: None,
+                            child_total_bytes: None,
+                            child_speed_bps: None,
+                            child_eta_secs: None,
+                        }).await;
+                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                    }
+
+                    file.flush().await?;
+                    return Ok(downloaded);
+                }
+
                 return Err(anyhow!(
-                    "CAPTCHA_REQUIRED:recaptcha2:{}:{}",
-                    sitekey,
-                    clean_url
+                    "Rapidgator não liberou um fluxo gratuito para este arquivo. O host pode exigir premium, captcha adicional ou outro espelho."
                 ));
             }
 
-            // Start timer — POST to AjaxStartTimer
-            let start_url = format!(
-                "https://rapidgator.net/download/AjaxStartTimer/{}",
-                file_id
-            );
-            let mut form = vec![
-                ("DownloadMd5Form[code]".to_string(), file_id.clone()),
-            ];
-            if let Some(ref token) = captcha_token {
-                form.push(("DownloadMd5Form[captcha]".to_string(), token.clone()));
-            }
-
             let start_resp = client
-                .post(&start_url)
+                .get(Self::absolute_url(&start_timer_url))
                 .header("X-Requested-With", "XMLHttpRequest")
                 .header("Referer", clean_url)
-                .form(&form)
+                .query(&[("fid", numeric_fid.as_str())])
                 .send()
                 .await?
-                .text()
+                .json::<Value>()
                 .await?;
-
-            let start_json: serde_json::Value = serde_json::from_str(&start_resp)
-                .unwrap_or_default();
+            let start_json = start_resp;
 
             // Check for rate limit in JSON
             if let Some(delay) = start_json["delay"].as_i64() {
                 if delay > 0 {
-                    return Err(anyhow!("RATE_LIMIT:{}:Rapidgator: aguarde {}s", delay, delay));
+                    return Err(rate_limit_error(delay as u64, format!("Rapidgator: aguarde {}s", delay)));
                 }
             }
 
-            // Check for next (wait before download)
-            if let Some(wait) = start_json["next"].as_i64() {
-                if wait > 0 && wait <= 120 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(wait as u64)).await;
-                } else if wait > 120 {
-                    return Err(anyhow!("RATE_LIMIT:{}:Rapidgator: aguarde {}s", wait, wait));
-                }
+            if start_json["state"].as_str() == Some("error") {
+                let code = start_json["code"].as_str().unwrap_or("erro desconhecido");
+                return Err(anyhow!("Rapidgator recusou o início do download: {code}"));
+            }
+
+            let wait = start_json["secs"]
+                .as_u64()
+                .or_else(|| start_json["wait"].as_u64())
+                .or_else(|| start_json["delay"].as_u64())
+                .unwrap_or(page_wait_secs);
+            if wait > 0 && wait <= 180 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(wait)).await;
+            } else if wait > 180 {
+                return Err(rate_limit_error(wait, format!("Rapidgator: aguarde {}s", wait)));
             }
 
             let sid = start_json["sid"].as_str().unwrap_or("").to_string();
             if sid.is_empty() {
-                return Err(anyhow!("Rapidgator não retornou SID de download. O arquivo pode requerer conta premium."));
+                return Err(premium_required_error(
+                    "Rapidgator",
+                    "o host não retornou SID de download no modo gratuito",
+                ));
             }
 
-            // Get download link
-            let dl_url_api = format!(
-                "https://rapidgator.net/download/AjaxGetDownloadLink?sid={}",
-                sid
-            );
             let dl_resp = client
-                .get(&dl_url_api)
+                .get(Self::absolute_url(&get_download_url))
                 .header("X-Requested-With", "XMLHttpRequest")
+                .header("Referer", clean_url)
+                .query(&[("sid", sid.as_str())])
                 .send()
                 .await?
-                .text()
+                .json::<Value>()
                 .await?;
+            let dl_json = dl_resp;
 
-            let dl_json: serde_json::Value = serde_json::from_str(&dl_resp)
-                .unwrap_or_default();
+            if dl_json["state"].as_str() == Some("error") {
+                let code = dl_json["code"].as_str().unwrap_or("erro desconhecido");
+                if code.to_lowercase().contains("captcha") && !captcha_page_url.is_empty() {
+                    let resolved = Self::resolve_captcha_page(
+                        &client,
+                        &Self::absolute_url(&captcha_page_url),
+                        clean_url,
+                        captcha_token.as_deref(),
+                    ).await?;
+                    if let Some(direct_url) = resolved {
+                        let resp = client.get(&direct_url).send().await?.error_for_status()?;
+                        let total = resp.content_length().unwrap_or(size);
+                        let mut file = tokio::fs::File::create(dest_path).await?;
+                        let mut stream = resp.bytes_stream();
+                        let mut downloaded = 0u64;
+                        let mut session_downloaded = 0u64;
+                        let started_at = tokio::time::Instant::now();
 
-            let direct_url = dl_json["url"].as_str()
-                .ok_or_else(|| anyhow!("Rapidgator não retornou URL de download"))?
-                .to_string();
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk?;
+                            file.write_all(&chunk).await?;
+                            let len = chunk.len() as u64;
+                            downloaded += len;
+                            session_downloaded += len;
+
+                            let _ = progress_tx.send(ProgressUpdate {
+                                bytes_downloaded: downloaded,
+                                total_bytes: total,
+                                child_path: None,
+                                child_filename: None,
+                                child_bytes_downloaded: None,
+                                child_total_bytes: None,
+                                child_speed_bps: None,
+                                child_eta_secs: None,
+                            }).await;
+                            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                        }
+
+                        file.flush().await?;
+                        return Ok(downloaded);
+                    }
+                }
+
+                return Err(premium_required_error(
+                    "Rapidgator",
+                    &format!("o host não liberou o link final ({code})"),
+                ));
+            }
+
+            let direct_url = dl_json["download_link"]
+                .as_str()
+                .or_else(|| dl_json["url"].as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    if captcha_page_url.is_empty() {
+                        None
+                    } else {
+                        Some(Self::absolute_url(&captcha_page_url))
+                    }
+                })
+                .ok_or_else(|| premium_required_error("Rapidgator", "o host não retornou URL de download"))?;
+
+            let direct_url = if direct_url.contains("/download/captcha") {
+                Self::resolve_captcha_page(&client, &direct_url, clean_url, captcha_token.as_deref())
+                    .await?
+                    .ok_or_else(|| premium_required_error("Rapidgator", "o host ainda não liberou o link após o captcha"))?
+            } else {
+                direct_url
+            };
 
             // Download file
             let resp = client.get(&direct_url).send().await?.error_for_status()?;
-            let total = resp.content_length().unwrap_or(0);
+            let total = resp.content_length().unwrap_or(size);
             let mut file = tokio::fs::File::create(dest_path).await?;
             let mut stream = resp.bytes_stream();
             let mut downloaded = 0u64;
@@ -319,5 +541,37 @@ impl Provider for RapidgatorProvider {
             file.flush().await?;
             Ok(downloaded)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RapidgatorProvider;
+
+    #[test]
+    fn matches_standard_file_pages() {
+        assert!(RapidgatorProvider::matches(
+            "https://rapidgator.net/file/c2bd37a929081047efeff6ab088479dd/file.mp4.html"
+        ));
+        assert!(!RapidgatorProvider::matches("https://rapidgator.net/article/abc"));
+    }
+
+    #[test]
+    fn detects_removed_page_from_fixture() {
+        let html = include_str!("../../tests/fixtures/providers/rapidgator_removed.html");
+        assert!(RapidgatorProvider::is_removed_page(html));
+    }
+
+    #[test]
+    fn detects_free_limit_block_for_large_files() {
+        let html = r#"
+            <html>
+              <body>
+                <div class="premium">Download files up to 1 GB in free mode</div>
+              </body>
+            </html>
+        "#;
+
+        assert!(RapidgatorProvider::is_free_limit_block(html, 1_500_000_000));
     }
 }

@@ -18,7 +18,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, ProgressUpdate, Provider, ProviderDefaults};
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 type Aes128CbcDec = Decryptor<aes::Aes128>;
@@ -56,7 +56,7 @@ struct MegaFolderNodeMeta {
 
 impl MegaProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("mega.nz") || url.contains("mega.co.nz")
+        host_matches(url, &["mega.nz", "www.mega.nz", "mega.co.nz", "www.mega.co.nz"])
     }
 
     pub fn mega_base64_decode(input: &str) -> Vec<u8> {

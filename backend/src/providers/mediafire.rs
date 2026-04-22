@@ -6,7 +6,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, try_parallel_download, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, parse_url, try_parallel_download, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct MediaFireProvider;
 
@@ -21,7 +21,7 @@ struct MediaFireFolderFileEntry {
 
 impl MediaFireProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("mediafire.com")
+        host_matches(url, &["mediafire.com", "www.mediafire.com"])
     }
 
     pub fn is_folder_url(url: &str) -> bool {
@@ -86,8 +86,12 @@ impl MediaFireProvider {
         if let Ok(selector) = Selector::parse("a[href]") {
             for el in document.select(&selector) {
                 if let Some(href) = el.value().attr("href") {
+                    let mediafire_host = parse_url(href)
+                        .and_then(|parsed| parsed.host_str().map(str::to_string))
+                        .map(|host| host == "mediafire.com" || host.ends_with(".mediafire.com"))
+                        .unwrap_or(false);
                     if href.starts_with("http")
-                        && href.contains(".mediafire.com")
+                        && mediafire_host
                         && (href.contains("/get/") || href.contains("/download/"))
                     {
                         return Some(href.to_string());

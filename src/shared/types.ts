@@ -77,7 +77,11 @@ export interface DownloadItem {
   captchaPageUrl?: string
   error: string
   outputPath?: string
+  priority?: number
   addedAt: number
+  startedAt?: number
+  completedAt?: number
+  lastProgressAt?: number
 }
 
 export interface PersistedDownloadItem {
@@ -106,15 +110,26 @@ export interface PersistedSettings {
   uiZoom: number
   nativeNotification: boolean
   accentColor?: string
+}
+
+export interface AppSettingsSnapshot extends PersistedSettings {
   nopechaApiKey?: string
-  accounts?: {
-    terabox?: {
-      email: string
-      password: string
-      cookies?: string[]
-      verifiedAt?: string
-    }
-  }
+}
+
+export interface DownloadHistoryItem {
+  id: string
+  url: string
+  title: string
+  thumbnail: string
+  date: string
+  formatId: string
+  outputPath?: string
+}
+
+export interface CachedFileInfoSnapshot extends FileInfo {
+  providerId?: string
+  cachedAt?: number
+  lastCheckedAt?: number
 }
 
 export type DownloadStatusExtended =

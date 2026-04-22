@@ -31,6 +31,7 @@ pub struct Download {
     pub id: String,              // UUID único gerado ao criar (como um ID de banco de dados)
     pub url: String,             // URL original fornecida pelo usuário
     pub provider: String,        // Nome do provider: "Mega", "MediaFire", "Google Drive", "PixelDrain"
+    pub identity_key: String,    // Identidade lógica do item para deduplicação
     pub filename: String,        // Nome do arquivo no disco
     pub size: u64,               // Tamanho total em bytes (0 se o servidor não informar)
     pub dest_path: String,       // Caminho absoluto onde o arquivo será salvo
@@ -51,7 +52,11 @@ pub struct Download {
     pub captcha_page_url: Option<String>,
     pub captcha_token: Option<String>,    // preenchido quando o usuário resolve
     pub error: Option<String>,   // Option = pode ser Some("mensagem") ou None — como string|null no PHP
+    pub priority: i32,           // Prioridade formal da fila; maior = inicia antes
     pub created_at: u64,         // Timestamp Unix em segundos (como time() no PHP)
+    pub started_at: Option<u64>,
+    pub completed_at: Option<u64>,
+    pub last_progress_at: Option<u64>,
 }
 
 // --- Informações de um arquivo antes de iniciar o download ---
@@ -80,6 +85,104 @@ pub struct FileInfo {
     pub mime_type: Option<String>,    // Option = Some("video/mp4") ou None — como ?string no PHP
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TeraboxAccountSecret {
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub cookies: Vec<String>,
+    pub verified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BruploadAccountSecret {
+    pub email: String,
+    pub password: String,
+    #[serde(default)]
+    pub cookies: Vec<String>,
+    pub verified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SecureSettings {
+    pub nopecha_api_key: Option<String>,
+    pub terabox_account: Option<TeraboxAccountSecret>,
+    pub brupload_account: Option<BruploadAccountSecret>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicSettings {
+    pub theme: String,
+    pub locale: String,
+    pub output_dir: String,
+    pub max_concurrent_downloads: usize,
+    pub max_retries_per_download: u32,
+    pub speed_limit_kib: u64,
+    pub parallel_parts_per_download: u32,
+    pub font_size: u32,
+    pub font_family: String,
+    pub ui_zoom: f32,
+    pub native_notification: bool,
+    pub accent_color: Option<String>,
+}
+
+impl Default for PublicSettings {
+    fn default() -> Self {
+        Self {
+            theme: "light".to_string(),
+            locale: "pt-BR".to_string(),
+            output_dir: "~/Downloads".to_string(),
+            max_concurrent_downloads: 3,
+            max_retries_per_download: 3,
+            speed_limit_kib: 0,
+            parallel_parts_per_download: 4,
+            font_size: 14,
+            font_family: "Inter".to_string(),
+            ui_zoom: 1.0,
+            native_notification: true,
+            accent_color: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryItem {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub thumbnail: String,
+    pub date: String,
+    pub format_id: String,
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedFileInfo {
+    pub url: String,
+    pub provider_id: String,
+    pub name: String,
+    pub size: u64,
+    pub mime_type: Option<String>,
+    pub is_folder: bool,
+    pub children: Option<Vec<FileChildInfo>>,
+    pub cached_at: u64,
+    pub last_checked_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyConfigMigration {
+    pub version: i64,
+    pub name: String,
+    pub applied_at: u64,
 }
 
 // --- Evento enviado pelo WebSocket para a UI ---
@@ -146,6 +249,7 @@ pub struct AddDownloadRequest {
     pub speed_limit_kib: Option<u64>,
     pub parallel_parts: Option<u32>,
     pub selected_children: Option<Vec<String>>,
+    pub priority: Option<i32>,
 }
 
 // --- Resposta padrão de erro da API ---

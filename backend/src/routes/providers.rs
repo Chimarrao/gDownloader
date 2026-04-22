@@ -6,9 +6,34 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    models::{ApiError, FileInfo},
+    models::{ApiError, CachedFileInfo, FileInfo, SecureSettings},
     providers,
 };
+
+fn account_state_for_provider(
+    provider_name: &str,
+    secure: &SecureSettings,
+) -> Option<providers::ProviderAccountState> {
+    match provider_name {
+        "Terabox" => secure.terabox_account.as_ref().map(|account| providers::ProviderAccountState {
+            connected: !account.cookies.is_empty() || account.verified_at.is_some(),
+            verified_at: account.verified_at.clone(),
+        }),
+        "BRupload" => secure.brupload_account.as_ref().map(|account| providers::ProviderAccountState {
+            connected: !account.cookies.is_empty() || account.verified_at.is_some(),
+            verified_at: account.verified_at.clone(),
+        }),
+        _ => None,
+    }
+}
+
+fn enrich_descriptor(
+    mut descriptor: providers::ProviderDescriptor,
+    secure: &SecureSettings,
+) -> providers::ProviderDescriptor {
+    descriptor.account_state = account_state_for_provider(descriptor.name, secure);
+    descriptor
+}
 
 #[derive(Deserialize)]
 pub struct UrlQuery {
@@ -18,16 +43,28 @@ pub struct UrlQuery {
 // GET /detect?url=...
 // Retorna qual provider suporta a URL e suas informações de display
 pub async fn detect_provider(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
     Query(params): Query<UrlQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     match providers::detect_provider(&params.url) {
         Some(provider) => {
-            let (id, color) = provider_meta(provider.name());
+            let secure_settings = state
+                .db
+                .lock()
+                .ok()
+                .and_then(|db| crate::db::load_secure_settings(&db).ok())
+                .unwrap_or_default();
+            let descriptor = enrich_descriptor(
+                providers::provider_descriptor_from_name(provider.name()),
+                &secure_settings,
+            );
             Ok(Json(serde_json::json!({
-                "id": id,
-                "name": provider.name(),
-                "icon": id,
-                "color": color,
+                "id": descriptor.id,
+                "name": descriptor.name,
+                "icon": descriptor.id,
+                "color": descriptor.color,
+                "capabilities": descriptor.capabilities,
+                "accountState": descriptor.account_state,
             })))
         }
         None => Err((
@@ -40,6 +77,7 @@ pub async fn detect_provider(
 // GET /file-info?url=...
 // Retorna metadados do arquivo (nome, tamanho) sem baixar
 pub async fn get_file_info(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
     Query(params): Query<UrlQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
     let provider = providers::detect_provider(&params.url).ok_or_else(|| {
@@ -50,6 +88,19 @@ pub async fn get_file_info(
         (StatusCode::BAD_REQUEST, Json(ApiError::new(e.to_string())))
     })?;
 
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::save_cached_file_info(
+            &db,
+            &params.url,
+            providers::provider_id_from_name(provider.name()),
+            &info.filename,
+            info.size,
+            info.mime_type.as_deref(),
+            info.is_folder,
+            &info.children,
+        );
+    }
+
     Ok(Json(serde_json::json!({
         "name": info.filename,
         "size": info.size,
@@ -59,31 +110,50 @@ pub async fn get_file_info(
     })))
 }
 
-// GET /providers
-// Lista todos os providers suportados
-pub async fn list_providers() -> Json<serde_json::Value> {
-    Json(serde_json::json!([
-        { "id": "mega",       "name": "Mega",         "icon": "mega",       "color": "#e84d3d" },
-        { "id": "mediafire",  "name": "MediaFire",    "icon": "mediafire",  "color": "#0062C7" },
-        { "id": "gdrive",     "name": "Google Drive", "icon": "gdrive",     "color": "#4285F4" },
-        { "id": "pixeldrain", "name": "PixelDrain",   "icon": "pixeldrain", "color": "#ff6600" },
-        { "id": "fichier",    "name": "1Fichier",     "icon": "fichier",    "color": "#e67e22" },
-        { "id": "drime",      "name": "Drime",        "icon": "drime",      "color": "#2ec4b6" },
-        { "id": "terabox",    "name": "Terabox",      "icon": "terabox",    "color": "#2a6df5" },
-        { "id": "onedrive",   "name": "OneDrive",     "icon": "onedrive",   "color": "#0a66d9" },
-    ]))
+pub async fn get_cached_file_info(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
+    Query(params): Query<UrlQuery>,
+) -> Result<Json<CachedFileInfo>, (StatusCode, Json<ApiError>)> {
+    let Ok(db) = state.db.lock() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("Falha ao abrir o banco local")),
+        ));
+    };
+
+    let cached = crate::db::load_cached_file_info(&db, &params.url).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Falha ao consultar o cache local: {error}"))),
+        )
+    })?;
+
+    let Some(cached) = cached else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("Nenhum cache local encontrado para este link")),
+        ));
+    };
+
+    Ok(Json(cached))
 }
 
-fn provider_meta(name: &str) -> (&'static str, &'static str) {
-    match name {
-        "Mega"         => ("mega",       "#e84d3d"),
-        "MediaFire"    => ("mediafire",  "#0062C7"),
-        "Google Drive" => ("gdrive",     "#4285F4"),
-        "PixelDrain"   => ("pixeldrain", "#ff6600"),
-        "1Fichier"     => ("fichier",    "#e67e22"),
-        "Drime"        => ("drime",      "#2ec4b6"),
-        "Terabox"      => ("terabox",    "#2a6df5"),
-        "OneDrive"     => ("onedrive",   "#0a66d9"),
-        _              => ("unknown",    "#64748b"),
-    }
+// GET /providers
+// Lista todos os providers suportados
+pub async fn list_providers(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
+) -> Json<serde_json::Value> {
+    let secure_settings = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::db::load_secure_settings(&db).ok())
+        .unwrap_or_default();
+
+    let items = providers::all_provider_descriptors()
+        .into_iter()
+        .map(|descriptor| enrich_descriptor(descriptor, &secure_settings))
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!(items))
 }

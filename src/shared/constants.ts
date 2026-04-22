@@ -4,5 +4,7 @@ export enum DownloadStatus {
   Complete = 'complete',
   Error = 'error',
   Cancelled = 'cancelled',
-  Paused = 'paused'
+  Paused = 'paused',
+  RateLimited = 'rate_limited',
+  WaitingCaptcha = 'waiting_captcha'
 }

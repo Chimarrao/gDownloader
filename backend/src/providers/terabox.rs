@@ -2,12 +2,13 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::fs;
+use std::path::Path as FsPath;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
+use tokio::time::{sleep, Duration};
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, path_segments, ProgressUpdate, Provider, ProviderDefaults};
 
 /// Porta do proxy local Electron para chamadas Terabox com cookies de sessão browser.
 fn electron_proxy_port() -> Option<u16> {
@@ -30,6 +31,16 @@ async fn proxy_get(url: &str, referer: &str) -> Option<Value> {
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().ok()?;
     let resp = client.post(&proxy_url).json(&body).send().await.ok()?;
     resp.json::<Value>().await.ok()
+}
+
+async fn proxy_action(payload: Value) -> Result<Value> {
+    let port = electron_proxy_port().ok_or_else(|| anyhow!("Proxy local do TeraBox não disponível"))?;
+    let proxy_url = format!("http://127.0.0.1:{port}/");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(180))
+        .build()?;
+    let resp = client.post(&proxy_url).json(&payload).send().await?;
+    Ok(resp.json::<Value>().await?)
 }
 
 const APP_ID: &str = "250528";
@@ -60,24 +71,30 @@ struct ShareEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct RootSettings {
-    accounts: Option<SettingsAccounts>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SettingsAccounts {
-    terabox: Option<TeraboxAccountSettings>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TeraboxAccountSettings {
-    cookies: Option<Vec<String>>,
+struct HelperJobStatus {
+    status: String,
+    #[serde(default, rename = "bytesDownloaded")]
+    bytes_downloaded: u64,
+    #[serde(default, rename = "totalBytes")]
+    total_bytes: u64,
+    #[serde(default, rename = "speedBps")]
+    speed_bps: u64,
+    #[serde(default, rename = "etaSecs")]
+    eta_secs: u64,
+    error: Option<String>,
 }
 
 impl TeraboxProvider {
     pub fn matches(url: &str) -> bool {
-        (url.contains("1024tera.com/") || url.contains("terabox.com/"))
-            && (url.contains("/sharing/link") || url.contains("/sharing/videoPlay"))
+        host_matches(
+            url,
+            &[
+                "1024tera.com",
+                "www.1024tera.com",
+                "terabox.com",
+                "www.terabox.com",
+            ],
+        ) && matches!(path_segments(url).as_slice(), [first, second, ..] if first == "sharing" && (second == "link" || second == "videoPlay"))
     }
 
     fn extract_query_value(url: &str, key: &str) -> Option<String> {
@@ -128,14 +145,6 @@ impl TeraboxProvider {
         Self::extract_query_value(url, "fsid").map(|v| Self::decode_url_component(&v))
     }
 
-    fn detect_lang(url: &str) -> &'static str {
-        if url.contains("/portuguese/") {
-            "pt"
-        } else {
-            "en"
-        }
-    }
-
     fn extract_js_token(html: &str) -> Option<String> {
         let marker = "fn%28%22";
         let start = html.find(marker)? + marker.len();
@@ -158,10 +167,9 @@ impl TeraboxProvider {
     }
 
     fn saved_cookie_header() -> Option<String> {
-        let settings_path = std::env::current_dir().ok()?.join("settings.json");
-        let content = fs::read_to_string(settings_path).ok()?;
-        let parsed: RootSettings = serde_json::from_str(&content).ok()?;
-        let cookies = parsed.accounts?.terabox?.cookies?;
+        let db_path = std::env::var("GDOWNLOADER_DB_PATH").ok()?;
+        let settings = crate::db::load_secure_settings_from_path(&db_path).ok()?;
+        let cookies = settings.terabox_account?.cookies;
         let header = cookies
             .into_iter()
             .filter(|cookie| !cookie.trim().is_empty())
@@ -217,7 +225,7 @@ impl TeraboxProvider {
     }
 
     fn api_host(url: &str) -> &'static str {
-        if url.contains("terabox.com") {
+        if host_matches(url, &["terabox.com", "www.terabox.com"]) {
             "https://www.terabox.com"
         } else {
             "https://www.1024tera.com"
@@ -331,6 +339,10 @@ impl TeraboxProvider {
             ));
         }
 
+        Self::parse_share_entries(&json)
+    }
+
+    fn parse_share_entries(json: &Value) -> Result<Vec<ShareEntry>> {
         let mut out = Vec::new();
         for item in json["list"].as_array().cloned().unwrap_or_default() {
             out.push(ShareEntry {
@@ -512,6 +524,133 @@ impl TeraboxProvider {
                     .map(str::to_string)
             })
     }
+
+    async fn helper_start_download(source_url: &str, dest_path: &str) -> Result<String> {
+        let json = proxy_action(json!({
+            "action": "terabox_download_file",
+            "url": source_url,
+            "destPath": dest_path,
+        })).await?;
+
+        json["jobId"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("Helper local do TeraBox não retornou um jobId"))
+    }
+
+    async fn helper_job_status(job_id: &str) -> Result<HelperJobStatus> {
+        let json = proxy_action(json!({
+            "action": "terabox_job_status",
+            "jobId": job_id,
+        })).await?;
+
+        Ok(serde_json::from_value::<HelperJobStatus>(json)?)
+    }
+
+    async fn helper_file_info(url: &str) -> Result<FileInfo> {
+        let json = proxy_action(json!({
+            "action": "terabox_file_info",
+            "url": url,
+        })).await?;
+
+        Ok(serde_json::from_value::<FileInfo>(json)?)
+    }
+
+    fn child_output_path(dest_path: &str, child: &FileChildInfo) -> String {
+        let relative = child.path.clone().unwrap_or_else(|| child.filename.clone());
+        format!("{}/{}", dest_path.trim_end_matches('/'), relative)
+    }
+
+    async fn download_via_helper(
+        source_url: &str,
+        dest_path: &str,
+        expected_size: u64,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+        total_bytes: u64,
+        completed_bytes: u64,
+        child: Option<&FileChildInfo>,
+    ) -> Result<u64> {
+        if let Some(parent) = FsPath::new(dest_path).parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let existing_bytes = tokio::fs::metadata(dest_path)
+            .await
+            .ok()
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        if expected_size > 0 && existing_bytes >= expected_size {
+            let child_path = child.and_then(|item| item.path.clone());
+            let child_filename = child.map(|item| item.filename.clone());
+            let _ = progress_tx
+                .send(ProgressUpdate {
+                    bytes_downloaded: completed_bytes + expected_size,
+                    total_bytes,
+                    child_path,
+                    child_filename,
+                    child_bytes_downloaded: child.map(|_| expected_size),
+                    child_total_bytes: child.map(|_| expected_size),
+                    child_speed_bps: child.map(|_| 0),
+                    child_eta_secs: child.map(|_| 0),
+                })
+                .await;
+            return Ok(expected_size);
+        }
+
+        let job_id = Self::helper_start_download(source_url, dest_path).await?;
+
+        loop {
+            sleep(Duration::from_millis(500)).await;
+            let status = Self::helper_job_status(&job_id).await?;
+            let child_total = if expected_size > 0 {
+                expected_size
+            } else {
+                status.total_bytes
+            };
+            let child_downloaded = status.bytes_downloaded.min(child_total.max(status.bytes_downloaded));
+            let bytes_downloaded = completed_bytes + child_downloaded;
+            let child_path = child.and_then(|item| item.path.clone());
+            let child_filename = child.map(|item| item.filename.clone());
+            let child_speed = child.map(|_| status.speed_bps);
+            let child_eta = child.map(|_| status.eta_secs);
+
+            let _ = progress_tx
+                .send(ProgressUpdate {
+                    bytes_downloaded,
+                    total_bytes,
+                    child_path,
+                    child_filename,
+                    child_bytes_downloaded: child.map(|_| child_downloaded),
+                    child_total_bytes: child.map(|_| child_total),
+                    child_speed_bps: child_speed,
+                    child_eta_secs: child_eta,
+                })
+                .await;
+
+            match status.status.as_str() {
+                "pending" | "downloading" => continue,
+                "complete" => {
+                    return Ok(child_total.max(status.bytes_downloaded));
+                }
+                "cancelled" => {
+                    return Err(anyhow!("O navegador do TeraBox cancelou este download."));
+                }
+                "error" => {
+                    return Err(anyhow!(
+                        "{}",
+                        status
+                            .error
+                            .unwrap_or_else(|| "O helper local do TeraBox falhou.".to_string())
+                    ));
+                }
+                other => {
+                    return Err(anyhow!("Status inesperado do helper do TeraBox: {other}"));
+                }
+            }
+        }
+    }
 }
 
 impl ProviderDefaults for TeraboxProvider {}
@@ -524,6 +663,17 @@ impl Provider for TeraboxProvider {
         url: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
         Box::pin(async move {
+            if url.contains("/sharing/link") && electron_proxy_port().is_some() {
+                let mut info = Self::helper_file_info(url).await?;
+                let fallback = if info.is_folder {
+                    "pasta_terabox"
+                } else {
+                    "arquivo_terabox"
+                };
+                info.filename = <Self as ProviderDefaults>::safe_filename(&info.filename, fallback);
+                return Ok(info);
+            }
+
             let client = <Self as ProviderDefaults>::http_client()?;
 
             if url.contains("/sharing/videoPlay") {
@@ -607,7 +757,7 @@ impl Provider for TeraboxProvider {
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
         _parallel_parts: usize,
-        _selected_children: Option<Vec<String>>,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
         Box::pin(async move {
@@ -615,6 +765,18 @@ impl Provider for TeraboxProvider {
 
             if url.contains("/sharing/videoPlay") {
                 let (ctx, entry) = Self::resolve_file_entry(&client, url).await?;
+                if entry.category.as_deref() == Some("1") {
+                    return Self::download_via_helper(
+                        url,
+                        dest_path,
+                        entry.size,
+                        progress_tx,
+                        entry.size,
+                        0,
+                        None,
+                    ).await;
+                }
+
                 let json = Self::request_download_json(&client, &ctx, &entry.fs_id, url).await?;
                 if json["errno"].as_i64().unwrap_or(-1) != 0 {
                     return Err(Self::terabox_download_error(&json));
@@ -660,18 +822,56 @@ impl Provider for TeraboxProvider {
             }
 
             let info = self.get_file_info(url).await?;
-            Err(anyhow!(
-                "TeraBox já lista esta pasta corretamente, mas o download em lote ainda esbarra na verificação pública verify_v2 do host: {} ({} arquivo(s))",
-                info.filename,
-                info.children.as_ref().map(|c| c.len()).unwrap_or(0)
-            ))
+            if !info.is_folder {
+                return Err(anyhow!("O TeraBox não retornou uma pasta válida para este link."));
+            }
+
+            let mut children = info.children.unwrap_or_default();
+            if let Some(selected) = selected_children {
+                let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
+                children.retain(|child| {
+                    child
+                        .source_url
+                        .as_ref()
+                        .map(|source_url| selected_set.contains(source_url))
+                        .unwrap_or(false)
+                });
+            }
+
+            if children.is_empty() {
+                return Err(anyhow!("Pasta do TeraBox vazia ou sem arquivos selecionáveis."));
+            }
+
+            tokio::fs::create_dir_all(dest_path).await?;
+            let total_size: u64 = children.iter().map(|child| child.size).sum();
+            let mut downloaded_total = 0u64;
+
+            for child in &children {
+                let source_url = child
+                    .source_url
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Arquivo do TeraBox sem URL individual utilizável"))?;
+                let output_path = Self::child_output_path(dest_path, child);
+                let downloaded = Self::download_via_helper(
+                    source_url,
+                    &output_path,
+                    child.size,
+                    progress_tx.clone(),
+                    total_size,
+                    downloaded_total,
+                    Some(child),
+                ).await?;
+                downloaded_total += downloaded.max(child.size);
+            }
+
+            Ok(downloaded_total)
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::TeraboxProvider;
+    use super::{ShareEntry, TeraboxProvider};
 
     #[test]
     fn extracts_surl() {
@@ -687,5 +887,46 @@ mod tests {
         let url = "https://www.1024tera.com/sharing/videoPlay?surl=abc&dir=/Dragon+Ball+Z/Medio&fsid=123&fileName=x";
         assert_eq!(TeraboxProvider::extract_dir(url).as_deref(), Some("/Dragon Ball Z/Medio"));
         assert_eq!(TeraboxProvider::extract_fsid(url).as_deref(), Some("123"));
+    }
+
+    #[test]
+    fn parses_folder_entries_from_fixture_json() {
+        let json = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../../tests/fixtures/providers/terabox_share_list.json"
+        ))
+        .expect("fixture json válido");
+
+        let entries = TeraboxProvider::parse_share_entries(&json).expect("deve parsear");
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[1].size, 2147483648);
+        assert_eq!(
+            entries[1].filename,
+            "[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv"
+        );
+    }
+
+    #[test]
+    fn builds_child_path_for_video_entry() {
+        let entry = ShareEntry {
+            fs_id: "71002".to_string(),
+            filename: "[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv".to_string(),
+            path: "/CDZ/Maior/[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv".to_string(),
+            size: 2147483648,
+            is_dir: false,
+            category: Some("1".to_string()),
+        };
+        let child = TeraboxProvider::entry_to_child(
+            "https://www.terabox.com/sharing/link?surl=abcdef",
+            &entry,
+            "Maior/[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv".to_string(),
+        );
+
+        assert_eq!(child.path.as_deref(), Some("Maior/[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv"));
+        assert!(child
+            .source_url
+            .as_deref()
+            .unwrap_or_default()
+            .contains("/sharing/videoPlay?surl=abcdef"));
     }
 }

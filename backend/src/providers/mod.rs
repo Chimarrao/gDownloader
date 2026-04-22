@@ -1,6 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crate::models::FileInfo;
 use futures_util::StreamExt;
+use serde::Serialize;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -17,26 +18,204 @@ pub mod gdrive;
 pub mod fichier;
 pub mod drime;
 pub mod rapidgator;
+pub mod brupload;
+pub mod brfiles;
+pub mod moondl;
+pub mod akirabox;
+pub mod katfile;
 pub mod mediafire;
 pub mod mega;
 pub mod pixeldrain;
 pub mod sharepoint;
 pub mod terabox;
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCapabilities {
+    pub max_parallel_downloads_free: Option<usize>,
+    pub requires_browser_helper: bool,
+    pub supports_folder: bool,
+    pub supports_manual_auth: bool,
+    pub supports_auto_captcha: bool,
+    pub free_cooldown_secs: Option<u64>,
+    pub requires_account_for_large_files: bool,
+    pub supports_parallel_parts: bool,
+}
+
+impl Default for ProviderCapabilities {
+    fn default() -> Self {
+        Self {
+            max_parallel_downloads_free: None,
+            requires_browser_helper: false,
+            supports_folder: false,
+            supports_manual_auth: false,
+            supports_auto_captcha: false,
+            free_cooldown_secs: None,
+            requires_account_for_large_files: false,
+            supports_parallel_parts: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccountState {
+    pub connected: bool,
+    pub verified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDescriptor {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub color: &'static str,
+    pub capabilities: ProviderCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_state: Option<ProviderAccountState>,
+}
+
+pub const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136 Safari/537.36";
+pub const DEFAULT_ACCEPT_LANGUAGE: &str = "pt-BR,pt;q=0.9,en;q=0.8";
+
+pub fn sanitize_filename(name: &str, fallback: &str) -> String {
+    let trimmed = name.trim();
+    let candidate = if trimmed.is_empty() { fallback } else { trimmed };
+    candidate
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => ch,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+pub fn parse_human_size(value: &str) -> u64 {
+    let normalized = value.trim().replace(',', ".").to_uppercase();
+    let Some(captures) = regex::Regex::new(r#"([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)"#)
+        .ok()
+        .and_then(|re| re.captures(&normalized))
+    else {
+        return 0;
+    };
+
+    let number = captures[1].parse::<f64>().unwrap_or(0.0);
+    let multiplier = match &captures[2] {
+        "KB" => 1024.0,
+        "MB" => 1024.0 * 1024.0,
+        "GB" => 1024.0 * 1024.0 * 1024.0,
+        "TB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+
+    (number * multiplier).round() as u64
+}
+
+pub fn extract_fragment_value(url: &str, key: &str) -> Option<String> {
+    let fragment = url.split('#').nth(1)?;
+    for part in fragment.split('&') {
+        if let Some(value) = part.strip_prefix(&format!("{key}=")) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+pub fn parse_url(url: &str) -> Option<reqwest::Url> {
+    let clean = url.split('#').next().unwrap_or(url);
+    reqwest::Url::parse(clean).ok()
+}
+
+pub fn host_matches(url: &str, hosts: &[&str]) -> bool {
+    parse_url(url)
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .map(|host| hosts.iter().any(|candidate| host == *candidate))
+        .unwrap_or(false)
+}
+
+pub fn path_segments(url: &str) -> Vec<String> {
+    parse_url(url)
+        .and_then(|parsed| {
+            parsed.path_segments().map(|values| {
+                values
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default()
+}
+
+pub fn removed_error(provider: &str) -> anyhow::Error {
+    anyhow!("Arquivo não localizado no {provider}")
+}
+
+pub fn unsupported_error(provider: &str) -> anyhow::Error {
+    anyhow!("Link não suportado pelo fluxo atual do {provider}")
+}
+
+pub fn premium_required_error(provider: &str, detail: &str) -> anyhow::Error {
+    anyhow!("PREMIUM_REQUIRED:{provider}:{detail}")
+}
+
+pub fn rate_limit_error(secs: u64, message: impl AsRef<str>) -> anyhow::Error {
+    anyhow!("RATE_LIMIT:{secs}:{}", message.as_ref())
+}
+
+pub fn captcha_required_error(kind: &str, sitekey: &str, pageurl: &str) -> anyhow::Error {
+    anyhow!("CAPTCHA_REQUIRED:{kind}:{sitekey}:{pageurl}")
+}
+
+pub fn all_provider_descriptors() -> Vec<ProviderDescriptor> {
+    [
+        ("Mega", "#e84d3d"),
+        ("MediaFire", "#0062C7"),
+        ("Google Drive", "#4285F4"),
+        ("PixelDrain", "#ff6600"),
+        ("1Fichier", "#e67e22"),
+        ("Drime", "#2ec4b6"),
+        ("Rapidgator", "#23a2dc"),
+        ("BRupload", "#16a34a"),
+        ("BRFiles", "#22c55e"),
+        ("MoonDL", "#64748b"),
+        ("AkiraBox", "#0f172a"),
+        ("Katfile", "#2563eb"),
+        ("Terabox", "#2a6df5"),
+        ("OneDrive", "#0a66d9"),
+    ]
+    .into_iter()
+        .map(|(name, color)| ProviderDescriptor {
+            id: provider_id_from_name(name),
+            name,
+            color,
+            capabilities: capabilities_for_provider_name(name),
+            account_state: None,
+        })
+        .collect()
+}
+
+pub fn provider_descriptor_from_name(name: &str) -> ProviderDescriptor {
+    all_provider_descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.name == name)
+        .unwrap_or(ProviderDescriptor {
+            id: "unknown",
+            name: "Unknown",
+            color: "#64748b",
+            capabilities: ProviderCapabilities::default(),
+            account_state: None,
+        })
+}
+
 pub trait ProviderDefaults {
     fn safe_filename(name: &str, fallback: &str) -> String
     where
         Self: Sized,
     {
-        let trimmed = name.trim();
-        let candidate = if trimmed.is_empty() { fallback } else { trimmed };
-        candidate
-            .chars()
-            .map(|ch| match ch {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                _ => ch,
-            })
-            .collect()
+        sanitize_filename(name, fallback)
     }
 
     fn http_client() -> Result<reqwest::Client>
@@ -44,7 +223,7 @@ pub trait ProviderDefaults {
         Self: Sized,
     {
         Ok(reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+            .user_agent(DEFAULT_USER_AGENT)
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()?)
     }
@@ -270,6 +449,10 @@ pub trait Provider: Send + Sync + ProviderDefaults {
     // Retorna o nome legível do provider para logs e exibição na UI
     fn name(&self) -> &str;
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        capabilities_for_provider_name(self.name())
+    }
+
     // Busca metadados do arquivo (nome, tamanho, MIME) sem baixar o conteúdo
     //
     // A assinatura complexa é necessária porque Rust não suporta `async fn` em traits
@@ -296,6 +479,75 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         // mpsc = Multiple Producer, Single Consumer (como uma fila de mensagens)
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
+}
+
+pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
+    match name {
+        "BRFiles" => ProviderCapabilities {
+            max_parallel_downloads_free: Some(1),
+            free_cooldown_secs: Some(3600),
+            ..ProviderCapabilities::default()
+        },
+        "MoonDL" => ProviderCapabilities {
+            supports_auto_captcha: true,
+            free_cooldown_secs: Some(3600),
+            ..ProviderCapabilities::default()
+        },
+        "BRupload" => ProviderCapabilities {
+            requires_browser_helper: true,
+            supports_manual_auth: true,
+            supports_auto_captcha: true,
+            requires_account_for_large_files: true,
+            ..ProviderCapabilities::default()
+        },
+        "AkiraBox" => ProviderCapabilities {
+            requires_browser_helper: true,
+            supports_auto_captcha: true,
+            ..ProviderCapabilities::default()
+        },
+        "Katfile" => ProviderCapabilities {
+            requires_browser_helper: true,
+            supports_auto_captcha: true,
+            ..ProviderCapabilities::default()
+        },
+        "Terabox" => ProviderCapabilities {
+            requires_browser_helper: true,
+            supports_folder: true,
+            supports_manual_auth: true,
+            max_parallel_downloads_free: Some(1),
+            ..ProviderCapabilities::default()
+        },
+        "MediaFire" | "Mega" => ProviderCapabilities {
+            supports_folder: true,
+            ..ProviderCapabilities::default()
+        },
+        "Rapidgator" => ProviderCapabilities {
+            supports_auto_captcha: true,
+            free_cooldown_secs: Some(3600),
+            ..ProviderCapabilities::default()
+        },
+        _ => ProviderCapabilities::default(),
+    }
+}
+
+pub fn provider_id_from_name(name: &str) -> &'static str {
+    match name {
+        "Mega" => "mega",
+        "MediaFire" => "mediafire",
+        "Google Drive" => "gdrive",
+        "PixelDrain" => "pixeldrain",
+        "1Fichier" => "fichier",
+        "Drime" => "drime",
+        "Rapidgator" => "rapidgator",
+        "BRupload" => "brupload",
+        "BRFiles" => "brfiles",
+        "MoonDL" => "moondl",
+        "AkiraBox" => "akirabox",
+        "Katfile" => "katfile",
+        "Terabox" => "terabox",
+        "OneDrive" => "onedrive",
+        _ => "unknown",
+    }
 }
 
 // Detecta qual provider consegue lidar com a URL fornecida
@@ -331,6 +583,21 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if rapidgator::RapidgatorProvider::matches(url) {
         return Some(Box::new(rapidgator::RapidgatorProvider));
+    }
+    if brupload::BruploadProvider::matches(url) {
+        return Some(Box::new(brupload::BruploadProvider));
+    }
+    if brfiles::BrfilesProvider::matches(url) {
+        return Some(Box::new(brfiles::BrfilesProvider));
+    }
+    if moondl::MoonDLProvider::matches(url) {
+        return Some(Box::new(moondl::MoonDLProvider));
+    }
+    if akirabox::AkiraboxProvider::matches(url) {
+        return Some(Box::new(akirabox::AkiraboxProvider));
+    }
+    if katfile::KatfileProvider::matches(url) {
+        return Some(Box::new(katfile::KatfileProvider));
     }
     // URL não reconhecida por nenhum provider suportado
     None

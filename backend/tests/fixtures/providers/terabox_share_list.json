@@ -1,0 +1,21 @@
+{
+  "errno": 0,
+  "list": [
+    {
+      "fs_id": "71001",
+      "server_filename": "Maior",
+      "path": "/CDZ/Maior",
+      "size": "0",
+      "isdir": "1",
+      "category": "6"
+    },
+    {
+      "fs_id": "71002",
+      "server_filename": "[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv",
+      "path": "/CDZ/Maior/[DarthinURMZ]Saint Seiya(Hexa)EP 01 1080p V2.mkv",
+      "size": "2147483648",
+      "isdir": "0",
+      "category": "1"
+    }
+  ]
+}

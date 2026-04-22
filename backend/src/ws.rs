@@ -31,12 +31,16 @@ pub struct AppState {
 // Como um class em PHP — agrupa métodos desta struct
 impl AppState {
     pub fn new(db: rusqlite::Connection) -> Self {
+        Self::new_with_max(db, 3)
+    }
+
+    pub fn new_with_max(db: rusqlite::Connection, max_concurrent_downloads: usize) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             tx: Arc::new(tx),
             downloads: Arc::new(Mutex::new(HashMap::new())),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
-            max_concurrent_downloads: Arc::new(Mutex::new(3)),
+            max_concurrent_downloads: Arc::new(Mutex::new(max_concurrent_downloads.max(1))),
             db: Arc::new(StdMutex::new(db)),
         }
     }

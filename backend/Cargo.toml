@@ -24,9 +24,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # IDs únicos para cada download (como crypto.randomUUID())
 uuid = { version = "1", features = ["v4"] }
-# Logs estruturados no terminal
+# Logs estruturados no terminal e em arquivo
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 # Middleware de CORS para permitir que o Vue acesse a API
 tower-http = { version = "0.5", features = ["cors"] }
 # Tratamento de erros ergonômico (como try/catch melhorado)
@@ -49,6 +50,8 @@ cipher = "0.4"
 base64 = "0.22"
 # Utilitários para futures/streams assíncronos
 futures-util = "0.3"
+# Stream de canal tokio → SSE (mirrors search)
+tokio-stream = { version = "0.1", features = ["sync"] }
 # URL encoding/decoding (para sekey/randsk do Terabox)
 urlencoding = "2"
 

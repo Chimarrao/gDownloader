@@ -5,7 +5,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, parse_url, path_segments, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct PixelDrainProvider;
 
@@ -16,26 +16,21 @@ enum PixelDrainTarget {
 
 impl PixelDrainProvider {
     pub fn matches(url: &str) -> bool {
-        url.contains("pixeldrain.com")
+        host_matches(url, &["pixeldrain.com", "www.pixeldrain.com"])
     }
 
     fn parse_target(url: &str) -> Option<PixelDrainTarget> {
-        if !url.contains("pixeldrain.com") {
+        if !host_matches(url, &["pixeldrain.com", "www.pixeldrain.com"]) {
             return None;
         }
 
-        let parts: Vec<&str> = url.split('/').collect();
+        let segments = path_segments(url);
 
-        if let Some(pos) = parts.iter().position(|&s| s == "u") {
-            let id = parts.get(pos + 1)?.split('?').next()?.split('#').next()?.trim();
-            if !id.is_empty() {
+        if let [first, id, ..] = segments.as_slice() {
+            if first == "u" && !id.is_empty() {
                 return Some(PixelDrainTarget::File { id: id.to_string() });
             }
-        }
-
-        if let Some(pos) = parts.iter().position(|&s| s == "l") {
-            let id = parts.get(pos + 1)?.split('?').next()?.split('#').next()?.trim();
-            if !id.is_empty() {
+            if first == "l" && !id.is_empty() {
                 return Some(PixelDrainTarget::List {
                     id: id.to_string(),
                     selected_index: Self::extract_selected_index(url),
@@ -47,7 +42,7 @@ impl PixelDrainProvider {
     }
 
     fn extract_selected_index(url: &str) -> usize {
-        let Some(fragment) = url.split('#').nth(1) else {
+        let Some(fragment) = parse_url(url).and_then(|parsed| parsed.fragment().map(str::to_string)) else {
             return 0;
         };
 

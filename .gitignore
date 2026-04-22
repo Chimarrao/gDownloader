@@ -12,6 +12,13 @@ poc/
 tsconfig.web.tsbuildinfo
 backend/.env.test.local
 settings.json
-~/
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+~/ 
 # Artefatos compilados do Rust — gerados pelo cargo build
 backend/target/
+backend/logs/
+logs/
+backend/backend/
