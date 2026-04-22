@@ -84,17 +84,28 @@ impl GDriveProvider {
     }
 
     fn extract_warning_page_metadata(html: &str, fallback_id: &str) -> (String, u64) {
-        let filename = regex::Regex::new(r#"<span class="uc-name-size"><a [^>]+>([^<]+)</a>"#)
+        let filename = regex::Regex::new(r#"(?is)<span[^>]*class="uc-name-size"[^>]*>\s*<a [^>]+>([^<]+)</a>"#)
             .ok()
             .and_then(|re| re.captures(html))
             .map(|captures| Self::decode_html(&captures[1]))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| format!("gdrive_{fallback_id}"));
 
-        let size = regex::Regex::new(r#"\(([^)]+)\)\s+is too large"#)
+        let size = regex::Regex::new(r#"(?is)\(([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?B?)\).*?too large"#)
             .ok()
             .and_then(|re| re.captures(html))
-            .map(|captures| super::parse_human_size(&captures[1]))
+            .map(|captures| {
+                let number = captures[1].parse::<f64>().unwrap_or(0.0);
+                let unit = captures[2].to_ascii_uppercase();
+                let multiplier = match unit.as_str() {
+                    "KB" | "K" => 1024f64,
+                    "MB" | "M" => 1024f64.powi(2),
+                    "GB" | "G" => 1024f64.powi(3),
+                    "TB" | "T" => 1024f64.powi(4),
+                    _ => 1f64,
+                };
+                (number * multiplier).round() as u64
+            })
             .unwrap_or(0);
 
         (filename, size)
@@ -126,6 +137,20 @@ impl GDriveProvider {
         let confirm_url = Self::extract_confirm_download_url(&html)
             .ok_or_else(|| anyhow!("Google Drive não expôs o link final de confirmação"))?;
         Ok((confirm_url, Some(filename), size))
+    }
+
+    async fn probe_total_size(client: &reqwest::Client, download_url: &str) -> Result<u64> {
+        let ranged = client
+            .get(download_url)
+            .header("Range", "bytes=0-0")
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(
+            <Self as ProviderDefaults>::response_total_bytes(&ranged, 0)
+                .max(ranged.content_length().unwrap_or(0)),
+        )
     }
 
 }
@@ -167,9 +192,16 @@ impl Provider for GDriveProvider {
                 .or(hinted_filename)
                 .unwrap_or_else(|| format!("gdrive_{id}"));
 
+            let resolved_size = resp.content_length().unwrap_or(hinted_size);
+            let size = if resolved_size > 0 {
+                resolved_size
+            } else {
+                Self::probe_total_size(&client, &download_url).await.unwrap_or(0)
+            };
+
             Ok(FileInfo {
                 filename,
-                size: resp.content_length().unwrap_or(hinted_size),
+                size,
                 mime_type: resp
                     .headers()
                     .get("content-type")
@@ -261,5 +293,42 @@ impl Provider for GDriveProvider {
             file.flush().await?;
             Ok(downloaded)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GDriveProvider;
+
+    #[test]
+    fn extracts_warning_page_metadata() {
+        let html = r#"
+            <p class="uc-warning-subcaption"><span class="uc-name-size">
+              <a href="/open?id=abc">arquivo-grande.mkv</a> (2.5G)
+            </span> is too large for Google to scan for viruses.</p>
+        "#;
+
+        let (filename, size) = GDriveProvider::extract_warning_page_metadata(html, "abc");
+        assert_eq!(filename, "arquivo-grande.mkv");
+        assert!(size > 2_600_000_000);
+    }
+
+    #[test]
+    fn extracts_confirm_download_url() {
+        let html = r#"
+            <form id="download-form" action="https://drive.usercontent.google.com/download" method="get">
+              <input type="hidden" name="id" value="abc">
+              <input type="hidden" name="export" value="download">
+              <input type="hidden" name="confirm" value="t">
+              <input type="hidden" name="uuid" value="uuid-123">
+            </form>
+        "#;
+
+        let url = GDriveProvider::extract_confirm_download_url(html).expect("url");
+        assert!(url.contains("drive.usercontent.google.com/download"));
+        assert!(url.contains("id=abc"));
+        assert!(url.contains("export=download"));
+        assert!(url.contains("confirm=t"));
+        assert!(url.contains("uuid=uuid-123"));
     }
 }
