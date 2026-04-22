@@ -4,7 +4,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::time::Duration;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, host_matches, rate_limit_error, unsupported_error, ProgressUpdate, Provider, ProviderDefaults};
+use super::{
+    apply_speed_limit, capabilities_for_provider_name, extract_wait_seconds_from_text, host_matches,
+    rate_limit_error, unsupported_error, ProgressUpdate, Provider, ProviderDefaults,
+};
 
 pub struct FichierProvider;
 
@@ -115,7 +118,7 @@ impl FichierProvider {
                 if after.starts_with("second") { return Some(n); }
             }
         }
-        None
+        extract_wait_seconds_from_text(html)
     }
 
     fn has_free_slot_error(html: &str) -> bool {
@@ -280,7 +283,13 @@ impl FichierProvider {
     }
 
     fn free_slot_error() -> anyhow::Error {
-        anyhow!("1fichier sem slot gratuito disponível no momento. O host exige aguardar ou entrar com conta.")
+        let cooldown = capabilities_for_provider_name("1Fichier")
+            .free_cooldown_secs
+            .unwrap_or(300);
+        rate_limit_error(
+            cooldown,
+            "1Fichier está sem slot gratuito disponível no momento. O host exige aguardar ou entrar com conta.",
+        )
     }
 }
 

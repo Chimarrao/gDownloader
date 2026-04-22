@@ -593,6 +593,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 return;
             }
         };
+        let provider_name = provider.name().to_string();
 
         let url_clone = url.clone();
         let dest_clone = dest_path.clone();
@@ -767,7 +768,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     return;
                 }
 
-                let retry_policy = classify_retry_policy(&err_str, attempt);
+                let retry_policy = classify_retry_policy(&provider_name, &err_str, attempt);
                 let is_rate_limit = err_str.starts_with("RATE_LIMIT:");
                 let is_premium_required = err_str.starts_with("PREMIUM_REQUIRED:");
                 let should_retry = !is_premium_required && (is_rate_limit || attempt < max_retries);
@@ -1102,6 +1103,10 @@ pub async fn recover_downloads_from_db(state: AppState) {
             download.status = DownloadStatus::Pending;
             download.retry_at = None;
             download.eta_secs = 0;
+        } else if matches!(download.status, DownloadStatus::Pending | DownloadStatus::RateLimited) {
+            if let Some(retry_at) = download.retry_at {
+                download.eta_secs = retry_at.saturating_sub(current_unix_secs());
+            }
         }
 
         let download_id = download.id.clone();
@@ -1243,7 +1248,7 @@ fn parse_captcha_error(message: &str) -> Option<(String, String, String)> {
     None
 }
 
-fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {
+fn classify_retry_policy(provider: &str, message: &str, attempt: u32) -> RetryPolicy {
     // Format: RATE_LIMIT:{secs}:{human_message}
     if message.starts_with("RATE_LIMIT:") {
         let parts: Vec<&str> = message.splitn(3, ':').collect();
@@ -1259,6 +1264,8 @@ fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {
     let lower = message.to_lowercase();
     let fallback_delay = (attempt + 1) as u64;
     let pretty = prettify_download_error(message);
+    let parsed_wait = providers::extract_wait_seconds_from_text(message);
+    let provider_cooldown = providers::capabilities_for_provider_name(provider).free_cooldown_secs;
 
     if lower.contains("509")
         || lower.contains("bandwidth limit exceeded")
@@ -1269,6 +1276,40 @@ fn classify_retry_policy(message: &str, attempt: u32) -> RetryPolicy {
             retry_delay_secs: 5 * 60 * (attempt as u64 + 1),
             wait_message: "Limite temporário do Mega detectado. Vamos tentar novamente automaticamente e retomar do ponto onde parou.".to_string(),
             final_message: "O Mega aplicou um limite temporário de tráfego. Tente novamente mais tarde ou use uma conta para continuar.".to_string(),
+        };
+    }
+
+    if let Some(wait_secs) = parsed_wait {
+        let wait_message = if wait_secs >= 3600 {
+            format!("O host informou uma espera de {}h {:02}m. Vamos tentar novamente automaticamente.", wait_secs / 3600, (wait_secs % 3600) / 60)
+        } else if wait_secs >= 60 {
+            format!("O host informou uma espera de {}m {:02}s. Vamos tentar novamente automaticamente.", wait_secs / 60, wait_secs % 60)
+        } else {
+            format!("O host informou uma espera de {}s. Vamos tentar novamente automaticamente.", wait_secs)
+        };
+        return RetryPolicy {
+            retry_delay_secs: wait_secs,
+            wait_message,
+            final_message: pretty,
+        };
+    }
+
+    if (lower.contains("slot gratuito")
+        || lower.contains("free slot")
+        || lower.contains("limite")
+        || lower.contains("download simult")
+        || lower.contains("outro download")
+        || lower.contains("traffic")
+        || lower.contains("quota"))
+        && provider_cooldown.is_some()
+    {
+        return RetryPolicy {
+            retry_delay_secs: provider_cooldown.unwrap_or(3600),
+            wait_message: format!(
+                "{} Vamos revalidar automaticamente quando o cooldown provável do host expirar.",
+                pretty
+            ),
+            final_message: pretty,
         };
     }
 
@@ -1377,5 +1418,27 @@ mod tests {
 
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
         assert_eq!(ids, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn retry_policy_uses_provider_cooldown_for_free_slot_errors() {
+        let policy = classify_retry_policy(
+            "1Fichier",
+            "1Fichier está sem slot gratuito disponível no momento. O host exige aguardar ou entrar com conta.",
+            0,
+        );
+
+        assert_eq!(policy.retry_delay_secs, 300);
+    }
+
+    #[test]
+    fn retry_policy_prefers_host_reported_wait_time() {
+        let policy = classify_retry_policy(
+            "BRFiles",
+            "Seu IP já possui outro download ativo. Aguarde 2 horas 15 minutos e 9 segundos.",
+            0,
+        );
+
+        assert_eq!(policy.retry_delay_secs, 8109);
     }
 }

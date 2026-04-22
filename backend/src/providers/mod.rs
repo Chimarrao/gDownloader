@@ -114,6 +114,46 @@ pub fn parse_human_size(value: &str) -> u64 {
     (number * multiplier).round() as u64
 }
 
+pub fn extract_wait_seconds_from_text(value: &str) -> Option<u64> {
+    let lower = value.to_lowercase();
+    let patterns = [
+        (r#"(\d+)\s*(?:hora|horas|hour|hours)"#, 3600u64),
+        (r#"(\d+)\s*(?:minuto|minutos|minute|minutes)"#, 60u64),
+        (r#"(\d+)\s*(?:segundo|segundos|second|seconds)"#, 1u64),
+    ];
+
+    let mut total = 0u64;
+    let mut matched = false;
+
+    for (pattern, multiplier) in patterns {
+        let Some(re) = regex::Regex::new(pattern).ok() else {
+            continue;
+        };
+        for captures in re.captures_iter(&lower) {
+            total = total.saturating_add(
+                captures[1]
+                    .parse::<u64>()
+                    .unwrap_or(0)
+                    .saturating_mul(multiplier),
+            );
+            matched = true;
+        }
+    }
+
+    if matched && total > 0 {
+        return Some(total);
+    }
+
+    if let Some(captures) = regex::Regex::new(r#"(?:wait|aguarde|try again in)\s*(\d+)"#)
+        .ok()
+        .and_then(|re| re.captures(&lower))
+    {
+        return captures[1].parse::<u64>().ok();
+    }
+
+    None
+}
+
 pub fn extract_fragment_value(url: &str, key: &str) -> Option<String> {
     let fragment = url.split('#').nth(1)?;
     for part in fragment.split('&') {
@@ -493,6 +533,10 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
             free_cooldown_secs: Some(3600),
             ..ProviderCapabilities::default()
         },
+        "1Fichier" => ProviderCapabilities {
+            free_cooldown_secs: Some(300),
+            ..ProviderCapabilities::default()
+        },
         "BRupload" => ProviderCapabilities {
             requires_browser_helper: true,
             supports_manual_auth: true,
@@ -519,6 +563,7 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         },
         "MediaFire" | "Mega" => ProviderCapabilities {
             supports_folder: true,
+            free_cooldown_secs: if name == "Mega" { Some(30 * 60) } else { None },
             ..ProviderCapabilities::default()
         },
         "Rapidgator" => ProviderCapabilities {

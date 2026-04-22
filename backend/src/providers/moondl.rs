@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
+use tokio::time::{sleep, Duration};
 
 use crate::models::FileInfo;
 
 use super::{
     apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches, parse_human_size,
-    path_segments, rate_limit_error, removed_error, ProgressUpdate, Provider, ProviderDefaults,
+    path_segments, premium_required_error, rate_limit_error, removed_error, ProgressUpdate, Provider, ProviderDefaults,
 };
 
 pub struct MoonDLProvider;
@@ -117,6 +118,14 @@ impl MoonDLProvider {
         } else {
             Some(message)
         }
+    }
+
+    fn is_premium_required_message(message: &str) -> bool {
+        let lower = message.to_ascii_lowercase();
+        lower.contains("upgrade your account")
+            || lower.contains("premium")
+            || lower.contains("1000 mb only")
+            || lower.contains("download files up to 1000 mb only")
     }
 
     fn extract_wait_seconds(html: &str) -> Option<u64> {
@@ -336,15 +345,21 @@ impl Provider for MoonDLProvider {
                 .text()
                 .await?;
 
-            if let Some(wait) = Self::extract_wait_seconds(&download1_html) {
-                return Err(rate_limit_error(wait, "MoonDL ainda está contando o tempo do modo gratuito"));
-            }
-
             if let Some(message) = Self::extract_error(&download1_html) {
                 let lower = message.to_ascii_lowercase();
+                if Self::is_premium_required_message(&message) {
+                    return Err(premium_required_error("MoonDL", &message));
+                }
                 if lower.contains("wait") || lower.contains("limit") {
                     return Err(rate_limit_error(3600, message));
                 }
+            }
+
+            if let Some(wait) = Self::extract_wait_seconds(&download1_html) {
+                if wait > 300 {
+                    return Err(rate_limit_error(wait, "MoonDL ainda está contando o tempo do modo gratuito"));
+                }
+                sleep(Duration::from_secs(wait.saturating_add(1))).await;
             }
 
             if let Some(sitekey) = Self::detect_recaptcha_sitekey(&download1_html) {
@@ -376,6 +391,11 @@ impl Provider for MoonDLProvider {
             }
 
             let html = response.error_for_status()?.text().await?;
+            if let Some(message) = Self::extract_error(&html) {
+                if Self::is_premium_required_message(&message) {
+                    return Err(premium_required_error("MoonDL", &message));
+                }
+            }
             if let Some(wait) = Self::extract_wait_seconds(&html) {
                 return Err(rate_limit_error(wait, "MoonDL ainda não liberou o download gratuito"));
             }
