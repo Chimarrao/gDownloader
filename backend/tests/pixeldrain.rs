@@ -38,5 +38,5 @@ fn detect_provider_recognizes_pixeldrain_list_url() {
 
 #[test]
 fn detect_provider_returns_none_for_unknown_url() {
-    assert!(detect_provider("https://example.com/file.zip").is_none());
+    assert!(detect_provider("ftp://example.com/file.zip").is_none());
 }

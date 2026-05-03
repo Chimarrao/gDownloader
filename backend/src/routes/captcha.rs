@@ -141,6 +141,7 @@ mod tests {
             speed_limit_kib: 0,
             parallel_parts: 1,
             selected_children: None,
+            expected_hash: None,
             retry_at: Some(999),
             captcha_type: Some("recaptcha2".to_string()),
             captcha_sitekey: Some("sitekey".to_string()),

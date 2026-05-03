@@ -4,12 +4,35 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, OnceLock, RwLock,
 };
 use std::{future::Future, pin::Pin};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, Duration, Instant};
+
+struct ProxyConfig {
+    mode: String,
+    host: String,
+    port: u16,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self { mode: "none".to_string(), host: String::new(), port: 0, username: None, password: None }
+    }
+}
+
+static GLOBAL_PROXY: OnceLock<RwLock<ProxyConfig>> = OnceLock::new();
+
+pub fn update_global_proxy(mode: String, host: String, port: u16, username: Option<String>, password: Option<String>) {
+    let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
+    if let Ok(mut proxy) = lock.write() {
+        *proxy = ProxyConfig { mode, host, port, username, password };
+    }
+}
 
 // Declara os sub-módulos de cada provedor de download
 // Em PHP seria algo como: require_once 'providers/MegaProvider.php';
@@ -23,6 +46,7 @@ pub mod brfiles;
 pub mod moondl;
 pub mod akirabox;
 pub mod katfile;
+pub mod direct_http;
 pub mod mediafire;
 pub mod mega;
 pub mod pixeldrain;
@@ -225,6 +249,7 @@ pub fn all_provider_descriptors() -> Vec<ProviderDescriptor> {
         ("Katfile", "#2563eb"),
         ("Terabox", "#2a6df5"),
         ("OneDrive", "#0a66d9"),
+        ("Direct HTTP", "#0f766e"),
     ]
     .into_iter()
         .map(|(name, color)| ProviderDescriptor {
@@ -258,14 +283,59 @@ pub trait ProviderDefaults {
         sanitize_filename(name, fallback)
     }
 
+    fn http_client_with_proxy(proxy_mode: &str, proxy_host: &str, proxy_port: u16, proxy_username: Option<&str>, proxy_password: Option<&str>) -> Result<reqwest::Client>
+    where
+        Self: Sized,
+    {
+        let mut builder = reqwest::Client::builder()
+            .user_agent(DEFAULT_USER_AGENT)
+            .redirect(reqwest::redirect::Policy::limited(10));
+
+        match proxy_mode {
+            "http" | "https" => {
+                let proxy_url = if let (Some(username), Some(password)) = (proxy_username, proxy_password) {
+                    format!("http://{}:{}@{}:{}", username, password, proxy_host, proxy_port)
+                } else {
+                    format!("http://{}:{}", proxy_host, proxy_port)
+                };
+                if let Ok(proxy) = reqwest::Proxy::http(&proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+            }
+            "socks5" => {
+                let proxy_url = if let (Some(username), Some(password)) = (proxy_username, proxy_password) {
+                    format!("socks5://{}:{}@{}:{}", username, password, proxy_host, proxy_port)
+                } else {
+                    format!("socks5://{}:{}", proxy_host, proxy_port)
+                };
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+            }
+            "tor" => {
+                // TOR uses SOCKS5 on localhost:9050
+                let proxy_url = "socks5://127.0.0.1:9050";
+                if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+            }
+            _ => {} // none or invalid
+        }
+
+        Ok(builder.build()?)
+    }
+
     fn http_client() -> Result<reqwest::Client>
     where
         Self: Sized,
     {
-        Ok(reqwest::Client::builder()
-            .user_agent(DEFAULT_USER_AGENT)
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()?)
+        let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
+        if let Ok(proxy) = lock.read() {
+            Self::http_client_with_proxy(&proxy.mode, &proxy.host, proxy.port,
+                proxy.username.as_deref(), proxy.password.as_deref())
+        } else {
+            Self::http_client_with_proxy("none", "", 0, None, None)
+        }
     }
 
     fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64
@@ -331,6 +401,16 @@ pub struct ProgressUpdate {
     pub child_total_bytes: Option<u64>,
     pub child_speed_bps: Option<u64>,
     pub child_eta_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DownloadContext {
+    pub db_path: Option<String>,
+    pub proxy_mode: String,
+    pub proxy_host: String,
+    pub proxy_port: u16,
+    pub proxy_username: Option<String>,
+    pub proxy_password: Option<String>,
 }
 
 pub async fn apply_speed_limit(
@@ -506,6 +586,14 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         url: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>;
 
+    fn get_file_info_with_context<'a>(
+        &'a self,
+        url: &'a str,
+        _context: DownloadContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
+        self.get_file_info(url)
+    }
+
     // Baixa o arquivo para dest_path e envia atualizações de progresso pelo canal
     // Result<u64> = Ok(bytes_baixados) ou Err(motivo_do_erro) — como try/catch mas em forma de valor
     fn download<'a>(
@@ -519,6 +607,27 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         // mpsc = Multiple Producer, Single Consumer (como uma fila de mensagens)
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
+
+    fn download_with_context<'a>(
+        &'a self,
+        url: &'a str,
+        dest_path: &'a str,
+        speed_limit_bps: Option<u64>,
+        parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+        _context: DownloadContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
+        // For now, just call the regular download. Providers can override if needed.
+        self.download(
+            url,
+            dest_path,
+            speed_limit_bps,
+            parallel_parts,
+            selected_children,
+            progress_tx,
+        )
+    }
 }
 
 pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
@@ -591,6 +700,7 @@ pub fn provider_id_from_name(name: &str) -> &'static str {
         "Katfile" => "katfile",
         "Terabox" => "terabox",
         "OneDrive" => "onedrive",
+        "Direct HTTP" => "direct_http",
         _ => "unknown",
     }
 }
@@ -643,6 +753,9 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if katfile::KatfileProvider::matches(url) {
         return Some(Box::new(katfile::KatfileProvider));
+    }
+    if direct_http::DirectHttpProvider::matches(url) {
+        return Some(Box::new(direct_http::DirectHttpProvider));
     }
     // URL não reconhecida por nenhum provider suportado
     None

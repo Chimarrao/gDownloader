@@ -90,6 +90,35 @@ No capturador de links:
 
 Isso acelera a leitura sem esconder quando o arquivo já caiu do host.
 
+## Containers de links
+
+O capturador aceita drag-and-drop de `.dlc`, `.ccf` e `.rsdf`.
+
+- o backend recebe o upload em `POST /links/import-container`
+- containers com URLs em texto puro são importados localmente
+- containers criptografados são enviados ao decodificador remoto `dlc.piratejd.io`
+- se o serviço remoto estiver indisponível, a UI mostra erro claro e os links já colados não são alterados
+
+## Click'n'Load e extensão
+
+O backend sobe um servidor local compatível com Click'n'Load em `127.0.0.1:9666`.
+
+- `GET /jdcheck.js` permite que sites detectem o app como receptor Click'n'Load
+- `POST /flash/add`, `/flash/addcrypted` e `/flash/addcrypted2` aceitam payload `form-encoded` com `urls`, `url`, `source`, `source_url`, `crypted` e `password`
+- links recebidos são enviados para a mesma fila persistente do app, respeitando pasta de destino, retries, limite de velocidade e partes paralelas das settings
+- payloads com URLs em texto puro ou `crypted` em base64 são importados; variantes criptografadas específicas de sites podem depender de suporte adicional
+
+A pasta `browser-extension/` contém uma extensão MV3 para Chrome, Edge, Brave e Firefox. Ela detecta links suportados na página, mostra um botão flutuante e adiciona ações de menu de contexto para enviar links ao gDownloader. Veja `browser-extension/README.md` para instalar em modo desenvolvedor.
+
+## Monitor de clipboard
+
+Nas configurações, a seção `Integrações` tem a opção `Monitorar área de transferência`.
+
+- quando ativada, o processo Electron verifica o clipboard a cada `800ms`
+- URLs copiadas são validadas contra o `/detect` do backend, usando a mesma lógica dos providers
+- se o link for suportado, o app abre o `Capturador de Links` e preenche a URL automaticamente
+- a preferência fica salva no SQLite junto das settings públicas
+
 ## Arquitetura resumida
 
 ```text

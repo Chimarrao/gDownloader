@@ -23,6 +23,56 @@ pub async fn update_download_config(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Serialize)]
+pub struct TestProxyResponse {
+    pub ip: String,
+}
+
+pub async fn test_proxy(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<Json<TestProxyResponse>, (StatusCode, Json<ApiError>)> {
+    let settings = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::db::load_public_settings(&db).ok())
+        .unwrap_or_default();
+    let client = <crate::providers::direct_http::DirectHttpProvider as crate::providers::ProviderDefaults>::http_client_with_proxy(
+        &settings.proxy_mode,
+        &settings.proxy_host,
+        settings.proxy_port,
+        settings.proxy_username.as_deref(),
+        settings.proxy_password.as_deref(),
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Failed to create client: {}", e))),
+        )
+    })?;
+    let response = client
+        .get("https://httpbin.org/ip")
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new(format!("Request failed: {}", e))),
+            )
+        })?;
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new(format!("Parse failed: {}", e))),
+            )
+        })?;
+    let ip = json["origin"].as_str().unwrap_or("unknown").to_string();
+    Ok(Json(TestProxyResponse { ip }))
+}
+
 pub async fn get_secure_settings(
     axum::extract::State(state): axum::extract::State<AppState>,
 ) -> Json<SecureSettings> {
@@ -80,6 +130,14 @@ pub async fn update_public_settings(
             )
         })?;
     }
+
+    crate::providers::update_global_proxy(
+        req.proxy_mode.clone(),
+        req.proxy_host.clone(),
+        req.proxy_port,
+        req.proxy_username.clone(),
+        req.proxy_password.clone(),
+    );
 
     *state.max_concurrent_downloads.lock().await = req.max_concurrent_downloads.max(1);
     schedule_pending_downloads(state).await;

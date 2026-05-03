@@ -8,6 +8,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio::task::AbortHandle;
 
 use crate::models::{Download, WsEvent};
+use crate::stats::StatsManager;
 
 // Capacidade máxima do buffer do canal de broadcast
 // Se a UI estiver lenta para processar mensagens, eventos antigos são descartados
@@ -26,6 +27,8 @@ pub struct AppState {
     pub active_tasks: Arc<Mutex<HashMap<String, AbortHandle>>>,
     pub max_concurrent_downloads: Arc<Mutex<usize>>,
     pub db: Arc<StdMutex<rusqlite::Connection>>,
+    pub db_path: Option<String>,
+    pub stats: Arc<StatsManager>,
 }
 
 // Como um class em PHP — agrupa métodos desta struct
@@ -35,6 +38,14 @@ impl AppState {
     }
 
     pub fn new_with_max(db: rusqlite::Connection, max_concurrent_downloads: usize) -> Self {
+        Self::new_with_max_and_db_path(db, max_concurrent_downloads, None)
+    }
+
+    pub fn new_with_max_and_db_path(
+        db: rusqlite::Connection,
+        max_concurrent_downloads: usize,
+        db_path: Option<String>,
+    ) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             tx: Arc::new(tx),
@@ -42,6 +53,8 @@ impl AppState {
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_downloads: Arc::new(Mutex::new(max_concurrent_downloads.max(1))),
             db: Arc::new(StdMutex::new(db)),
+            db_path,
+            stats: Arc::new(StatsManager::new(60)),
         }
     }
 

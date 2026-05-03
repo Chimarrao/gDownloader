@@ -16,12 +16,15 @@ use serde::{Deserialize, Serialize};
 pub enum DownloadStatus {
     Pending,         // Na fila, aguardando vez para iniciar
     Downloading,     // Transferência em andamento agora
+    Verifying,       // Calculando hash antes de marcar como concluído
     Paused,          // Pausado pelo usuário
     Complete,        // Concluído com sucesso
+    Corrupted,       // Hash não bateu; precisa baixar novamente
     Error,           // Falhou com erro (ver campo error no Download)
     Cancelled,       // Cancelado pelo usuário via DELETE /downloads/:id
     RateLimited,     // Bloqueado pelo servidor; aguardando retry_at
     WaitingCaptcha,  // Aguardando o usuário resolver um captcha
+    DiskFull,        // Sem espaço em disco suficiente para iniciar o download
 }
 
 // --- Representa um download na fila ---
@@ -46,6 +49,7 @@ pub struct Download {
     pub speed_limit_kib: u64,
     pub parallel_parts: u32,
     pub selected_children: Option<Vec<String>>,
+    pub expected_hash: Option<ExpectedHash>,
     pub retry_at: Option<u64>,
     pub captcha_type: Option<String>,     // "recaptcha2" | "hcaptcha"
     pub captcha_sitekey: Option<String>,
@@ -57,6 +61,26 @@ pub struct Download {
     pub started_at: Option<u64>,
     pub completed_at: Option<u64>,
     pub last_progress_at: Option<u64>,
+    #[serde(default)]
+    pub pinned: bool,            // Se true, este download fica fixado no topo da lista
+    #[serde(default)]
+    pub package_id: Option<String>, // ID do pacote ao qual este download pertence
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HashAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+    Crc32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedHash {
+    pub algorithm: HashAlgorithm,
+    pub value: String,
 }
 
 // --- Informações de um arquivo antes de iniciar o download ---
@@ -129,7 +153,43 @@ pub struct PublicSettings {
     pub font_family: String,
     pub ui_zoom: f32,
     pub native_notification: bool,
+    #[serde(default)]
+    pub clipboard_monitor_enabled: bool,
     pub accent_color: Option<String>,
+    #[serde(default)]
+    pub proxy_mode: String, // "none", "http", "socks5", "tor"
+    #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default)]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_username: Option<String>,
+    #[serde(default)]
+    pub proxy_password: Option<String>,
+    #[serde(default)]
+    pub start_tor: bool,
+    #[serde(default)]
+    pub reserved_disk_mb: u64,
+    #[serde(default)]
+    pub use_reconnect_on_rate_limit: bool,
+    #[serde(default)]
+    pub reconnect_method: String, // "none" | "router_script" | "curl_command"
+    #[serde(default)]
+    pub reconnect_command: String,
+    #[serde(default)]
+    pub router_ip: String,
+    #[serde(default)]
+    pub post_download_action: String, // "none" | "shutdown" | "sleep" | "hibernate" | "custom_command" | "webhook"
+    #[serde(default)]
+    pub post_download_action_trigger: String, // "queue_empty" | "per_item"
+    #[serde(default)]
+    pub post_download_command: String,
+    #[serde(default)]
+    pub post_download_webhook_url: String,
+    #[serde(default)]
+    pub auto_extract: bool,
+    #[serde(default)]
+    pub password_list: Vec<String>,
 }
 
 impl Default for PublicSettings {
@@ -146,9 +206,49 @@ impl Default for PublicSettings {
             font_family: "Inter".to_string(),
             ui_zoom: 1.0,
             native_notification: true,
+            clipboard_monitor_enabled: false,
             accent_color: None,
+            proxy_mode: "none".to_string(),
+            proxy_host: "".to_string(),
+            proxy_port: 0,
+            proxy_username: None,
+            proxy_password: None,
+            start_tor: false,
+            reserved_disk_mb: 500,
+            use_reconnect_on_rate_limit: false,
+            reconnect_method: "none".to_string(),
+            reconnect_command: String::new(),
+            router_ip: String::new(),
+            post_download_action: "none".to_string(),
+            post_download_action_trigger: "queue_empty".to_string(),
+            post_download_command: String::new(),
+            post_download_webhook_url: String::new(),
+            auto_extract: false,
+            password_list: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Package {
+    pub id: String,
+    pub name: String,
+    pub color: String,
+    pub comment: Option<String>,
+    pub dest_dir_override: Option<String>,
+    pub priority: i32,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePackageRequest {
+    pub name: String,
+    pub color: Option<String>,
+    pub comment: Option<String>,
+    pub dest_dir_override: Option<String>,
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +307,12 @@ pub enum WsEvent {
         child_speed: Option<u64>,
         child_eta: Option<u64>,
     },
+    Verifying {
+        id: String,
+        bytes_done: u64,
+        bytes_total: u64,
+        algorithm: HashAlgorithm,
+    },
     // Download finalizado com sucesso
     Complete {
         id: String,
@@ -236,6 +342,12 @@ pub enum WsEvent {
         url: String,
         provider: String,
     },
+    // Tick de estatísticas de velocidade em tempo real — enviado a cada segundo
+    StatsTick {
+        timestamp: u64,
+        total_speed_bps: u64,
+        per_host_speed: std::collections::HashMap<String, u64>,
+    },
 }
 
 // --- Body do POST /downloads ---
@@ -249,6 +361,7 @@ pub struct AddDownloadRequest {
     pub speed_limit_kib: Option<u64>,
     pub parallel_parts: Option<u32>,
     pub selected_children: Option<Vec<String>>,
+    pub expected_hash: Option<ExpectedHash>,
     pub priority: Option<i32>,
 }
 

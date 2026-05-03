@@ -6,10 +6,15 @@ use axum::{
 use std::env;
 use std::path::Path as FsPath;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    models::{AddDownloadRequest, ApiError, Download, DownloadStatus, FileChildInfo, WsEvent},
+    hash_verify,
+    models::{
+        AddDownloadRequest, ApiError, Download, DownloadStatus, ExpectedHash, FileChildInfo,
+        HashAlgorithm, WsEvent,
+    },
     providers,
     ws::AppState,
 };
@@ -26,6 +31,28 @@ struct QueueCandidate {
 
 fn normalize_identity_url(url: &str) -> String {
     url.split('#').next().unwrap_or(url).trim().to_string()
+}
+
+fn expected_hash_from_url_fragment(url: &str) -> Option<ExpectedHash> {
+    let fragment = url.split('#').nth(1)?;
+    for part in fragment.split('&') {
+        let (key, value) = part.split_once('=')?;
+        let algorithm = match key.to_ascii_lowercase().as_str() {
+            "md5" => HashAlgorithm::Md5,
+            "sha1" => HashAlgorithm::Sha1,
+            "sha256" => HashAlgorithm::Sha256,
+            "crc32" => HashAlgorithm::Crc32,
+            _ => continue,
+        };
+        let normalized = hash_verify::normalize_hash(value);
+        if !normalized.is_empty() {
+            return Some(ExpectedHash {
+                algorithm,
+                value: normalized,
+            });
+        }
+    }
+    None
 }
 
 fn download_identity_key(
@@ -68,6 +95,13 @@ pub async fn add_download(
     State(state): State<AppState>,
     Json(req): Json<AddDownloadRequest>,
 ) -> Result<Json<Download>, (StatusCode, Json<ApiError>)> {
+    add_download_internal(state, req).await.map(Json)
+}
+
+pub async fn add_download_internal(
+    state: AppState,
+    req: AddDownloadRequest,
+) -> Result<Download, (StatusCode, Json<ApiError>)> {
     // Detecta qual provider trata essa URL
     let provider = providers::detect_provider(&req.url).ok_or_else(|| {
         let error_msg = if req.url.contains("mega.nz/folder/") {
@@ -107,7 +141,22 @@ pub async fn add_download(
     })?;
 
     // Busca informações do arquivo (nome, tamanho) antes de criar o item na fila
-    let mut file_info = provider.get_file_info(&req.url).await.map_err(|e| {
+    let mut file_info = {
+        let context = {
+            let settings = state.db.lock().ok()
+                .and_then(|db| crate::db::load_public_settings(&db).ok())
+                .unwrap_or_default();
+            providers::DownloadContext {
+                db_path: state.db_path.clone(),
+                proxy_mode: settings.proxy_mode,
+                proxy_host: settings.proxy_host,
+                proxy_port: settings.proxy_port,
+                proxy_username: settings.proxy_username,
+                proxy_password: settings.proxy_password,
+            }
+        };
+        provider.get_file_info_with_context(&req.url, context).await
+    }.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new(format!("Falha ao obter informações do arquivo: {e}"))),
@@ -167,7 +216,7 @@ pub async fn add_download(
             download.dest_path == dest_path
                 && download.identity_key == identity_key
         }) {
-            return Ok(Json(existing.clone()));
+            return Ok(existing.clone());
         }
     }
 
@@ -179,6 +228,11 @@ pub async fn add_download(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+
+    let expected_hash = req
+        .expected_hash
+        .clone()
+        .or_else(|| expected_hash_from_url_fragment(&req.url));
 
     let download = Download {
         id: id.clone(),
@@ -210,6 +264,7 @@ pub async fn add_download(
         speed_limit_kib: req.speed_limit_kib.unwrap_or(0),
         parallel_parts: req.parallel_parts.unwrap_or(1).max(1),
         selected_children: selected_children.clone(),
+        expected_hash,
         retry_at: None,
         captcha_type: None,
         captcha_sitekey: None,
@@ -221,6 +276,8 @@ pub async fn add_download(
         started_at: None,
         completed_at: None,
         last_progress_at: None,
+        pinned: false,
+        package_id: None,
     };
 
     {
@@ -233,9 +290,18 @@ pub async fn add_download(
         let _ = crate::db::upsert(&db, &download);
     }
 
+    info!(
+        target: "gdownloader_backend::downloads",
+        "download adicionado id={} provider={} folder={} size={} dest={}",
+        download.id,
+        download.provider,
+        download.is_folder,
+        download.size,
+        download.dest_path
+    );
     schedule_pending_downloads(state.clone()).await;
 
-    Ok(Json(download))
+    Ok(download)
 }
 
 // Lista todos os downloads (ativos, completos, com erro)
@@ -314,7 +380,15 @@ pub async fn remove_download(
             ));
         };
 
-        if matches!(download.status, DownloadStatus::Pending | DownloadStatus::Downloading | DownloadStatus::Paused | DownloadStatus::RateLimited | DownloadStatus::WaitingCaptcha) {
+        if matches!(
+            download.status,
+            DownloadStatus::Pending
+                | DownloadStatus::Downloading
+                | DownloadStatus::Verifying
+                | DownloadStatus::Paused
+                | DownloadStatus::RateLimited
+                | DownloadStatus::WaitingCaptcha
+        ) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ApiError::new("Só é possível remover downloads encerrados da lista")),
@@ -350,7 +424,7 @@ pub async fn remove_download_with_files(
             ));
         };
 
-        if download.status == DownloadStatus::Downloading {
+        if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ApiError::new("Não é possível apagar arquivos físicos de um download ativo")),
@@ -389,6 +463,7 @@ pub async fn clear_finished_downloads(
                 download.status,
                 DownloadStatus::Pending
                     | DownloadStatus::Downloading
+                    | DownloadStatus::Verifying
                     | DownloadStatus::Paused
                     | DownloadStatus::RateLimited
                     | DownloadStatus::WaitingCaptcha
@@ -482,7 +557,7 @@ pub async fn force_download(
             )
         })?;
 
-        if download.status == DownloadStatus::Downloading {
+        if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ApiError::new("O download já está em andamento")),
@@ -594,19 +669,94 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
         };
         let provider_name = provider.name().to_string();
+        info!(
+            target: "gdownloader_backend::downloads",
+            "iniciando tentativa de download id={} provider={} attempt={} dest={}",
+            id,
+            provider_name,
+            attempt,
+            dest_path
+        );
+
+        // Check disk space before starting
+        {
+            let settings = state.db.lock().ok()
+                .and_then(|db| crate::db::load_public_settings(&db).ok())
+                .unwrap_or_default();
+            let reserved_bytes = settings.reserved_disk_mb * 1024 * 1024;
+
+            let (file_size, dest_parent) = {
+                let map = state.downloads.lock().await;
+                let d = map.get(&id);
+                let size = d.map(|d| d.size).unwrap_or(0);
+                let parent = std::path::Path::new(&dest_path)
+                    .parent()
+                    .map(|p| p.to_path_buf());
+                (size, parent)
+            };
+
+            if let Some(dest_path_obj) = dest_parent {
+                use sysinfo::Disks;
+                let disks = Disks::new_with_refreshed_list();
+                let available = disks.iter()
+                    .filter(|d| dest_path_obj.starts_with(d.mount_point()))
+                    .map(|d| d.available_space())
+                    .max()
+                    .unwrap_or(u64::MAX);
+
+                if file_size > 0 && file_size + reserved_bytes > available {
+                    let error_msg = format!(
+                        "Espaço em disco insuficiente. Necessário: {}MB, Disponível: {}MB",
+                        (file_size + reserved_bytes) / 1_048_576,
+                        available / 1_048_576
+                    );
+                    {
+                        let mut map = state.downloads.lock().await;
+                        if let Some(dl) = map.get_mut(&id) {
+                            dl.status = DownloadStatus::DiskFull;
+                            dl.error = Some(error_msg.clone());
+                        }
+                    }
+                    persist_download_snapshot(&state, &id).await;
+                    state.broadcast(WsEvent::StatusChanged {
+                        id: id.clone(),
+                        status: DownloadStatus::DiskFull,
+                        error: Some(error_msg),
+                        retry_at: None,
+                        captcha_type: None,
+                        captcha_sitekey: None,
+                        captcha_page_url: None,
+                    });
+                    reschedule_pending_downloads(state.clone());
+                    return;
+                }
+            }
+        }
 
         let url_clone = url.clone();
         let dest_clone = dest_path.clone();
         let selected_children_clone = selected_children.clone();
+        let download_context = {
+            let settings = state.db.lock().ok().and_then(|db| crate::db::load_public_settings(&db).ok()).unwrap_or_default();
+            providers::DownloadContext {
+                db_path: state.db_path.clone(),
+                proxy_mode: settings.proxy_mode,
+                proxy_host: settings.proxy_host,
+                proxy_port: settings.proxy_port,
+                proxy_username: settings.proxy_username,
+                proxy_password: settings.proxy_password,
+            }
+        };
         let download_task = tokio::spawn(async move {
             provider
-                .download(
+                .download_with_context(
                     &url_clone,
                     &dest_clone,
                     speed_limit_bps,
                     parallel_parts as usize,
                     selected_children_clone,
                     progress_tx,
+                    download_context,
                 )
                 .await
         });
@@ -707,6 +857,32 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
         match download_task.await {
             Ok(Ok(_bytes)) => {
+                let verification = {
+                    let mut map = state.downloads.lock().await;
+                    if let Some(d) = map.get_mut(&id) {
+                        d.expected_hash.clone().filter(|_| !d.is_folder)
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(expected_hash) = verification {
+                    match verify_completed_download(&state, &id, &dest_path, expected_hash).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            state.active_tasks.lock().await.remove(&id);
+                            reschedule_pending_downloads(state.clone());
+                            return;
+                        }
+                        Err(error) => {
+                            state.active_tasks.lock().await.remove(&id);
+                            update_error(&state, &id, &format!("Falha ao verificar hash: {error}")).await;
+                            reschedule_pending_downloads(state.clone());
+                            return;
+                        }
+                    }
+                }
+
                 {
                     let mut map = state.downloads.lock().await;
                     if let Some(d) = map.get_mut(&id) {
@@ -729,10 +905,47 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 }
                 state.active_tasks.lock().await.remove(&id);
                 persist_download_snapshot(&state, &id).await;
+                info!(
+                    target: "gdownloader_backend::downloads",
+                    "download concluído id={} provider={} dest={}",
+                    id,
+                    provider_name,
+                    dest_path
+                );
                 state.broadcast(WsEvent::Complete {
                     id: id.clone(),
                     path: dest_path,
                 });
+
+                // Trigger post-download action
+                {
+                    let settings = state.db.lock().ok()
+                        .and_then(|db| crate::db::load_public_settings(&db).ok())
+                        .unwrap_or_default();
+                    let trigger = settings.post_download_action_trigger.clone();
+                    let action = settings.post_download_action.clone();
+
+                    if action != "none" {
+                        let should_fire = if trigger == "per_item" {
+                            true
+                        } else {
+                            // queue_empty: fire only when no more active/pending downloads
+                            let map = state.downloads.lock().await;
+                            !map.values().any(|d| matches!(d.status,
+                                DownloadStatus::Downloading | DownloadStatus::Pending | DownloadStatus::RateLimited))
+                        };
+
+                        if should_fire {
+                            let cmd = settings.post_download_command.clone();
+                            let webhook = settings.post_download_webhook_url.clone();
+                            let dl_id = id.clone();
+                            tokio::spawn(async move {
+                                execute_post_download_action(&action, &cmd, &webhook, &dl_id).await;
+                            });
+                        }
+                    }
+                }
+
                 reschedule_pending_downloads(state.clone());
                 return;
             }
@@ -742,6 +955,14 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
                 // Captcha required — set WaitingCaptcha and halt
                 if let Some((captcha_type, sitekey, page_url)) = parse_captcha_error(&err_str) {
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "download aguardando captcha id={} provider={} type={} page={}",
+                        id,
+                        provider_name,
+                        captcha_type,
+                        page_url
+                    );
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
@@ -797,6 +1018,15 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         }
                     }
                     persist_download_snapshot(&state, &id).await;
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "download reagendado id={} provider={} delay={}s status={} reason={}",
+                        id,
+                        provider_name,
+                        retry_delay_secs,
+                        if is_rate_limit { "rate_limited" } else { "pending" },
+                        retry_policy.wait_message
+                    );
                     state.broadcast(WsEvent::StatusChanged {
                         id: id.clone(),
                         status: wait_status,
@@ -807,6 +1037,37 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         captcha_page_url: None,
                     });
                     reschedule_pending_downloads(state.clone());
+
+                    // Try reconnect for rate-limited downloads before waiting
+                    if is_rate_limit {
+                        let reconnect_cfg = {
+                            let settings = state.db.lock().ok()
+                                .and_then(|db| crate::db::load_public_settings(&db).ok())
+                                .unwrap_or_default();
+                            (settings.use_reconnect_on_rate_limit, crate::reconnect::ReconnectConfig {
+                                method: settings.reconnect_method,
+                                command: settings.reconnect_command,
+                                router_ip: settings.router_ip,
+                            })
+                        };
+                        if reconnect_cfg.0 {
+                            match crate::reconnect::attempt_reconnect(&reconnect_cfg.1).await {
+                                Ok(true) => {
+                                    // Reconnect succeeded — skip the wait and retry immediately
+                                    if !is_rate_limit {
+                                        attempt = attempt.saturating_add(1);
+                                    }
+                                    continue;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    warn!(target: "gdownloader_backend::downloads",
+                                        "reconnect error for id={}: {}", id, e);
+                                }
+                            }
+                        }
+                    }
+
                     schedule_retry_wakeup(state.clone(), retry_at);
 
                     for _ in 0..retry_delay_secs {
@@ -830,6 +1091,13 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     }
                     continue;
                 }
+                warn!(
+                    target: "gdownloader_backend::downloads",
+                    "download falhou definitivamente id={} provider={} error={}",
+                    id,
+                    provider_name,
+                    retry_policy.final_message
+                );
                 update_error(&state, &id, &retry_policy.final_message).await;
                 reschedule_pending_downloads(state.clone());
                 return;
@@ -845,10 +1113,23 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     return;
                 }
                 if attempt < max_retries {
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "task abortada, tentando novamente id={} provider={} next_attempt={}",
+                        id,
+                        provider_name,
+                        attempt + 1
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs((attempt + 1) as u64)).await;
                     attempt = attempt.saturating_add(1);
                     continue;
                 }
+                warn!(
+                    target: "gdownloader_backend::downloads",
+                    "task abortada definitivamente id={} provider={}",
+                    id,
+                    provider_name
+                );
                 update_error(&state, &id, "Download interrompido").await;
                 reschedule_pending_downloads(state.clone());
                 return;
@@ -861,6 +1142,156 @@ fn reschedule_pending_downloads(state: AppState) {
     tokio::spawn(async move {
         schedule_pending_downloads(state).await;
     });
+}
+
+async fn execute_post_download_action(action: &str, command: &str, webhook_url: &str, download_id: &str) {
+    match action {
+        "shutdown" => {
+            #[cfg(target_os = "macos")]
+            let _ = tokio::process::Command::new("osascript")
+                .args(["-e", "tell app \"System Events\" to shut down"])
+                .status().await;
+            #[cfg(target_os = "windows")]
+            let _ = tokio::process::Command::new("shutdown")
+                .args(["/s", "/t", "30"])
+                .status().await;
+            #[cfg(target_os = "linux")]
+            let _ = tokio::process::Command::new("shutdown")
+                .args(["-h", "now"])
+                .status().await;
+        }
+        "sleep" => {
+            #[cfg(target_os = "macos")]
+            let _ = tokio::process::Command::new("pmset")
+                .args(["sleepnow"])
+                .status().await;
+            #[cfg(target_os = "windows")]
+            let _ = tokio::process::Command::new("rundll32.exe")
+                .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                .status().await;
+            #[cfg(target_os = "linux")]
+            let _ = tokio::process::Command::new("systemctl")
+                .args(["suspend"])
+                .status().await;
+        }
+        "custom_command" if !command.is_empty() => {
+            let parts: Vec<&str> = command.splitn(2, ' ').collect();
+            if !parts.is_empty() {
+                let mut cmd = tokio::process::Command::new(parts[0]);
+                if parts.len() > 1 {
+                    cmd.args(parts[1].split_whitespace());
+                }
+                let _ = cmd.status().await;
+            }
+        }
+        "webhook" if !webhook_url.is_empty() => {
+            if let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build() {
+                let _ = client.post(webhook_url)
+                    .json(&serde_json::json!({ "event": "download_complete", "downloadId": download_id }))
+                    .send().await;
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn verify_completed_download(
+    state: &AppState,
+    id: &str,
+    dest_path: &str,
+    expected_hash: ExpectedHash,
+) -> anyhow::Result<bool> {
+    {
+        let mut map = state.downloads.lock().await;
+        if let Some(download) = map.get_mut(id) {
+            download.status = DownloadStatus::Verifying;
+            download.speed_bps = 0;
+            download.eta_secs = 0;
+            download.error = None;
+            download.completed_at = None;
+        }
+    }
+    persist_download_snapshot(state, id).await;
+    state.broadcast(WsEvent::StatusChanged {
+        id: id.to_string(),
+        status: DownloadStatus::Verifying,
+        error: None,
+        retry_at: None,
+        captcha_type: None,
+        captcha_sitekey: None,
+        captcha_page_url: None,
+    });
+
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(32);
+    let verify_task = hash_verify::verify_file(dest_path.to_string(), expected_hash.clone(), progress_tx);
+    tokio::pin!(verify_task);
+
+    loop {
+        tokio::select! {
+            progress = progress_rx.recv() => {
+                let Some(progress) = progress else {
+                    continue;
+                };
+                {
+                    let mut map = state.downloads.lock().await;
+                    if let Some(download) = map.get_mut(id) {
+                        download.bytes_downloaded = progress.bytes_done;
+                        download.size = progress.bytes_total.max(download.size);
+                        download.last_progress_at = Some(current_unix_secs());
+                    }
+                }
+                state.broadcast(WsEvent::Verifying {
+                    id: id.to_string(),
+                    bytes_done: progress.bytes_done,
+                    bytes_total: progress.bytes_total,
+                    algorithm: expected_hash.algorithm.clone(),
+                });
+            }
+            result = &mut verify_task => {
+                let result = result?;
+                if result.matched {
+                    return Ok(true);
+                }
+
+                let message = format!(
+                    "Hash inválido ({}): esperado {}, obtido {}",
+                    hash_algorithm_label(&expected_hash.algorithm),
+                    result.expected,
+                    result.actual
+                );
+                {
+                    let mut map = state.downloads.lock().await;
+                    if let Some(download) = map.get_mut(id) {
+                        download.status = DownloadStatus::Corrupted;
+                        download.speed_bps = 0;
+                        download.eta_secs = 0;
+                        download.error = Some(message.clone());
+                        download.completed_at = Some(current_unix_secs());
+                    }
+                }
+                persist_download_snapshot(state, id).await;
+                state.broadcast(WsEvent::StatusChanged {
+                    id: id.to_string(),
+                    status: DownloadStatus::Corrupted,
+                    error: Some(message),
+                    retry_at: None,
+                    captcha_type: None,
+                    captcha_sitekey: None,
+                    captcha_page_url: None,
+                });
+                return Ok(false);
+            }
+        }
+    }
+}
+
+fn hash_algorithm_label(algorithm: &HashAlgorithm) -> &'static str {
+    match algorithm {
+        HashAlgorithm::Md5 => "MD5",
+        HashAlgorithm::Sha1 => "SHA1",
+        HashAlgorithm::Sha256 => "SHA256",
+        HashAlgorithm::Crc32 => "CRC32",
+    }
 }
 
 async fn persist_download_snapshot(state: &AppState, id: &str) {
@@ -882,8 +1313,15 @@ pub async fn schedule_pending_downloads(state: AppState) {
         let mut map = state.downloads.lock().await;
         let active_count = map
             .values()
-            .filter(|download| matches!(download.status, DownloadStatus::Downloading))
+            .filter(|download| matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying))
             .count();
+        debug!(
+            target: "gdownloader_backend::downloads",
+            "scheduler tick active_count={} limit={} queue_size={}",
+            active_count,
+            limit,
+            map.len()
+        );
         if active_count >= limit {
             schedule_next_retry_wakeup(state.clone(), &map);
             return;
@@ -899,7 +1337,7 @@ pub async fn schedule_pending_downloads(state: AppState) {
         let mut active_by_provider = std::collections::HashMap::<String, usize>::new();
         for download in map
             .values()
-            .filter(|download| matches!(download.status, DownloadStatus::Downloading))
+            .filter(|download| matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying))
         {
             *active_by_provider
                 .entry(download.provider.clone())
@@ -933,6 +1371,12 @@ pub async fn schedule_pending_downloads(state: AppState) {
         let selected = select_downloads_to_start(pending, &active_by_provider, slots);
         if selected.is_empty() {
             schedule_next_retry_wakeup(state.clone(), &map);
+        } else {
+            debug!(
+                target: "gdownloader_backend::downloads",
+                "scheduler selecionou downloads {:?}",
+                selected.iter().map(|item| item.id.as_str()).collect::<Vec<_>>()
+            );
         }
 
         for candidate in &selected {
@@ -971,7 +1415,7 @@ async fn restart_download_internal(
             )
         })?;
 
-        if matches!(download.status, DownloadStatus::Downloading) {
+        if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ApiError::new("O download já está em andamento")),
@@ -1073,7 +1517,7 @@ pub async fn recover_downloads_from_db(state: AppState) {
         download.speed_bps = 0;
         download.eta_secs = 0;
 
-        if download.status == DownloadStatus::Downloading {
+        if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             download.status = DownloadStatus::Paused;
             if download.error.is_none() {
                 download.error = Some("O app foi reiniciado antes do término. Retome ou reinicie o download.".to_string());
@@ -1117,6 +1561,7 @@ pub async fn recover_downloads_from_db(state: AppState) {
         persist_download_snapshot(&state, &download_id).await;
     }
 
+    info!(target: "gdownloader_backend::downloads", "downloads recuperados do SQLite");
     schedule_pending_downloads(state).await;
 }
 
@@ -1336,6 +1781,27 @@ fn classify_retry_policy(provider: &str, message: &str, attempt: u32) -> RetryPo
             attempt + 1
         ),
         final_message: pretty,
+    }
+}
+
+pub async fn toggle_pin_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let mut map = state.downloads.lock().await;
+    if let Some(dl) = map.get_mut(&id) {
+        dl.pinned = !dl.pinned;
+        let pinned = dl.pinned;
+        drop(map);
+        if let Ok(db) = state.db.lock() {
+            let _ = db.execute(
+                "UPDATE downloads SET pinned = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![pinned as i64, current_unix_secs() as i64, id],
+            );
+        }
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(ApiError::new("Download not found"))))
     }
 }
 

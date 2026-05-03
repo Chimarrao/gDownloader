@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Duration;
+use tracing::{debug, info, warn};
 
 use crate::models::{FileChildInfo, FileInfo};
 use super::{
@@ -175,13 +176,16 @@ impl FichierProvider {
         speed_limit_bps: Option<u64>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
+        info!(target: "gdownloader_backend::providers::1fichier", "1Fichier abrindo landing page: {}", page_url);
         let landing = client.get(page_url).send().await?.error_for_status()?.text().await?;
 
         if Self::has_free_slot_error(&landing) {
+            warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier sem slot gratuito para {}", page_url);
             return Err(Self::free_slot_error());
         }
 
         let wait_seconds = Self::extract_wait_seconds(&landing).unwrap_or(0);
+        debug!(target: "gdownloader_backend::providers::1fichier", "1Fichier wait_seconds={} url={}", wait_seconds, page_url);
         if wait_seconds > 90 {
             return Err(rate_limit_error(wait_seconds, format!("1Fichier: aguarde {} minutos", wait_seconds / 60)));
         } else if wait_seconds > 0 {
@@ -190,24 +194,33 @@ impl FichierProvider {
 
         let response = client
             .post(page_url)
+            .header("Referer", page_url)
             .form(&[("dl_no_ssl", "on")])
             .send()
             .await?
             .error_for_status()?;
 
         if Self::is_binary_response(&response) {
+            info!(target: "gdownloader_backend::providers::1fichier", "1Fichier respondeu binário direto: {}", page_url);
             return Self::stream_response_to_file(response, dest_path, speed_limit_bps, progress_tx).await;
         }
 
         let html = response.text().await?;
         if Self::has_free_slot_error(&html) {
+            warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier continuou sem slot gratuito após POST: {}", page_url);
             return Err(Self::free_slot_error());
         }
 
         let direct_url = Self::extract_direct_link(&html)
             .ok_or_else(|| unsupported_error("1Fichier"))?;
+        info!(target: "gdownloader_backend::providers::1fichier", "1Fichier link final extraído para {}", page_url);
 
-        let resp = client.get(&direct_url).send().await?.error_for_status()?;
+        let resp = client
+            .get(&direct_url)
+            .header("Referer", page_url)
+            .send()
+            .await?
+            .error_for_status()?;
         Self::stream_response_to_file(resp, dest_path, speed_limit_bps, progress_tx).await
     }
 
@@ -305,6 +318,7 @@ impl Provider for FichierProvider {
             let page_url = Self::extract_download_page(url)
                 .ok_or_else(|| anyhow!("URL do 1fichier inválida: {url}"))?;
             let client = <Self as ProviderDefaults>::http_client()?;
+            info!(target: "gdownloader_backend::providers::1fichier", "1Fichier coletando metadata: {}", page_url);
             let html = client.get(&page_url).send().await?.error_for_status()?.text().await?;
 
             // Rate limit
@@ -317,6 +331,12 @@ impl Provider for FichierProvider {
             // Folder detection
             if Self::is_folder_page(&page_url, &html) {
                 let children = Self::extract_folder_children(&html);
+                info!(
+                    target: "gdownloader_backend::providers::1fichier",
+                    "1Fichier pasta detectada: {} child_count={}",
+                    page_url,
+                    children.len()
+                );
                 let folder_name = Self::extract_between(&html, "<div class=\"bh3 alc\">", "</div>")
                     .or_else(|| Self::extract_between(&html, "<title>", "</title>"))
                     .unwrap_or_else(|| "pasta_1fichier".to_string());
@@ -357,10 +377,17 @@ impl Provider for FichierProvider {
             let page_url = Self::extract_download_page(url)
                 .ok_or_else(|| anyhow!("URL do 1fichier inválida: {url}"))?;
             let client = <Self as ProviderDefaults>::http_client()?;
+            info!(target: "gdownloader_backend::providers::1fichier", "1Fichier iniciando download: {}", page_url);
             let landing = client.get(&page_url).send().await?.error_for_status()?.text().await?;
 
             if Self::is_folder_page(&page_url, &landing) {
                 let mut children = Self::extract_folder_children(&landing);
+                info!(
+                    target: "gdownloader_backend::providers::1fichier",
+                    "1Fichier download de pasta: {} child_count={}",
+                    page_url,
+                    children.len()
+                );
                 if let Some(selected) = selected_children {
                     let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
                     children.retain(|child| child.source_url.as_ref().map(|url| selected_set.contains(url)).unwrap_or(false));
@@ -378,6 +405,12 @@ impl Provider for FichierProvider {
                 for child in &children {
                     let child_url = child.source_url.clone().ok_or_else(|| anyhow!("Item da pasta do 1Fichier sem URL"))?;
                     let child_path = child.path.clone().unwrap_or_else(|| child.filename.clone());
+                    info!(
+                        target: "gdownloader_backend::providers::1fichier",
+                        "1Fichier baixando item da pasta: {} -> {}",
+                        child_url,
+                        child_path
+                    );
                     let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), child_path);
 
                     if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {

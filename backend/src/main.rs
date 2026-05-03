@@ -1,4 +1,4 @@
-use gdownloader_backend::create_router;
+use gdownloader_backend::{create_cnl_router, create_router_with_state, create_state};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 #[tokio::main]
@@ -21,7 +21,16 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&db_parent).ok();
 
     // Diretório de logs: mesmo nível do banco de dados → backend/logs/
-    let log_dir = db_parent.parent().unwrap_or(&db_parent).join("logs");
+    let log_dir = if db_parent
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("database"))
+        .unwrap_or(false)
+    {
+        db_parent.parent().unwrap_or(&db_parent).join("logs")
+    } else {
+        db_parent.join("logs")
+    };
     std::fs::create_dir_all(&log_dir).ok();
 
     // Writer para app.log (rotação diária)
@@ -53,13 +62,32 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(true);
 
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,gdownloader_backend=debug,mirrors=debug")),
+        )
         .with(stderr_layer)
         .with(app_layer)
         .with(mirrors_layer)
         .init();
 
-    let app = create_router(&db_path);
+    let state = create_state(&db_path)?;
+    let cnl_state = state.clone();
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind("127.0.0.1:9666").await {
+            Ok(listener) => {
+                tracing::info!("Click'n'Load local rodando em 127.0.0.1:9666");
+                if let Err(error) = axum::serve(listener, create_cnl_router(cnl_state)).await {
+                    tracing::error!("Servidor Click'n'Load encerrou com erro: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("Não foi possível abrir Click'n'Load em 127.0.0.1:9666: {error}");
+            }
+        }
+    });
+
+    let app = create_router_with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

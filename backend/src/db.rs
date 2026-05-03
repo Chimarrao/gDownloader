@@ -38,6 +38,26 @@ const MIGRATIONS: &[Migration] = &[
         name: "create_file_cache_table",
         apply: migration_create_file_cache_table,
     },
+    Migration {
+        version: 6,
+        name: "create_direct_http_resume_table",
+        apply: migration_create_direct_http_resume_table,
+    },
+    Migration {
+        version: 7,
+        name: "create_stats_hourly_table",
+        apply: migration_create_stats_hourly_table,
+    },
+    Migration {
+        version: 8,
+        name: "add_download_pinned_column",
+        apply: migration_add_download_pinned_column,
+    },
+    Migration {
+        version: 9,
+        name: "create_packages_table",
+        apply: migration_create_packages_table,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -171,6 +191,10 @@ fn migration_ensure_download_columns(conn: &Connection) -> Result<()> {
             "ALTER TABLE downloads ADD COLUMN selected_children_json TEXT",
         ),
         (
+            "expected_hash_json",
+            "ALTER TABLE downloads ADD COLUMN expected_hash_json TEXT",
+        ),
+        (
             "captcha_type",
             "ALTER TABLE downloads ADD COLUMN captcha_type TEXT",
         ),
@@ -266,6 +290,77 @@ fn migration_create_file_cache_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_create_direct_http_resume_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS direct_http_parts (
+             download_key     TEXT NOT NULL,
+             part_index       INTEGER NOT NULL,
+             url              TEXT NOT NULL DEFAULT '',
+             etag             TEXT,
+             last_modified    TEXT,
+             start_byte       INTEGER NOT NULL,
+             end_byte         INTEGER NOT NULL,
+             bytes_downloaded INTEGER NOT NULL DEFAULT 0,
+             updated_at       INTEGER NOT NULL,
+             PRIMARY KEY(download_key, part_index)
+         );
+         CREATE INDEX IF NOT EXISTS idx_direct_http_parts_updated_at
+             ON direct_http_parts(updated_at DESC);",
+    )?;
+    Ok(())
+}
+
+fn migration_create_stats_hourly_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS stats_hourly (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             url         TEXT NOT NULL,
+             provider     TEXT NOT NULL DEFAULT '',
+             status      TEXT NOT NULL DEFAULT 'pending',
+             is_folder   INTEGER NOT NULL DEFAULT 0,
+             size        INTEGER NOT NULL DEFAULT 0,
+             downloaded   INTEGER NOT NULL DEFAULT 0,
+             error       TEXT,
+             retry_count INTEGER NOT NULL DEFAULT 0,
+             created_at  INTEGER NOT NULL,
+             updated_at  INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_stats_hourly_url
+             ON stats_hourly(url);
+         CREATE INDEX IF NOT EXISTS idx_stats_hourly_provider
+             ON stats_hourly(provider);
+         CREATE INDEX IF NOT EXISTS idx_stats_hourly_status
+             ON stats_hourly(status);
+         CREATE INDEX IF NOT EXISTS idx_stats_hourly_created_at
+             ON stats_hourly(created_at DESC);",
+    )?;
+    Ok(())
+}
+
+fn migration_add_download_pinned_column(conn: &Connection) -> Result<()> {
+    add_column_if_missing(conn, "downloads", "pinned", "ALTER TABLE downloads ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")?;
+    Ok(())
+}
+
+fn migration_create_packages_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS packages (
+             id              TEXT PRIMARY KEY,
+             name            TEXT NOT NULL DEFAULT '',
+             color           TEXT NOT NULL DEFAULT '#7c6fff',
+             comment         TEXT,
+             dest_dir_override TEXT,
+             priority        INTEGER NOT NULL DEFAULT 0,
+             created_at      INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_packages_priority
+             ON packages(priority DESC, created_at DESC);",
+    )?;
+    add_column_if_missing(conn, "downloads", "package_id",
+        "ALTER TABLE downloads ADD COLUMN package_id TEXT")?;
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -277,12 +372,15 @@ fn status_str(s: &DownloadStatus) -> &'static str {
     match s {
         DownloadStatus::Pending => "pending",
         DownloadStatus::Downloading => "downloading",
+        DownloadStatus::Verifying => "verifying",
         DownloadStatus::Paused => "paused",
         DownloadStatus::Complete => "complete",
+        DownloadStatus::Corrupted => "corrupted",
         DownloadStatus::Error => "error",
         DownloadStatus::Cancelled => "cancelled",
         DownloadStatus::RateLimited => "rate_limited",
         DownloadStatus::WaitingCaptcha => "waiting_captcha",
+        DownloadStatus::DiskFull => "disk_full",
     }
 }
 
@@ -290,12 +388,15 @@ fn parse_status(raw: &str) -> DownloadStatus {
     match raw {
         "pending" => DownloadStatus::Pending,
         "downloading" => DownloadStatus::Downloading,
+        "verifying" => DownloadStatus::Verifying,
         "paused" => DownloadStatus::Paused,
         "complete" => DownloadStatus::Complete,
+        "corrupted" => DownloadStatus::Corrupted,
         "error" => DownloadStatus::Error,
         "cancelled" => DownloadStatus::Cancelled,
         "rate_limited" => DownloadStatus::RateLimited,
         "waiting_captcha" => DownloadStatus::WaitingCaptcha,
+        "disk_full" => DownloadStatus::DiskFull,
         _ => DownloadStatus::Pending,
     }
 }
@@ -308,12 +409,12 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
     conn.execute(
         "INSERT INTO downloads
              (id, url, provider, identity_key, filename, dest_path, size, bytes_downloaded,
-              status, is_folder, children_json, max_retries, speed_limit_kib,
-              parallel_parts, selected_children_json, error, retry_count,
-              retry_at, captcha_type, captcha_sitekey, captcha_page_url,
-              captcha_token, priority, created_at, started_at, completed_at,
-              last_progress_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)
+             status, is_folder, children_json, max_retries, speed_limit_kib,
+              parallel_parts, selected_children_json, expected_hash_json,
+              error, retry_count, retry_at, captcha_type, captcha_sitekey,
+              captcha_page_url, captcha_token, priority, created_at, started_at,
+              completed_at, last_progress_at, pinned, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -329,6 +430,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              speed_limit_kib        = excluded.speed_limit_kib,
              parallel_parts         = excluded.parallel_parts,
              selected_children_json = excluded.selected_children_json,
+             expected_hash_json     = excluded.expected_hash_json,
              error                  = excluded.error,
              retry_count            = excluded.retry_count,
              retry_at               = excluded.retry_at,
@@ -340,6 +442,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              started_at             = excluded.started_at,
              completed_at           = excluded.completed_at,
              last_progress_at       = excluded.last_progress_at,
+             pinned                 = excluded.pinned,
              updated_at             = excluded.updated_at",
         params![
             d.id,
@@ -357,6 +460,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.speed_limit_kib as i64,
             d.parallel_parts as i64,
             to_json(&d.selected_children),
+            to_json(&d.expected_hash),
             d.error,
             d.retry_count as i64,
             d.retry_at.map(|x| x as i64),
@@ -369,6 +473,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.started_at.map(|value| value as i64),
             d.completed_at.map(|value| value as i64),
             d.last_progress_at.map(|value| value as i64),
+            if d.pinned { 1i64 } else { 0i64 },
             now_secs(),
         ],
     )?;
@@ -382,7 +487,7 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 
 pub fn delete_finished(conn: &Connection) -> Result<()> {
     conn.execute(
-        "DELETE FROM downloads WHERE status IN ('complete','cancelled','error')",
+        "DELETE FROM downloads WHERE status IN ('complete','cancelled','error','corrupted')",
         [],
     )?;
     Ok(())
@@ -392,9 +497,10 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
     let mut stmt = conn.prepare(
         "SELECT id, url, provider, identity_key, filename, dest_path, size, bytes_downloaded, status,
                 is_folder, children_json, retry_count, max_retries, speed_limit_kib,
-                parallel_parts, selected_children_json, retry_at, captcha_type,
-                captcha_sitekey, captcha_page_url, captcha_token, error, priority,
-                created_at, started_at, completed_at, last_progress_at
+                parallel_parts, selected_children_json, expected_hash_json, retry_at,
+                captcha_type, captcha_sitekey, captcha_page_url, captcha_token,
+                error, priority, created_at, started_at, completed_at, last_progress_at,
+                COALESCE(pinned, 0) as pinned, package_id
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -402,6 +508,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
         .query_map([], |row| {
             let children_json: Option<String> = row.get(10)?;
             let selected_children_json: Option<String> = row.get(15)?;
+            let expected_hash_json: Option<String> = row.get(16)?;
 
             Ok(Download {
                 id: row.get(0)?,
@@ -426,17 +533,23 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                     .as_deref()
                     .and_then(|raw| serde_json::from_str::<Option<Vec<String>>>(raw).ok())
                     .flatten(),
-                retry_at: row.get::<_, Option<i64>>(16)?.map(|value| value as u64),
-                captcha_type: row.get(17)?,
-                captcha_sitekey: row.get(18)?,
-                captcha_page_url: row.get(19)?,
-                captcha_token: row.get(20)?,
-                error: row.get(21)?,
-                priority: row.get::<_, i64>(22)? as i32,
-                created_at: row.get::<_, i64>(23)? as u64,
-                started_at: row.get::<_, Option<i64>>(24)?.map(|value| value as u64),
-                completed_at: row.get::<_, Option<i64>>(25)?.map(|value| value as u64),
-                last_progress_at: row.get::<_, Option<i64>>(26)?.map(|value| value as u64),
+                expected_hash: expected_hash_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Option<crate::models::ExpectedHash>>(raw).ok())
+                    .flatten(),
+                retry_at: row.get::<_, Option<i64>>(17)?.map(|value| value as u64),
+                captcha_type: row.get(18)?,
+                captcha_sitekey: row.get(19)?,
+                captcha_page_url: row.get(20)?,
+                captcha_token: row.get(21)?,
+                error: row.get(22)?,
+                priority: row.get::<_, i64>(23)? as i32,
+                created_at: row.get::<_, i64>(24)? as u64,
+                started_at: row.get::<_, Option<i64>>(25)?.map(|value| value as u64),
+                completed_at: row.get::<_, Option<i64>>(26)?.map(|value| value as u64),
+                last_progress_at: row.get::<_, Option<i64>>(27)?.map(|value| value as u64),
+                pinned: row.get::<_, i64>(28)? != 0,
+                package_id: row.get(29).ok().flatten(),
                 speed_bps: 0,
                 eta_secs: 0,
             })
@@ -606,6 +719,101 @@ pub fn clear_history(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct DirectHttpPartState {
+    pub part_index: usize,
+    pub bytes_downloaded: u64,
+}
+
+pub fn load_direct_http_parts(
+    conn: &Connection,
+    download_key: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<Vec<DirectHttpPartState>> {
+    let mut stmt = conn.prepare(
+        "SELECT part_index, bytes_downloaded, etag, last_modified
+         FROM direct_http_parts
+         WHERE download_key = ?1
+         ORDER BY part_index ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![download_key], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .filter_map(|row| row.ok())
+        .collect::<Vec<_>>();
+
+    if rows.iter().any(|(_, _, stored_etag, stored_last_modified)| {
+        stored_etag.as_deref() != etag || stored_last_modified.as_deref() != last_modified
+    }) {
+        clear_direct_http_parts(conn, download_key)?;
+        return Ok(Vec::new());
+    }
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|(part_index, bytes_downloaded, _, _)| {
+            Some(DirectHttpPartState {
+                part_index: usize::try_from(part_index).ok()?,
+                bytes_downloaded: u64::try_from(bytes_downloaded).ok()?,
+            })
+        })
+        .collect())
+}
+
+pub fn save_direct_http_part(
+    conn: &Connection,
+    download_key: &str,
+    part_index: usize,
+    url: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    start_byte: u64,
+    end_byte: u64,
+    bytes_downloaded: u64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO direct_http_parts
+             (download_key, part_index, url, etag, last_modified, start_byte,
+              end_byte, bytes_downloaded, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(download_key, part_index) DO UPDATE SET
+             url              = excluded.url,
+             etag             = excluded.etag,
+             last_modified    = excluded.last_modified,
+             start_byte       = excluded.start_byte,
+             end_byte         = excluded.end_byte,
+             bytes_downloaded = excluded.bytes_downloaded,
+             updated_at       = excluded.updated_at",
+        params![
+            download_key,
+            part_index as i64,
+            url,
+            etag,
+            last_modified,
+            start_byte as i64,
+            end_byte as i64,
+            bytes_downloaded as i64,
+            now_secs(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn clear_direct_http_parts(conn: &Connection, download_key: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM direct_http_parts WHERE download_key = ?1",
+        params![download_key],
+    )?;
+    Ok(())
+}
+
 pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<CachedFileInfo>> {
     conn.query_row(
         "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, cached_at, last_checked_at
@@ -712,6 +920,7 @@ mod tests {
             speed_limit_kib: 256,
             parallel_parts: 2,
             selected_children: Some(vec!["https://example.com/child".to_string()]),
+            expected_hash: None,
             retry_at: Some(999),
             captcha_type: Some("recaptcha2".to_string()),
             captcha_sitekey: Some("sitekey".to_string()),
