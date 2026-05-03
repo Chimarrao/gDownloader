@@ -398,6 +398,23 @@ const api = {
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
+  remoteAccess: {
+    info: (): Promise<{
+      enabled: boolean
+      running: boolean
+      lanIp: string
+      port: number
+      username: string
+      password: string
+      url: string
+      credentialUrl: string
+      qrCodeDataUrl?: string
+      error?: string
+    }> => ipcRenderer.invoke('remote:info'),
+    generateCredentials: (): Promise<NonNullable<AppSettingsSnapshot['remoteAccess']>> =>
+      ipcRenderer.invoke('remote:generateCredentials'),
+  },
+
   config: {
     testProxy: (): Promise<{ ip: string }> => ipcRenderer.invoke('config:test-proxy'),
   },

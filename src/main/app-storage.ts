@@ -19,6 +19,12 @@ export const defaultPublicSettings: PersistedSettings = {
   clipboardMonitorEnabled: false,
   accentColor: undefined,
   duplicateAction: 'ask',
+  remoteAccess: {
+    enabled: false,
+    username: 'gdownloader',
+    password: 'gd-1234',
+    port: 9786,
+  },
   visibleColumns: ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash'],
   lastFilters: { statuses: [], hosts: [], packages: [] },
 }

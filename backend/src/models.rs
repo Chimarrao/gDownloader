@@ -141,6 +141,53 @@ pub struct SecureSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoteAccessSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_remote_username")]
+    pub username: String,
+    #[serde(default = "default_remote_password")]
+    pub password: String,
+    #[serde(default = "default_remote_port")]
+    pub port: u16,
+}
+
+fn default_remote_username() -> String {
+    "gdownloader".to_string()
+}
+
+fn default_remote_password() -> String {
+    "gd-1234".to_string()
+}
+
+fn default_remote_port() -> u16 {
+    9786
+}
+
+impl Default for RemoteAccessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            username: default_remote_username(),
+            password: default_remote_password(),
+            port: default_remote_port(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadListFilters {
+    #[serde(default)]
+    pub statuses: Vec<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicSettings {
     pub theme: String,
     pub locale: String,
@@ -192,6 +239,12 @@ pub struct PublicSettings {
     pub password_list: Vec<String>,
     #[serde(default)]
     pub duplicate_action: String,
+    #[serde(default)]
+    pub remote_access: RemoteAccessSettings,
+    #[serde(default)]
+    pub visible_columns: Vec<String>,
+    #[serde(default)]
+    pub last_filters: DownloadListFilters,
 }
 
 impl Default for PublicSettings {
@@ -228,6 +281,21 @@ impl Default for PublicSettings {
             auto_extract: false,
             password_list: Vec::new(),
             duplicate_action: "ask".to_string(),
+            remote_access: RemoteAccessSettings::default(),
+            visible_columns: vec![
+                "status".to_string(),
+                "name".to_string(),
+                "size".to_string(),
+                "progress".to_string(),
+                "speed".to_string(),
+                "eta".to_string(),
+                "host".to_string(),
+                "package".to_string(),
+                "added".to_string(),
+                "completed".to_string(),
+                "hash".to_string(),
+            ],
+            last_filters: DownloadListFilters::default(),
         }
     }
 }

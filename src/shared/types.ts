@@ -156,6 +156,12 @@ export interface PersistedSettings {
   autoExtract?: boolean
   passwordList?: string[]
   duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
+  remoteAccess: {
+    enabled: boolean
+    username: string
+    password: string
+    port: number
+  }
   visibleColumns?: string[]
   lastFilters?: {
     statuses?: string[]

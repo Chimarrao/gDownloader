@@ -87,6 +87,21 @@ interface RendererApi {
     save: (s: AppSettingsSnapshot) => Promise<AppSettingsSnapshot>
     chooseDirectory: () => Promise<string>
   }
+  remoteAccess: {
+    info: () => Promise<{
+      enabled: boolean
+      running: boolean
+      lanIp: string
+      port: number
+      username: string
+      password: string
+      url: string
+      credentialUrl: string
+      qrCodeDataUrl?: string
+      error?: string
+    }>
+    generateCredentials: () => Promise<NonNullable<AppSettingsSnapshot['remoteAccess']>>
+  }
   modules: {
     list: () => Promise<ModuleSummary[]>
     detect: (url: string) => Promise<ModuleSummary | null>

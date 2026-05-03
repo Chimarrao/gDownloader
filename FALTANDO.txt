@@ -113,22 +113,6 @@ formato (mp4/webm/audio-only)."
 
 
 ==========================================================
-16. MyJDOWNLOADER LOCAL — CONTROLE REMOTO VIA WEB UI
-==========================================================
-jD tem app móvel + web em my.jdownloader.org. Pra superar: servir UI local
-acessível pelo celular dentro da rede.
-
-PROMPT CODEX:
-"Adicionar bind opcional do backend Rust em 0.0.0.0 (ao invés de só
-127.0.0.1) controlado por setting 'remoteAccess.enabled'. Quando ativo, exigir
-header Authorization: Bearer <token> gerado em remoteAccess.token (UUID v4
-gerado no primeiro enable). Servir build estático do Vue em /webui via
-tower-http ServeDir. Em AppSettings.vue mostrar QR code com URL
-http://<lan-ip>:<port>/webui?token=... pra escanear no celular. Documentar
-que é só pra rede local — sem TLS, não expor ao público."
-
-
-==========================================================
 21. TRASH BIN (UNDO DE REMOVER)
 ==========================================================
 Hoje deletar é definitivo. jD2 tem 'recently removed'.
@@ -620,7 +604,7 @@ Notas finais
 Prioridade sugerida pra evoluir como produto:
   Bloco crítico    : 7, 15, 32, 40            (paridade jD + streams + interceptação)
   Bloco premium    : 5, 9, 27, 31           (rate-limit, contas, torrent)
-  Bloco diferencial: 16, 22, 23, 26            (vira "melhor que jD")
+  Bloco diferencial: 22, 23, 26                (vira "melhor que jD")
   Bloco UX         : 33.* (em ondas conforme prioridade)
   Bloco quality    : resto                     (polish e extras)
 

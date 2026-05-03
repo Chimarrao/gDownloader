@@ -335,6 +335,99 @@
       </div>
     </div>
 
+    <!-- Remote access section -->
+    <div class="settings-section">
+      <h3 class="section-title">Acesso remoto local</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Web UI na rede local</span>
+          <span class="setting-desc">Permite controlar e configurar o app por outro aparelho no mesmo roteador</span>
+        </div>
+        <label class="toggle">
+          <input
+            v-model="settings.remoteAccess.enabled"
+            type="checkbox"
+            @change="save"
+          />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Usuário</span>
+          <span class="setting-desc">Login usado no celular ou em outro computador da rede</span>
+        </div>
+        <input
+          v-model="settings.remoteAccess.username"
+          class="setting-input setting-input-wide"
+          @change="save"
+        />
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Senha</span>
+          <span class="setting-desc">Senha simples gerada para o acesso local</span>
+        </div>
+        <div class="remote-inline">
+          <input
+            v-model="settings.remoteAccess.password"
+            class="setting-input"
+            type="text"
+            @change="save"
+          />
+          <button class="browse-btn" @click="generateRemoteCredentials">Gerar</button>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Porta local</span>
+          <span class="setting-desc">Endereço exposto apenas na rede local, sem TLS público</span>
+        </div>
+        <input
+          v-model.number="settings.remoteAccess.port"
+          class="setting-input"
+          type="number"
+          min="1024"
+          max="65535"
+          @change="save"
+        />
+      </div>
+
+      <div class="remote-access-card">
+        <div class="remote-access-info">
+          <span class="remote-status" :class="{ active: remoteInfo?.running, error: remoteInfo?.error }">
+            {{ remoteInfo?.running ? 'Online na rede local' : settings.remoteAccess.enabled ? 'Ativando...' : 'Desativado' }}
+          </span>
+          <a
+            v-if="remoteInfo?.url"
+            class="remote-url"
+            :href="remoteInfo.url"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {{ remoteInfo.url }}
+          </a>
+          <span v-if="remoteInfo?.error" class="remote-error">{{ remoteInfo.error }}</span>
+          <div class="remote-actions">
+            <button class="browse-btn" :disabled="!remoteInfo?.url" @click="copyRemoteUrl">Copiar link</button>
+            <button class="browse-btn" @click="refreshRemoteInfo">Atualizar</button>
+          </div>
+        </div>
+        <img
+          v-if="remoteInfo?.qrCodeDataUrl"
+          class="remote-qr"
+          :src="remoteInfo.qrCodeDataUrl"
+          alt="QR Code do acesso remoto local"
+        />
+      </div>
+    </div>
+
     <!-- ── Reconnect ─────────────────────────────────────── -->
     <div class="settings-section">
       <h3 class="section-title">{{ t('reconnectSection') }}</h3>
@@ -491,10 +584,17 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadCommand: '',
   postDownloadWebhookUrl: '',
   duplicateAction: 'ask',
+  remoteAccess: {
+    enabled: false,
+    username: 'gdownloader',
+    password: 'gd-1234',
+    port: 9786,
+  },
 })
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
+const remoteInfo = ref<Awaited<ReturnType<typeof window.api.remoteAccess.info>> | null>(null)
 
 function setSaveFeedback(message: string, error = false): void {
   saveFeedback.value = message
@@ -519,6 +619,7 @@ onMounted(async () => {
       setTheme('light')
     }
     applyUiPreferences(saved)
+    await refreshRemoteInfo()
   }
 })
 
@@ -526,6 +627,7 @@ async function save(): Promise<void> {
   try {
     const persisted = await window.api.settings.save({ ...settings })
     Object.assign(settings, persisted)
+    await refreshRemoteInfo()
     setSaveFeedback(t('settingsSaved'))
   } catch (error) {
     setSaveFeedback(
@@ -582,6 +684,27 @@ async function testConnection(): Promise<void> {
     )
   }
 }
+
+async function refreshRemoteInfo(): Promise<void> {
+  remoteInfo.value = await window.api.remoteAccess.info().catch(() => null)
+}
+
+async function generateRemoteCredentials(): Promise<void> {
+  const generated = await window.api.remoteAccess.generateCredentials()
+  settings.remoteAccess = {
+    ...generated,
+    enabled: settings.remoteAccess.enabled,
+    port: settings.remoteAccess.port || generated.port,
+  }
+  await save()
+}
+
+async function copyRemoteUrl(): Promise<void> {
+  const value = remoteInfo.value?.credentialUrl || remoteInfo.value?.url
+  if (!value) return
+  await window.api.clipboard.writeText(value)
+  setSaveFeedback('Link remoto copiado')
+}
 </script>
 
 <style scoped>
@@ -594,6 +717,77 @@ async function testConnection(): Promise<void> {
   width: 100%;
   min-height: 0;
   overflow-y: auto;
+}
+
+.remote-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-access-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--bg-card);
+}
+
+.remote-access-info {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remote-status {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remote-status.active {
+  background: rgba(34, 197, 94, 0.14);
+  color: #16a34a;
+}
+
+.remote-status.error {
+  background: rgba(239, 68, 68, 0.14);
+  color: #ef4444;
+}
+
+.remote-url {
+  color: var(--accent-color);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.remote-error {
+  color: #ef4444;
+  font-size: 12px;
+}
+
+.remote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.remote-qr {
+  width: 132px;
+  height: 132px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: #fff;
+  padding: 6px;
 }
 
 .settings-header {

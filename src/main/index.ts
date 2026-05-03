@@ -12,6 +12,7 @@ import { HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
 import { createCaptchaWindowService } from './captcha-window-service'
 import { logMain } from './debug-log'
 import { createKatfileService } from './katfile-service'
+import { createRemoteAccessServer, generateRemoteAccessCredentials } from './remote-access-server'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
 
 const legacySettingsPaths = [
@@ -107,6 +108,17 @@ const storage = createAppStorage({
   fetchBackendConfig,
   postBackend,
   deleteBackend,
+})
+
+const remoteAccessServer = createRemoteAccessServer({
+  getRustPort: () => rustPort,
+  getSettings: () => storage.getPublicSettings(),
+  persistSettings: async (settings) => {
+    await storage.persistPublicSettings(settings)
+    await syncBackendConfig(settings.maxConcurrentDownloads)
+    configureClipboardMonitor(settings.clipboardMonitorEnabled)
+    await remoteAccessServer.configure(settings)
+  },
 })
 
 async function loadSecureSettings(): Promise<void> {
@@ -262,6 +274,7 @@ const backendRuntime = createBackendRuntime({
     await loadSecureSettings()
     await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
     configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
+    await remoteAccessServer.configure(storage.getPublicSettings())
   },
 })
 
@@ -817,7 +830,22 @@ app.whenReady().then(async () => {
     await storage.persistSecureSettings()
     await syncBackendConfig(nextDisk.maxConcurrentDownloads)
     configureClipboardMonitor(nextDisk.clipboardMonitorEnabled)
+    await remoteAccessServer.configure(nextDisk)
     return storage.currentSettingsSnapshot()
+  })
+
+  ipcMain.handle('remote:info', async () => {
+    await loadPublicSettings().catch(() => null)
+    return remoteAccessServer.info(storage.getPublicSettings())
+  })
+
+  ipcMain.handle('remote:generateCredentials', () => {
+    const current = storage.getPublicSettings().remoteAccess
+    return {
+      ...generateRemoteAccessCredentials(),
+      enabled: Boolean(current?.enabled),
+      port: current?.port ?? 9786,
+    }
   })
 
   ipcMain.handle('config:test-proxy', async () => {
@@ -954,6 +982,7 @@ app.whenReady().then(async () => {
     const settings = currentSettingsSnapshot()
     await syncBackendConfig(settings.maxConcurrentDownloads)
     configureClipboardMonitor(settings.clipboardMonitorEnabled)
+    await remoteAccessServer.configure(settings)
   } catch (err) {
     logMain('electron', 'Backend não pôde ser iniciado', err)
   }
@@ -971,6 +1000,7 @@ app.whenReady().then(async () => {
           await loadSecureSettings()
           await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
           configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
+          await remoteAccessServer.configure(storage.getPublicSettings())
         } catch (error) {
           logMain('electron', 'Falha ao reativar backend Rust', error)
         }
@@ -989,6 +1019,7 @@ app.on('window-all-closed', () => {
     backendRuntime.markQuitting()
   }
   backendRuntime.stop()
+  void remoteAccessServer.stop()
   rustPort = null
   if (process.platform !== 'darwin') app.quit()
 })
@@ -999,5 +1030,6 @@ app.on('before-quit', () => {
   tray = null
   backendRuntime.markQuitting()
   backendRuntime.stop()
+  void remoteAccessServer.stop()
   rustPort = null
 })
