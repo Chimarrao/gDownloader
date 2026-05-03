@@ -533,12 +533,6 @@ PROMPT CODEX:
 Status, Nome, Tamanho, Progresso, Speed, ETA, Host, Pacote, Adicionado,
 Concluído, Hash. Salvar em settings.visibleColumns. Drag pra reordenar."
 
-33.18 — Speed gauge / odômetro animado no topbar
-PROMPT CODEX:
-"Componente SpeedWidget.vue (já existe) ganha modo gauge: arco SVG
-indicando speed atual contra speed limit (ou max histórico). Hover mostra
-breakdown por host. Click expande pra mini-gráfico inline."
-
 33.19 — Confirmações inteligentes (não spammar)
 PROMPT CODEX:
 "Wrapper useConfirm composable. Cada confirm tem checkbox 'não perguntar

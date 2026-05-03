@@ -13,6 +13,7 @@
       <SpeedWidget
         :speed-history="speedHistory"
         :current-speed="currentSpeed"
+        :per-host-speed="perHostSpeed"
       />
     </header>
 
@@ -102,6 +103,7 @@ const downloadCount = ref(0)
 const skeletonCount = ref(0)
 const speedHistory = ref<number[]>(new Array(60).fill(0))
 const currentSpeed = ref(0)
+const perHostSpeed = ref<Record<string, number>>({})
 const clipboardIncomingUrl = ref('')
 let speedTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
@@ -133,6 +135,7 @@ onUnmounted(() => {
   appMounted = false
   if (speedTicker) clearInterval(speedTicker)
   disposeClipboardDetected?.()
+  window.removeEventListener('stats-tick', onStatsTick as EventListener)
   disposeTheme()
 })
 const { t } = useI18n()
@@ -151,6 +154,7 @@ onMounted(async () => {
     clipboardIncomingUrl.value = payload.url
     activeTab.value = 'grabber'
   })
+  window.addEventListener('stats-tick', onStatsTick as EventListener)
 
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
@@ -163,6 +167,12 @@ onMounted(async () => {
   applyUiPreferences(settings)
 
 })
+
+function onStatsTick(event: CustomEvent): void {
+  const detail = event.detail as { total_speed_bps?: number; per_host_speed?: Record<string, number> }
+  if (detail.per_host_speed) perHostSpeed.value = detail.per_host_speed
+  if (typeof detail.total_speed_bps === 'number') currentSpeed.value = detail.total_speed_bps
+}
 
 function onAddingUrls(count: number): void {
   skeletonCount.value = count
