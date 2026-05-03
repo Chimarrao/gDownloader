@@ -20,6 +20,7 @@ export const defaultPublicSettings: PersistedSettings = {
   accentColor: undefined,
   duplicateAction: 'ask',
   visibleColumns: ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash'],
+  lastFilters: { statuses: [], hosts: [], packages: [] },
 }
 
 export interface LegacyRootSettings extends AppSettingsSnapshot {

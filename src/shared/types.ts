@@ -157,6 +157,11 @@ export interface PersistedSettings {
   passwordList?: string[]
   duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
   visibleColumns?: string[]
+  lastFilters?: {
+    statuses?: string[]
+    hosts?: string[]
+    packages?: string[]
+  }
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

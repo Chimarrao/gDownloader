@@ -520,13 +520,6 @@ progresso global, speed, contador X/Y. Atalhos no widget pra pausar tudo.
 Implementação: nova rota Vue /widget e segunda window em main/index.ts
 carregando essa rota."
 
-33.16 — Filtros e ordenação na DownloadList
-PROMPT CODEX:
-"Topbar da DownloadList: dropdowns 'Status' (multi: Pending/Downloading/
-Paused/Completed/Error/Captcha/RateLimited), 'Host' (multi), 'Pacote'
-(multi). Ordenação clicável por coluna: data, nome, tamanho, progresso,
-speed, ETA. Estado persistido em settings.lastFilters."
-
 33.19 — Confirmações inteligentes (não spammar)
 PROMPT CODEX:
 "Wrapper useConfirm composable. Cada confirm tem checkbox 'não perguntar

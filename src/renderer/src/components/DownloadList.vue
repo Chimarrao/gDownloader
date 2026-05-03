@@ -109,6 +109,33 @@
             </div>
           </div>
           <label class="toolbar-sort">
+            <span>Status</span>
+            <select v-model="filterStatuses" class="toolbar-select" multiple size="1" @change="persistFilters">
+              <option v-for="status in statusFilterOptions" :key="status" :value="status">{{ status }}</option>
+            </select>
+          </label>
+          <label class="toolbar-sort">
+            <span>Host</span>
+            <select v-model="filterHosts" class="toolbar-select" multiple size="1" @change="persistFilters">
+              <option v-for="host in hostFilterOptions" :key="host" :value="host">{{ host }}</option>
+            </select>
+          </label>
+          <label class="toolbar-sort">
+            <span>Pacote</span>
+            <select v-model="filterPackages" class="toolbar-select" multiple size="1" @change="persistFilters">
+              <option value="">Sem pacote</option>
+              <option v-for="pkg in packages" :key="pkg.id" :value="pkg.id">{{ pkg.name }}</option>
+            </select>
+          </label>
+          <button
+            v-if="hasActiveListFilters"
+            class="toolbar-btn"
+            title="Limpar filtros"
+            @click="clearListFilters"
+          >
+            Limpar filtros
+          </button>
+          <label class="toolbar-sort">
             <span>Ordenar</span>
             <select v-model="sortMode" class="toolbar-select">
               <option
@@ -601,6 +628,9 @@ const columnOrder = ref<string[]>([...defaultColumns])
 const visibleColumns = ref<string[]>([...defaultColumns])
 const showColumnsMenu = ref(false)
 const draggedColumn = ref<string | null>(null)
+const filterStatuses = ref<string[]>([])
+const filterHosts = ref<string[]>([])
+const filterPackages = ref<string[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const activeCaptchaId = ref<string | null>(null)
@@ -628,12 +658,33 @@ const flashingIds = ref<Set<string>>(new Set())
 
 // ── Computed ───────────────────────────────────────────────
 const packageFilteredItems = computed(() => {
-  if (selectedPackageId.value === 'all') return items.value
+  let base = items.value
   if (selectedPackageId.value === 'unassigned') {
-    return items.value.filter((item) => !item.packageId)
+    base = base.filter((item) => !item.packageId)
+  } else if (selectedPackageId.value !== 'all') {
+    base = base.filter((item) => item.packageId === selectedPackageId.value)
   }
-  return items.value.filter((item) => item.packageId === selectedPackageId.value)
+  if (filterStatuses.value.length > 0) {
+    base = base.filter((item) => filterStatuses.value.includes(item.status))
+  }
+  if (filterHosts.value.length > 0) {
+    base = base.filter((item) => filterHosts.value.includes(moduleLabel(item.moduleId)))
+  }
+  if (filterPackages.value.length > 0) {
+    base = base.filter((item) => filterPackages.value.includes(item.packageId ?? ''))
+  }
+  return base
 })
+
+const statusFilterOptions = ['pending', 'downloading', 'paused', 'complete', 'error', 'waiting_captcha', 'rate_limited']
+const hostFilterOptions = computed(() => {
+  const hosts = new Set<string>()
+  for (const item of items.value) hosts.add(moduleLabel(item.moduleId))
+  return [...hosts].sort((a, b) => a.localeCompare(b))
+})
+const hasActiveListFilters = computed(() =>
+  filterStatuses.value.length > 0 || filterHosts.value.length > 0 || filterPackages.value.length > 0
+)
 
 const orderedItems = computed(() =>
   [...packageFilteredItems.value].sort((left, right) => {
@@ -742,6 +793,26 @@ function formatDateTime(timestamp: number): string {
   })
 }
 
+async function persistFilters(): Promise<void> {
+  const settings = await window.api.settings.load().catch(() => null)
+  if (!settings) return
+  await window.api.settings.save({
+    ...settings,
+    lastFilters: {
+      statuses: filterStatuses.value,
+      hosts: filterHosts.value,
+      packages: filterPackages.value,
+    },
+  }).catch(() => null)
+}
+
+function clearListFilters(): void {
+  filterStatuses.value = []
+  filterHosts.value = []
+  filterPackages.value = []
+  void persistFilters()
+}
+
 const virtualizationEnabled = computed(() =>
   orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
 )
@@ -807,6 +878,9 @@ onMounted(async () => {
       ...defaultColumns.filter((column) => !settings.visibleColumns?.includes(column)),
     ]
   }
+  filterStatuses.value = settings?.lastFilters?.statuses ?? []
+  filterHosts.value = settings?.lastFilters?.hosts ?? []
+  filterPackages.value = settings?.lastFilters?.packages ?? []
 
   // Load existing downloads from backend
   await hydrate()
