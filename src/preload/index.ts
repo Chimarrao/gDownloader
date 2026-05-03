@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { AppSettingsSnapshot, CreateDownloadPackagePayload } from '../shared/types'
+import type {
+  AppSettingsSnapshot,
+  CreateDownloadPackagePayload,
+  DuplicateDownload,
+  DuplicateGroup,
+} from '../shared/types'
 import { splitSseMessages } from './mirror-sse'
 
 // Porta do backend Rust (obtida via IPC e cacheada)
@@ -71,6 +76,7 @@ type DownloadChannel =
   | 'download:complete'
   | 'download:error'
   | 'download:cancelled'
+  | 'download:duplicate'
 
 type ClipboardLinkPayload = {
   url: string
@@ -85,6 +91,7 @@ const downloadListeners: Record<DownloadChannel, Set<(data: unknown) => void>> =
   'download:complete': new Set(),
   'download:error': new Set(),
   'download:cancelled': new Set(),
+  'download:duplicate': new Set(),
 }
 
 let downloadsSocket: WebSocket | null = null
@@ -127,6 +134,12 @@ function routeDownloadEvent(event: Record<string, unknown>): void {
 
   if (event.type === 'error') {
     dispatchDownloadEvent('download:error', event)
+    return
+  }
+
+  if (event.type === 'duplicate_detected') {
+    dispatchDownloadEvent('download:duplicate', event)
+    window.dispatchEvent(new CustomEvent('duplicate-detected', { detail: event }))
     return
   }
 
@@ -261,7 +274,8 @@ const api = {
       _size: number,
       destDir: string,
       selectedChildren?: string[],
-      expectedHash?: { algorithm: string; value: string }
+      expectedHash?: { algorithm: string; value: string },
+      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download'
     ) => {
       const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
@@ -275,10 +289,31 @@ const api = {
           parallel_parts: settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
           expected_hash: expectedHash,
+          duplicate_action: duplicateActionOverride ?? settings?.duplicateAction ?? 'ask',
         }),
       })
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({ error: 'Erro desconhecido' }))
+        if (resp.status === 409 && body.duplicate) {
+          const duplicate = body.duplicate as DuplicateDownload
+          window.dispatchEvent(new CustomEvent('duplicate-detected', { detail: duplicate }))
+          const choice = window.prompt(
+            `Arquivo já baixado em:\\n${duplicate.path || duplicate.filename}\\n\\n1 = baixar mesmo assim\\n2 = abrir existente\\n3 = salvar com sufixo _2`,
+            '3',
+          )
+          if (choice === '1') {
+            return api.downloads.add(url, _moduleId, _title, _size, destDir, selectedChildren, expectedHash, 'always_download')
+          }
+          if (choice === '2') {
+            if (duplicate.path) {
+              await ipcRenderer.invoke('shell:openPath', duplicate.path).catch(() => null)
+            }
+            throw new Error('Download ignorado: arquivo existente aberto')
+          }
+          if (choice === '3' || choice === null) {
+            return api.downloads.add(url, _moduleId, _title, _size, destDir, selectedChildren, expectedHash, 'rename')
+          }
+        }
         throw new Error(body.error ?? 'Erro ao adicionar download')
       }
       const d = await resp.json()
@@ -336,6 +371,12 @@ const api = {
 
     togglePin: async (id: string) => {
       await fetchBackend(`/downloads/${id}/pin`, { method: 'POST' })
+    },
+
+    duplicates: async (): Promise<DuplicateGroup[]> => {
+      const resp = await fetchBackend('/downloads/duplicates')
+      if (!resp.ok) return []
+      return resp.json()
     },
 
     // Subscreve a eventos de progresso via WebSocket

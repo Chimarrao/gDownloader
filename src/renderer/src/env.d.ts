@@ -4,6 +4,7 @@ import type {
   AppSettingsSnapshot,
   CachedFileInfoSnapshot,
   CreateDownloadPackagePayload,
+  DuplicateGroup,
   DownloadPackage,
   DownloadHistoryItem,
   DownloadItem,
@@ -107,7 +108,8 @@ interface RendererApi {
       size: number,
       destDir: string,
       selectedChildren?: string[],
-      expectedHash?: { algorithm: string; value: string }
+      expectedHash?: { algorithm: string; value: string },
+      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download'
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
     pause: (id: string) => Promise<void>
@@ -119,6 +121,7 @@ interface RendererApi {
     removeWithFiles: (id: string) => Promise<void>
     clearFinished: () => Promise<void>
     togglePin: (id: string) => Promise<void>
+    duplicates: () => Promise<DuplicateGroup[]>
     list: () => Promise<DownloadItem[]>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }

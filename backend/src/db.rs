@@ -2,8 +2,8 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{
-    CachedFileInfo, Download, DownloadStatus, FileChildInfo, HistoryItem, LegacyConfigMigration,
-    PublicSettings, SecureSettings,
+    CachedFileInfo, Download, DownloadStatus, DuplicateDownload, DuplicateGroup, FileChildInfo,
+    HistoryItem, LegacyConfigMigration, PublicSettings, SecureSettings,
 };
 
 struct Migration {
@@ -57,6 +57,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "create_packages_table",
         apply: migration_create_packages_table,
+    },
+    Migration {
+        version: 10,
+        name: "add_history_hash_columns",
+        apply: migration_add_history_hash_columns,
     },
 ];
 
@@ -358,6 +363,20 @@ fn migration_create_packages_table(conn: &Connection) -> Result<()> {
     )?;
     add_column_if_missing(conn, "downloads", "package_id",
         "ALTER TABLE downloads ADD COLUMN package_id TEXT")?;
+    Ok(())
+}
+
+fn migration_add_history_hash_columns(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "download_history",
+        "sha256_hash",
+        "ALTER TABLE download_history ADD COLUMN sha256_hash TEXT",
+    )?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_download_history_sha256
+             ON download_history(sha256_hash);",
+    )?;
     Ok(())
 }
 
@@ -664,7 +683,7 @@ pub fn save_secure_settings(conn: &Connection, settings: &SecureSettings) -> Res
 
 pub fn load_history(conn: &Connection) -> Result<Vec<HistoryItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, url, title, thumbnail, date, format_id, output_path
+        "SELECT id, url, title, thumbnail, date, format_id, output_path, sha256_hash
          FROM download_history
          ORDER BY date DESC, updated_at DESC",
     )?;
@@ -678,6 +697,7 @@ pub fn load_history(conn: &Connection) -> Result<Vec<HistoryItem>> {
                 date: row.get(4)?,
                 format_id: row.get(5)?,
                 output_path: row.get(6)?,
+                sha256_hash: row.get(7)?,
             })
         })?
         .filter_map(|row| row.ok())
@@ -692,8 +712,8 @@ pub fn replace_history(conn: &Connection, items: &[HistoryItem]) -> Result<()> {
     {
         let mut stmt = tx.prepare(
             "INSERT INTO download_history
-                 (id, url, title, thumbnail, date, format_id, output_path, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, url, title, thumbnail, date, format_id, output_path, sha256_hash, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
 
         for item in items {
@@ -705,6 +725,7 @@ pub fn replace_history(conn: &Connection, items: &[HistoryItem]) -> Result<()> {
                 item.date,
                 item.format_id,
                 item.output_path,
+                item.sha256_hash,
                 now_secs(),
             ])?;
         }
@@ -717,6 +738,159 @@ pub fn replace_history(conn: &Connection, items: &[HistoryItem]) -> Result<()> {
 pub fn clear_history(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM download_history", [])?;
     Ok(())
+}
+
+pub fn find_completed_duplicate_by_identity(
+    conn: &Connection,
+    identity_key: &str,
+) -> Result<Option<DuplicateDownload>> {
+    Ok(conn.query_row(
+        "SELECT id, filename, url, provider, dest_path, status, completed_at, identity_key, expected_hash_json
+         FROM downloads
+         WHERE identity_key = ?1 AND status = 'complete'
+         ORDER BY completed_at DESC, created_at DESC
+         LIMIT 1",
+        params![identity_key],
+        duplicate_download_from_row,
+    )
+    .optional()?)
+}
+
+pub fn find_history_duplicate_by_sha256(
+    conn: &Connection,
+    sha256_hash: &str,
+) -> Result<Option<DuplicateDownload>> {
+    Ok(conn.query_row(
+        "SELECT id, title, url, output_path, date, sha256_hash
+         FROM download_history
+         WHERE sha256_hash = ?1 AND sha256_hash IS NOT NULL AND sha256_hash != ''
+         ORDER BY date DESC, updated_at DESC
+         LIMIT 1",
+        params![sha256_hash],
+        |row| {
+            Ok(DuplicateDownload {
+                id: row.get(0)?,
+                filename: row.get(1)?,
+                url: row.get(2)?,
+                provider: "history".to_string(),
+                path: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                status: DownloadStatus::Complete,
+                completed_at: None,
+                identity_key: None,
+                sha256_hash: row.get(5)?,
+            })
+        },
+    )
+    .optional()?)
+}
+
+pub fn load_duplicate_groups(conn: &Connection) -> Result<Vec<DuplicateGroup>> {
+    let mut groups = Vec::new();
+
+    let mut stmt = conn.prepare(
+        "SELECT identity_key
+         FROM downloads
+         WHERE identity_key != ''
+         GROUP BY identity_key
+         HAVING COUNT(*) > 1",
+    )?;
+    let keys = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|row| row.ok())
+        .collect::<Vec<_>>();
+
+    for key in keys {
+        let mut items_stmt = conn.prepare(
+            "SELECT id, filename, url, provider, dest_path, status, completed_at, identity_key, expected_hash_json
+             FROM downloads
+             WHERE identity_key = ?1
+             ORDER BY completed_at DESC, created_at DESC",
+        )?;
+        let items = items_stmt
+            .query_map(params![key], duplicate_download_from_row)?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        if items.len() > 1 {
+            groups.push(DuplicateGroup {
+                kind: "identity_key".to_string(),
+                key,
+                items,
+            });
+        }
+    }
+
+    let mut history_stmt = conn.prepare(
+        "SELECT sha256_hash
+         FROM download_history
+         WHERE sha256_hash IS NOT NULL AND sha256_hash != ''
+         GROUP BY sha256_hash
+         HAVING COUNT(*) > 1",
+    )?;
+    let hash_keys = history_stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|row| row.ok())
+        .collect::<Vec<_>>();
+
+    for key in hash_keys {
+        let mut items_stmt = conn.prepare(
+            "SELECT id, title, url, output_path, date, sha256_hash
+             FROM download_history
+             WHERE sha256_hash = ?1
+             ORDER BY date DESC, updated_at DESC",
+        )?;
+        let items = items_stmt
+            .query_map(params![key], |row| {
+                Ok(DuplicateDownload {
+                    id: row.get(0)?,
+                    filename: row.get(1)?,
+                    url: row.get(2)?,
+                    provider: "history".to_string(),
+                    path: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    status: DownloadStatus::Complete,
+                    completed_at: None,
+                    identity_key: None,
+                    sha256_hash: row.get(5)?,
+                })
+            })?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        if items.len() > 1 {
+            groups.push(DuplicateGroup {
+                kind: "sha256".to_string(),
+                key,
+                items,
+            });
+        }
+    }
+
+    Ok(groups)
+}
+
+fn duplicate_download_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DuplicateDownload> {
+    let expected_hash_json: Option<String> = row.get(8)?;
+    let sha256_hash = expected_hash_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Option<crate::models::ExpectedHash>>(raw).ok())
+        .flatten()
+        .and_then(|hash| {
+            if matches!(hash.algorithm, crate::models::HashAlgorithm::Sha256) {
+                Some(hash.value)
+            } else {
+                None
+            }
+        });
+
+    Ok(DuplicateDownload {
+        id: row.get(0)?,
+        filename: row.get(1)?,
+        url: row.get(2)?,
+        provider: row.get(3)?,
+        path: row.get(4)?,
+        status: parse_status(&row.get::<_, String>(5)?),
+        completed_at: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+        identity_key: row.get(7)?,
+        sha256_hash,
+    })
 }
 
 #[derive(Debug, Clone)]

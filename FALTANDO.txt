@@ -615,27 +615,6 @@ navegador, lista de domínios importados com validade, botão 'Limpar'."
 
 
 ==========================================================
-42. DEDUPLICAÇÃO E GERENCIAMENTO DE VERSÕES
-==========================================================
-Sem deduplicação, o usuário pode baixar o mesmo arquivo várias vezes sem
-perceber, desperdiçando banda e disco.
-
-PROMPT CODEX:
-"Ao adicionar download (add_download), antes de criar o registro:
-  1. Verificar identity_key (já existe) na tabela downloads — se já existe
-     status Complete com mesmo identity_key, perguntar via WS event
-     'duplicate_detected' { id, existing_id, existing_path }
-  2. Frontend: modal 'Arquivo já baixado em <path>. Baixar mesmo assim /
-     Abrir arquivo existente / Salvar com sufixo _2'
-  3. Verificar por hash SHA256 no histórico (tabela download_history) para
-     detectar duplicatas mesmo com nomes diferentes
-  4. View 'Duplicatas' no histórico filtrando itens com mesmo hash
-  5. Endpoint GET /downloads/duplicates retorna grupos de downloads com
-     mesmo identity_key ou hash
-Setting duplicateAction (ask | skip | rename | always_download)."
-
-
-==========================================================
 43. INTEGRAÇÃO COM ARIA2C (motor externo para FTP/SFTP/MetaLink)
 ==========================================================
 aria2c suporta FTP, SFTP, BitTorrent nativo e MetaLink — protocolos que o

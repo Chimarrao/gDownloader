@@ -19,6 +19,15 @@
         <button
           v-if="history.length > 0"
           class="clear-btn"
+          :class="{ active: duplicatesOnly }"
+          @click="duplicatesOnly = !duplicatesOnly"
+        >
+          <i class="pi pi-clone"></i>
+          Duplicatas
+        </button>
+        <button
+          v-if="history.length > 0"
+          class="clear-btn"
           @click="handleClear"
         >
           <i class="pi pi-trash"></i>
@@ -130,11 +139,24 @@ const emit = defineEmits<{
 
 const history = ref<DownloadHistoryItem[]>([])
 const search = ref('')
+const duplicatesOnly = ref(false)
+
+const duplicateHashes = computed(() => {
+  const counts = new Map<string, number>()
+  for (const item of history.value) {
+    if (!item.sha256Hash) continue
+    counts.set(item.sha256Hash, (counts.get(item.sha256Hash) ?? 0) + 1)
+  }
+  return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([hash]) => hash))
+})
 
 const filtered = computed(() => {
-  if (!search.value.trim()) return history.value
+  const base = duplicatesOnly.value
+    ? history.value.filter((item) => item.sha256Hash && duplicateHashes.value.has(item.sha256Hash))
+    : history.value
+  if (!search.value.trim()) return base
   const q = search.value.toLowerCase()
-  return history.value.filter(
+  return base.filter(
     (h) => h.title.toLowerCase().includes(q) || h.url.toLowerCase().includes(q)
   )
 })
@@ -275,6 +297,12 @@ defineExpose({ addToHistory })
   background: rgba(239, 68, 68, 0.18);
   border-color: rgba(239, 68, 68, 0.6);
   color: #ef4444;
+}
+
+.clear-btn.active {
+  border-color: color-mix(in srgb, var(--accent-color) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  color: var(--accent-color);
 }
 
 /* ── Empty state ────────────────────────────────────────────── */

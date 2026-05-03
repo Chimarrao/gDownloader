@@ -4,7 +4,7 @@ use axum::{
     Json,
 };
 use std::env;
-use std::path::Path as FsPath;
+use std::path::{Path as FsPath, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::{
     hash_verify,
     models::{
-        AddDownloadRequest, ApiError, Download, DownloadStatus, ExpectedHash, FileChildInfo,
-        HashAlgorithm, WsEvent,
+        AddDownloadRequest, ApiError, Download, DownloadStatus, DuplicateDownload, DuplicateGroup,
+        ExpectedHash, FileChildInfo, HashAlgorithm, WsEvent,
     },
     providers,
     ws::AppState,
@@ -87,6 +87,55 @@ fn expand_home(path: &str) -> String {
     }
 
     path.to_string()
+}
+
+fn suffix_filename(filename: &str, suffix: &str) -> String {
+    let path = FsPath::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(filename);
+    let ext = path.extension().and_then(|value| value.to_str());
+    match ext {
+        Some(ext) if !ext.is_empty() => format!("{stem}{suffix}.{ext}"),
+        _ => format!("{stem}{suffix}"),
+    }
+}
+
+fn unique_destination(dest_dir: &str, filename: &str) -> (String, String) {
+    let mut candidate_name = filename.to_string();
+    let mut candidate_path = PathBuf::from(dest_dir);
+    candidate_path.push(&candidate_name);
+
+    let mut index = 2;
+    while candidate_path.exists() {
+        candidate_name = suffix_filename(filename, &format!("_{index}"));
+        candidate_path = PathBuf::from(dest_dir);
+        candidate_path.push(&candidate_name);
+        index += 1;
+    }
+
+    (candidate_name, candidate_path.to_string_lossy().to_string())
+}
+
+fn duplicate_sha256(expected_hash: &Option<ExpectedHash>) -> Option<String> {
+    expected_hash.as_ref().and_then(|hash| {
+        if matches!(hash.algorithm, HashAlgorithm::Sha256) {
+            Some(hash.value.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn duplicate_http_error(duplicate: DuplicateDownload) -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::CONFLICT,
+        Json(ApiError::duplicate(
+            "Arquivo já baixado anteriormente",
+            duplicate,
+        )),
+    )
 }
 
 // Adiciona um novo download à fila e inicia o processo em background
@@ -197,24 +246,27 @@ pub async fn add_download_internal(
         )
     })?;
 
-    // Monta o caminho completo do arquivo de destino
-    let dest_path = format!(
-        "{}/{}",
-        dest_dir.trim_end_matches('/'),
-        file_info.filename
-    );
     let identity_key = download_identity_key(
         provider.name(),
         &req.url,
         file_info.is_folder,
         &selected_children,
     );
+    let expected_hash = req
+        .expected_hash
+        .clone()
+        .or_else(|| expected_hash_from_url_fragment(&req.url));
+    let duplicate_action = req.duplicate_action.as_deref().unwrap_or("ask");
+    let mut dest_path = format!(
+        "{}/{}",
+        dest_dir.trim_end_matches('/'),
+        file_info.filename
+    );
 
     {
         let map = state.downloads.lock().await;
         if let Some(existing) = map.values().find(|download| {
-            download.dest_path == dest_path
-                && download.identity_key == identity_key
+            download.dest_path == dest_path && download.identity_key == identity_key
         }) {
             return Ok(existing.clone());
         }
@@ -223,16 +275,58 @@ pub async fn add_download_internal(
     // Gera um ID único para este download (como crypto.randomUUID() no JS)
     let id = Uuid::new_v4().to_string();
 
+    let mut duplicate = {
+        let db_duplicate = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| crate::db::find_completed_duplicate_by_identity(&db, &identity_key).ok())
+            .flatten();
+        if db_duplicate.is_some() {
+            db_duplicate
+        } else {
+            duplicate_sha256(&expected_hash)
+                .and_then(|hash| {
+                    state
+                        .db
+                        .lock()
+                        .ok()
+                        .and_then(|db| crate::db::find_history_duplicate_by_sha256(&db, &hash).ok())
+                        .flatten()
+                })
+        }
+    };
+
+    if let Some(existing) = duplicate.take() {
+        state.broadcast(WsEvent::DuplicateDetected {
+            id: id.clone(),
+            existing_id: existing.id.clone(),
+            existing_path: existing.path.clone(),
+            filename: existing.filename.clone(),
+        });
+
+        match duplicate_action {
+            "skip" => {
+                if let Some(existing_download) = state.downloads.lock().await.get(&existing.id).cloned() {
+                    return Ok(existing_download);
+                }
+                return Err(duplicate_http_error(existing));
+            }
+            "rename" => {
+                let (renamed_filename, renamed_path) = unique_destination(&dest_dir, &file_info.filename);
+                file_info.filename = renamed_filename;
+                dest_path = renamed_path;
+            }
+            "always_download" => {}
+            _ => return Err(duplicate_http_error(existing)),
+        }
+    }
+
     // Timestamp Unix atual em segundos
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-
-    let expected_hash = req
-        .expected_hash
-        .clone()
-        .or_else(|| expected_hash_from_url_fragment(&req.url));
 
     let download = Download {
         id: id.clone(),
@@ -316,6 +410,24 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<Vec<Download>
             .then_with(|| b.created_at.cmp(&a.created_at))
     });
     Json(list)
+}
+
+pub async fn list_duplicate_downloads(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DuplicateGroup>>, (StatusCode, Json<ApiError>)> {
+    let db = state.db.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("Falha ao abrir o banco local")),
+        )
+    })?;
+    let groups = crate::db::load_duplicate_groups(&db).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Falha ao buscar duplicatas: {error}"))),
+        )
+    })?;
+    Ok(Json(groups))
 }
 
 // Cancela e remove um download da fila

@@ -75,6 +75,19 @@
 
       <div class="setting-row">
         <div class="setting-info">
+          <span class="setting-label">Duplicatas</span>
+          <span class="setting-desc">Ação padrão quando o arquivo já existe na fila ou no histórico</span>
+        </div>
+        <select v-model="settings.duplicateAction" class="setting-select" @change="save">
+          <option value="ask">Perguntar</option>
+          <option value="skip">Ignorar existente</option>
+          <option value="rename">Salvar com sufixo _2</option>
+          <option value="always_download">Baixar mesmo assim</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
           <span class="setting-label">{{ t('language') }}</span>
           <span class="setting-desc">{{ t('languageDesc') }}</span>
         </div>
@@ -477,6 +490,7 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadActionTrigger: 'queue_empty',
   postDownloadCommand: '',
   postDownloadWebhookUrl: '',
+  duplicateAction: 'ask',
 })
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')

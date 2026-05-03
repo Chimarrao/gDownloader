@@ -155,6 +155,7 @@ export interface PersistedSettings {
   postDownloadWebhookUrl?: string
   autoExtract?: boolean
   passwordList?: string[]
+  duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {
@@ -169,6 +170,25 @@ export interface DownloadHistoryItem {
   date: string
   formatId: string
   outputPath?: string
+  sha256Hash?: string
+}
+
+export interface DuplicateDownload {
+  id: string
+  filename: string
+  url: string
+  provider: string
+  path: string
+  status: DownloadStatus
+  completedAt?: number
+  identityKey?: string
+  sha256Hash?: string
+}
+
+export interface DuplicateGroup {
+  kind: string
+  key: string
+  items: DuplicateDownload[]
 }
 
 export interface CachedFileInfoSnapshot extends FileInfo {

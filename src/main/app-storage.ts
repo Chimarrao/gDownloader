@@ -18,6 +18,7 @@ export const defaultPublicSettings: PersistedSettings = {
   nativeNotification: true,
   clipboardMonitorEnabled: false,
   accentColor: undefined,
+  duplicateAction: 'ask',
 }
 
 export interface LegacyRootSettings extends AppSettingsSnapshot {
@@ -51,6 +52,7 @@ export interface PersistedHistoryItem {
   date: string
   formatId: string
   outputPath?: string
+  sha256Hash?: string
 }
 
 interface LegacyMigrationRecord {

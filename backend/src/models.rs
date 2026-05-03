@@ -190,6 +190,8 @@ pub struct PublicSettings {
     pub auto_extract: bool,
     #[serde(default)]
     pub password_list: Vec<String>,
+    #[serde(default)]
+    pub duplicate_action: String,
 }
 
 impl Default for PublicSettings {
@@ -225,6 +227,7 @@ impl Default for PublicSettings {
             post_download_webhook_url: String::new(),
             auto_extract: false,
             password_list: Vec::new(),
+            duplicate_action: "ask".to_string(),
         }
     }
 }
@@ -261,6 +264,29 @@ pub struct HistoryItem {
     pub date: String,
     pub format_id: String,
     pub output_path: Option<String>,
+    pub sha256_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateDownload {
+    pub id: String,
+    pub filename: String,
+    pub url: String,
+    pub provider: String,
+    pub path: String,
+    pub status: DownloadStatus,
+    pub completed_at: Option<u64>,
+    pub identity_key: Option<String>,
+    pub sha256_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroup {
+    pub kind: String,
+    pub key: String,
+    pub items: Vec<DuplicateDownload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -348,6 +374,12 @@ pub enum WsEvent {
         total_speed_bps: u64,
         per_host_speed: std::collections::HashMap<String, u64>,
     },
+    DuplicateDetected {
+        id: String,
+        existing_id: String,
+        existing_path: String,
+        filename: String,
+    },
 }
 
 // --- Body do POST /downloads ---
@@ -363,13 +395,17 @@ pub struct AddDownloadRequest {
     pub selected_children: Option<Vec<String>>,
     pub expected_hash: Option<ExpectedHash>,
     pub priority: Option<i32>,
+    pub duplicate_action: Option<String>,
 }
 
 // --- Resposta padrão de erro da API ---
 // Todos os erros da API retornam { "error": "mensagem" }
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ApiError {
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<DuplicateDownload>,
 }
 
 // Como um class em PHP — agrupa métodos desta struct
@@ -377,6 +413,16 @@ impl ApiError {
     // Construtor: aceita qualquer tipo que implemente Into<String>
     // Funciona com &str, String, etc. — como type juggling no PHP mas seguro
     pub fn new(msg: impl Into<String>) -> Self {
-        Self { error: msg.into() }
+        Self {
+            error: msg.into(),
+            duplicate: None,
+        }
+    }
+
+    pub fn duplicate(msg: impl Into<String>, duplicate: DuplicateDownload) -> Self {
+        Self {
+            error: msg.into(),
+            duplicate: Some(duplicate),
+        }
     }
 }

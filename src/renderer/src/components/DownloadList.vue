@@ -499,7 +499,7 @@ const skeletonCount = computed(() => props.skeletonCount)
 // ── Emits ──────────────────────────────────────────────────
 const emit = defineEmits<{
   (e: 'count-change', count: number): void
-  (e: 'download-complete', payload: { id: string; outputPath: string }): void
+  (e: 'download-complete', payload: { id: string; outputPath: string; url?: string; title?: string; sha256Hash?: string }): void
   (e: 'global-speed', bps: number): void
   (e: 'skeleton-done'): void
 }>()
@@ -749,7 +749,15 @@ onMounted(async () => {
           etaSec: 0,
           outputPath
         }
-        emit('download-complete', { id: ev.id, outputPath })
+        emit('download-complete', {
+          id: ev.id,
+          outputPath,
+          url: items.value[idx].url,
+          title: items.value[idx].title,
+          sha256Hash: items.value[idx].expectedHash?.algorithm === 'sha256'
+            ? items.value[idx].expectedHash?.value
+            : undefined,
+        })
 
         // Auto-extract if enabled
         if (outputPath) {

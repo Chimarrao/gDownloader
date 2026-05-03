@@ -83,6 +83,9 @@ type AppTab = 'downloads' | 'grabber' | 'settings' | 'account'
 interface DownloadCompletePayload {
   id: string
   outputPath: string
+  url?: string
+  title?: string
+  sha256Hash?: string
 }
 
 const activeTab = ref<AppTab>('downloads')
@@ -173,12 +176,13 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 
   const item = {
     id: payload.id,
-    url: '',
-    title: payload.outputPath.split('/').pop() || payload.outputPath,
+    url: payload.url ?? '',
+    title: payload.title || payload.outputPath.split('/').pop() || payload.outputPath,
     thumbnail: '',
     date: new Date().toISOString(),
     formatId: '',
     outputPath: payload.outputPath,
+    sha256Hash: payload.sha256Hash,
   }
 
   await window.api.saveHistory([...(history as DownloadHistoryItem[]), item]).catch(() => null)
