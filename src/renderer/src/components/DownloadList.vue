@@ -10,7 +10,21 @@
         </svg>
       </div>
       <p class="empty-title">Nenhum download ativo</p>
-      <p class="empty-sub">Use o Capturador de Links para começar</p>
+      <p class="empty-sub">Cole um link, arraste um arquivo ou importe um container para começar</p>
+      <div class="empty-actions">
+        <button class="empty-primary" @click="$emit('open-grabber')">
+          <i class="pi pi-link"></i>
+          Capturar links
+        </button>
+        <button class="empty-secondary" @click="chooseOutputDir">
+          <i class="pi pi-folder"></i>
+          Pasta destino
+        </button>
+        <button class="empty-secondary" @click="hydrate">
+          <i class="pi pi-refresh"></i>
+          Atualizar
+        </button>
+      </div>
     </div>
 
     <aside v-if="items.length > 0" class="package-sidebar" aria-label="Pacotes">
@@ -616,6 +630,7 @@ const emit = defineEmits<{
   (e: 'download-complete', payload: { id: string; outputPath: string; url?: string; title?: string; sha256Hash?: string }): void
   (e: 'global-speed', bps: number): void
   (e: 'skeleton-done'): void
+  (e: 'open-grabber'): void
 }>()
 
 // ── State ──────────────────────────────────────────────────
@@ -1690,6 +1705,39 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   margin: 0;
   color: var(--text-muted);
   opacity: 0.7;
+}
+
+.empty-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.empty-primary,
+.empty-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.empty-primary {
+  border: 1px solid var(--accent-color);
+  background: var(--accent-color);
+  color: white;
+}
+
+.empty-secondary {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
 }
 
 /* ── Items list ─────────────────────────────────────────────── */

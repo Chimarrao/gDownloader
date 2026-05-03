@@ -49,6 +49,7 @@
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
           @skeleton-done="skeletonCount = 0"
+          @open-grabber="activeTab = 'grabber'"
         />
       </section>
 

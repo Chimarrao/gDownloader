@@ -500,13 +500,6 @@ colar links no LinkGrabber, 3) ver fila, 4) configurar captcha solver, 5)
 instalar extensão de navegador. Botão 'Pular' a qualquer momento. Marca
 completed no fim. Acessível depois via Help > Refazer tour."
 
-33.12 — Empty states com ilustração e CTA
-PROMPT CODEX:
-"DownloadList vazia → ilustração SVG inline + 'Nenhum download. Cole um
-link, arraste um arquivo ou abra a extensão.' + 3 botões. HistoryView vazia
-similar. Mirrors sem resultado: 'Nenhum espelho encontrado para este
-arquivo' + botão 'Tentar novamente'. Lixeira vazia: 'Nenhum item descartado'."
-
 33.14 — Modo tela cheia / janela sempre-no-topo
 PROMPT CODEX:
 "Toggles no topbar: ⛶ tela cheia (BrowserWindow.setFullScreen), 📌 always

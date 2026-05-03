@@ -51,6 +51,16 @@
       <p class="empty-sub">
         {{ history.length === 0 ? 'Downloads concluídos aparecerão aqui' : `Nenhum resultado para "${search}"` }}
       </p>
+      <div class="empty-actions">
+        <button class="empty-primary" @click="$emit('redownload', '')">
+          <i class="pi pi-link"></i>
+          Capturar links
+        </button>
+        <button v-if="search" class="empty-secondary" @click="search = ''">
+          <i class="pi pi-times"></i>
+          Limpar busca
+        </button>
+      </div>
     </div>
 
     <!-- List -->
@@ -331,6 +341,36 @@ defineExpose({ addToHistory })
   font-size: 13px;
   margin: 0;
   opacity: 0.7;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.empty-primary,
+.empty-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.empty-primary {
+  border: 1px solid var(--accent-color);
+  background: var(--accent-color);
+  color: white;
+}
+
+.empty-secondary {
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
 }
 
 /* ── List ───────────────────────────────────────────────────── */

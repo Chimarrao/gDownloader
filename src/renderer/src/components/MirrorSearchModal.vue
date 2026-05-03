@@ -123,7 +123,11 @@
             </div>
 
             <div v-else class="mirrors-empty">
-              {{ searching ? t('mirrorsWaitingFirstLinks') : t('mirrorsEmptyState') }}
+              <span>{{ searching ? t('mirrorsWaitingFirstLinks') : 'Nenhum espelho encontrado para este arquivo' }}</span>
+              <button v-if="!searching" class="mirrors-empty-btn" type="button" @click="$emit('search')">
+                <i class="pi pi-refresh"></i>
+                Tentar novamente
+              </button>
             </div>
           </div>
 
@@ -472,8 +476,25 @@ onMounted(() => {
 }
 
 .mirrors-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
   padding: 18px 0 6px;
   color: var(--text-muted);
+}
+
+.mirrors-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-color);
+  border-radius: 7px;
+  background: var(--accent-color);
+  color: white;
+  cursor: pointer;
 }
 
 @media (max-width: 980px) {
