@@ -40,7 +40,7 @@
       <section v-show="activeTab === 'downloads'" class="panel downloads-panel">
         <DownloadList
           :skeleton-count="skeletonCount"
-          @count-change="downloadCount = $event"
+          @count-change="downloadCount = $event; updateTrayStats()"
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
           @skeleton-done="skeletonCount = 0"
@@ -48,7 +48,11 @@
       </section>
 
       <section v-show="activeTab === 'grabber'" class="panel">
-        <LinkGrabber @added="handleAddedToQueue" @adding-urls="onAddingUrls" />
+        <LinkGrabber
+          :incoming-url="clipboardIncomingUrl"
+          @added="handleAddedToQueue"
+          @adding-urls="onAddingUrls"
+        />
       </section>
 
       <section v-show="activeTab === 'settings'" class="panel">
@@ -86,16 +90,37 @@ const downloadCount = ref(0)
 const skeletonCount = ref(0)
 const speedHistory = ref<number[]>(new Array(60).fill(0))
 const currentSpeed = ref(0)
+const clipboardIncomingUrl = ref('')
 let speedTicker: ReturnType<typeof setInterval> | null = null
+let disposeClipboardDetected: (() => void) | null = null
 let appMounted = true
 
 function onGlobalSpeed(bps: number): void {
   currentSpeed.value = bps
+  updateTrayStats()
+}
+
+function updateTrayStats(): void {
+  try {
+    const bps = currentSpeed.value
+    let speed: string
+    if (bps >= 1024 * 1024) {
+      speed = `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+    } else if (bps >= 1024) {
+      speed = `${(bps / 1024).toFixed(0)} KB/s`
+    } else {
+      speed = `${bps} B/s`
+    }
+    window.api.tray.updateStats({ activeCount: downloadCount.value, speed })
+  } catch {
+    // tray API may not be available in some environments
+  }
 }
 
 onUnmounted(() => {
   appMounted = false
   if (speedTicker) clearInterval(speedTicker)
+  disposeClipboardDetected?.()
   disposeTheme()
 })
 const { t } = useI18n()
@@ -108,6 +133,13 @@ onMounted(async () => {
     if (!appMounted) return
     speedHistory.value = pushRingBuffer(speedHistory.value, currentSpeed.value, 60)
   }, 120)
+
+  disposeClipboardDetected = window.api.clipboard.onLinkDetected((payload) => {
+    if (!payload.url) return
+    clipboardIncomingUrl.value = payload.url
+    activeTab.value = 'grabber'
+  })
+
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
   if (settings.locale) {
@@ -117,6 +149,7 @@ onMounted(async () => {
     setTheme(settings.theme as ThemeId)
   }
   applyUiPreferences(settings)
+
 })
 
 function onAddingUrls(count: number): void {

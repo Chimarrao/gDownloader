@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell, net, session } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, shell, net, session, Tray } from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { spawn } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync } from 'fs'
@@ -10,6 +10,7 @@ import { createAkiraboxService } from './akirabox-service'
 import { createBackendRuntime } from './backend-runtime'
 import { HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
 import { createCaptchaWindowService } from './captcha-window-service'
+import { logMain } from './debug-log'
 import { createKatfileService } from './katfile-service'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
 
@@ -87,7 +88,7 @@ async function loadSecureSettings(): Promise<void> {
   try {
     await storage.loadSecureSettings()
   } catch (error) {
-    console.warn('[Electron] Falha ao carregar credenciais locais do SQLite:', error)
+    logMain('settings', 'Falha ao carregar credenciais locais do SQLite', error)
   }
 }
 
@@ -99,7 +100,7 @@ async function loadPublicSettings(): Promise<void> {
   try {
     await storage.loadPublicSettings()
   } catch (error) {
-    console.warn('[Electron] Falha ao carregar as configurações locais do SQLite:', error)
+    logMain('settings', 'Falha ao carregar as configurações locais do SQLite', error)
   }
 }
 
@@ -125,7 +126,7 @@ async function migrateLegacySettings(): Promise<void> {
   }
 
   await storage.migrateLegacySettingsIfNeeded().catch((error) => {
-    console.warn('[Electron] Falha ao migrar dados legados para o SQLite:', error)
+    logMain('settings', 'Falha ao migrar dados legados para o SQLite', error)
   })
 }
 
@@ -135,17 +136,83 @@ function currentSettingsSnapshot(): AppSettingsSnapshot {
 
 function persistTeraboxAccount(account: TeraboxStoredAccount | null): void {
   void storage.persistTeraboxAccount(account).catch((error) => {
-    console.warn('[Electron] Falha ao persistir conta do TeraBox no SQLite:', error)
+    logMain('auth', 'Falha ao persistir conta do TeraBox no SQLite', error)
   })
 }
 
 function persistBruploadAccount(account: BruploadStoredAccount | null): void {
   void storage.persistBruploadAccount(account).catch((error) => {
-    console.warn('[Electron] Falha ao persistir conta do BRupload no SQLite:', error)
+    logMain('auth', 'Falha ao persistir conta do BRupload no SQLite', error)
   })
 }
 
+async function solveCaptchaWithNopecha(params: {
+  type: string
+  sitekey: string
+  pageurl: string
+}): Promise<string | null> {
+  const apiKey = storage.getNopechaApiKey()
+  if (!apiKey) {
+    logMain('nopecha', 'Nenhuma chave configurada, pulando tentativa automática', {
+      type: params.type,
+      pageurl: params.pageurl,
+    })
+    return null
+  }
+
+  logMain('nopecha', 'Iniciando tentativa automática de captcha', {
+    type: params.type,
+    pageurl: params.pageurl,
+    hasSitekey: Boolean(params.sitekey),
+  })
+
+  try {
+    const submitRes = await fetch('https://api.nopecha.com/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: params.type,
+        sitekey: params.sitekey,
+        url: params.pageurl,
+        key: apiKey,
+      }),
+    }).then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+
+    if (!submitRes?.data) {
+      logMain('nopecha', 'API não retornou task id', submitRes)
+      return null
+    }
+    const taskId = submitRes.data as string
+
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const res = await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
+        .then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+      const data = res?.data
+      if (Array.isArray(data) && data[0]) {
+        logMain('nopecha', 'Captcha resolvido automaticamente', {
+          type: params.type,
+          pageurl: params.pageurl,
+        })
+        return data[0] as string
+      }
+    }
+
+    logMain('nopecha', 'Tempo esgotado aguardando resposta da API', {
+      type: params.type,
+      pageurl: params.pageurl,
+    })
+    return null
+  } catch (error) {
+    logMain('nopecha', 'Falha ao tentar resolver captcha automaticamente', error)
+    return null
+  }
+}
+
 let rustPort: number | null = null
+let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
+let lastClipboardText = ''
+let lastClipboardUrl = ''
 const backendRuntime = createBackendRuntime({
   dbPath: getDatabasePath(),
   createEnv: (dbPath) => ({
@@ -157,13 +224,15 @@ const backendRuntime = createBackendRuntime({
     GDOWNLOADER_DB_PATH: dbPath,
   }),
   onStdErr: (message) => {
-    console.log('[Rust]', message)
+    logMain('rust', 'stderr', message)
   },
   onRestarted: async (port) => {
     rustPort = port
+    logMain('rust', 'Backend reiniciado', { port })
     await loadPublicSettings()
     await loadSecureSettings()
     await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
+    configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
   },
 })
 
@@ -176,7 +245,9 @@ const bruploadService = createBruploadService({
   saveAccount: persistBruploadAccount,
 })
 
-const akiraboxService = createAkiraboxService()
+const akiraboxService = createAkiraboxService({
+  solveCaptcha: solveCaptchaWithNopecha,
+})
 const captchaWindowService = createCaptchaWindowService()
 const katfileService = createKatfileService()
 
@@ -335,14 +406,14 @@ async function extractArchive(archivePath: string): Promise<string> {
       try {
         return await extractRarEmbedded(archivePath, outputDir)
       } catch (error) {
-        console.warn('[Electron] Falha no extrator embutido de RAR, tentando fallback:', error)
+        logMain('extract', 'Falha no extrator embutido de RAR, tentando fallback', error)
       }
     }
 
     try {
       return await extractWith7zWasm(archivePath, outputDir)
     } catch (error) {
-      console.warn('[Electron] Falha no extrator embutido de 7z/RAR, tentando fallback:', error)
+      logMain('extract', 'Falha no extrator embutido de 7z/RAR, tentando fallback', error)
     }
 
     const tool = await findFirstCommand(['7z', '7za', 'unar'])
@@ -404,8 +475,159 @@ async function syncBackendConfig(maxConcurrentDownloads: number): Promise<void> 
   await postBackend('/config/downloads', {
     max_concurrent_downloads: Math.max(1, Number(maxConcurrentDownloads) || 1),
   }).catch((error) => {
-    console.warn('[Electron] Falha ao sincronizar configuração do backend:', error)
+    logMain('config', 'Falha ao sincronizar configuração do backend', error)
   })
+}
+
+function extractClipboardUrls(text: string): string[] {
+  const matches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? []
+  const seen = new Set<string>()
+  return matches
+    .map((url) => url.replace(/[),.;\]]+$/g, ''))
+    .filter((url) => {
+      if (seen.has(url)) return false
+      seen.add(url)
+      return true
+    })
+}
+
+async function detectClipboardUrl(url: string): Promise<{ id?: string; name?: string } | null> {
+  if (!rustPort) return null
+  try {
+    const response = await fetch(`http://127.0.0.1:${rustPort}/detect?url=${encodeURIComponent(url)}`)
+    if (!response.ok) return null
+    return response.json() as Promise<{ id?: string; name?: string } | null>
+  } catch (error) {
+    logMain('clipboard', 'Falha ao consultar provider para clipboard', { url, error })
+    return null
+  }
+}
+
+async function inspectClipboardForLinks(): Promise<void> {
+  const text = clipboard.readText().trim()
+  if (!text || text === lastClipboardText) {
+    return
+  }
+  lastClipboardText = text
+
+  for (const url of extractClipboardUrls(text)) {
+    if (url === lastClipboardUrl) {
+      continue
+    }
+    const provider = await detectClipboardUrl(url)
+    if (!provider?.id) {
+      continue
+    }
+
+    lastClipboardUrl = url
+    logMain('clipboard', 'Link suportado detectado na área de transferência', {
+      provider: provider.id,
+      url,
+    })
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send('clipboard:link-detected', {
+        url,
+        provider: provider.id,
+        providerName: provider.name ?? provider.id,
+      })
+    }
+    return
+  }
+}
+
+function configureClipboardMonitor(enabled: boolean): void {
+  if (!enabled) {
+    if (clipboardMonitorTimer) {
+      clearInterval(clipboardMonitorTimer)
+      clipboardMonitorTimer = null
+    }
+    return
+  }
+
+  if (clipboardMonitorTimer) {
+    return
+  }
+
+  lastClipboardText = clipboard.readText().trim()
+  clipboardMonitorTimer = setInterval(() => {
+    void inspectClipboardForLinks()
+  }, 800)
+  logMain('clipboard', 'Monitor de clipboard ativado')
+}
+
+let tray: Tray | null = null
+let mainWindow: BrowserWindow | null = null
+
+function createTray(win: BrowserWindow): void {
+  const iconPath = join(__dirname, '../../resources/icon.png')
+  let icon: Electron.NativeImage
+  try {
+    icon = nativeImage.createFromPath(iconPath)
+    if (icon.isEmpty()) {
+      icon = nativeImage.createEmpty()
+    }
+  } catch {
+    icon = nativeImage.createEmpty()
+  }
+
+  if (!icon.isEmpty()) {
+    icon = icon.resize({ width: 16, height: 16 })
+  }
+
+  tray = new Tray(icon)
+  tray.setToolTip('gDownloader')
+
+  updateTrayMenu(win, tray, 0, '0 B/s')
+
+  tray.on('click', () => {
+    if (win.isVisible()) {
+      win.focus()
+    } else {
+      win.show()
+    }
+  })
+}
+
+function updateTrayMenu(win: BrowserWindow, trayInstance: Tray, activeCount: number, speed: string): void {
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: `gDownloader — ${activeCount} baixando · ${speed}`,
+      enabled: false
+    },
+    { type: 'separator' },
+    {
+      label: 'Mostrar app',
+      click: () => { win.show(); win.focus() }
+    },
+    {
+      label: 'Pausar tudo',
+      click: () => {
+        win.webContents.send('tray:pause-all')
+      }
+    },
+    {
+      label: 'Retomar tudo',
+      click: () => {
+        win.webContents.send('tray:resume-all')
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Limite de velocidade',
+      submenu: [
+        { label: 'Sem limite', click: () => win.webContents.send('tray:set-speed-limit', 0) },
+        { label: '500 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 500) },
+        { label: '200 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 200) },
+        { label: '50 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 50) },
+      ]
+    },
+    { type: 'separator' },
+    {
+      label: 'Sair',
+      click: () => { app.quit() }
+    }
+  ])
+  trayInstance.setContextMenu(contextMenu)
 }
 
 function createWindow(): BrowserWindow {
@@ -423,6 +645,13 @@ function createWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
+
+  win.on('close', (event) => {
+    if (tray) {
+      event.preventDefault()
+      win.hide()
+    }
+  })
 
   // Abre links externos no browser padrão do sistema
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -475,6 +704,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('archive:extract', async (_e, archivePath: string) => {
     return extractArchive(archivePath)
   })
+  ipcMain.handle('archive:auto-extract', async (_e, archivePath: string, passwords: string[]) => {
+    const { autoExtract, shouldAutoExtractFile, allPartsReady } = await import('./archive-service')
+    if (!shouldAutoExtractFile(archivePath)) {
+      return { success: false, error: 'not_extractable' }
+    }
+    // For multipart, check all parts are present first
+    if (!allPartsReady(archivePath)) {
+      return { success: false, error: 'parts_missing' }
+    }
+    return autoExtract(archivePath, passwords)
+  })
 
   // Proxy HTTP via sessão persist:terabox — usa cookies reais do browser, bypass fingerprint
   ipcMain.handle('terabox:net-request', async (_e, reqParams: {
@@ -520,9 +760,21 @@ app.whenReady().then(async () => {
     await storage.persistPublicSettings(nextDisk)
     await storage.persistSecureSettings()
     await syncBackendConfig(nextDisk.maxConcurrentDownloads)
+    configureClipboardMonitor(nextDisk.clipboardMonitorEnabled)
     return storage.currentSettingsSnapshot()
   })
 
+  ipcMain.handle('config:test-proxy', async () => {
+    if (!rustPort) throw new Error('Backend not available')
+    const response = await fetch(`http://127.0.0.1:${rustPort}/config/test-proxy`)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
+      throw new Error(body.error ?? `HTTP ${response.status}`)
+    }
+    return response.json()
+  })
+
+  // IPC: auth
   ipcMain.handle('auth:isLoggedIn', (_e, moduleId: string) => {
     const normalized = moduleId.toLowerCase()
     if (normalized === 'terabox') return teraboxService.isLoggedIn()
@@ -569,36 +821,7 @@ app.whenReady().then(async () => {
     sitekey: string
     pageurl: string
   }) => {
-    const apiKey = storage.getNopechaApiKey()
-    if (!apiKey) return null
-
-    try {
-      const submitRes = await fetch('https://api.nopecha.com/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: params.type,
-          sitekey: params.sitekey,
-          url: params.pageurl,
-          key: apiKey,
-        }),
-      }).then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
-
-      if (!submitRes?.data) return null
-      const taskId = submitRes.data as string
-
-      // Poll up to 120 seconds
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 2000))
-        const res = await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
-          .then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
-        const data = res?.data
-        if (Array.isArray(data) && data[0]) return data[0] as string
-      }
-      return null
-    } catch {
-      return null
-    }
+    return solveCaptchaWithNopecha(params)
   })
 
   ipcMain.handle('captcha:open-window', async (_e, params: {
@@ -607,6 +830,16 @@ app.whenReady().then(async () => {
     sourceUrl?: string
   }) => {
     return captchaWindowService.solve(params)
+  })
+
+  // IPC: tray stats update
+  ipcMain.on('tray:update-stats', (_event, { activeCount, speed }: { activeCount: number; speed: string }) => {
+    const activeTray = tray
+    const activeWin = mainWindow
+    if (activeTray && activeWin) {
+      activeTray.setToolTip(`gDownloader — ${activeCount} baixando · ${speed}`)
+      updateTrayMenu(activeWin, activeTray, activeCount, speed)
+    }
   })
 
   // Inicia o proxy local do Terabox (usa sessão browser com cookies reais)
@@ -650,7 +883,7 @@ app.whenReady().then(async () => {
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number }
       teraboxProxyPort = addr.port
-      console.log(`[terabox-proxy] porta ${teraboxProxyPort}`)
+      logMain('terabox-proxy', `porta ${teraboxProxyPort}`)
       resolve()
     })
   })
@@ -664,13 +897,13 @@ app.whenReady().then(async () => {
     await loadPublicSettings()
     const settings = currentSettingsSnapshot()
     await syncBackendConfig(settings.maxConcurrentDownloads)
+    configureClipboardMonitor(settings.clipboardMonitorEnabled)
   } catch (err) {
-    // Se o backend não iniciar, abre a janela mesmo assim
-    // A UI mostrará um indicador de erro de conexão
-    console.error('[Electron] Backend não pôde ser iniciado:', err)
+    logMain('electron', 'Backend não pôde ser iniciado', err)
   }
 
-  createWindow()
+  mainWindow = createWindow()
+  createTray(mainWindow)
 
   app.on('activate', () => {
     // macOS: recria a janela ao clicar no ícone do dock se não houver janelas abertas
@@ -681,12 +914,16 @@ app.whenReady().then(async () => {
           await loadPublicSettings()
           await loadSecureSettings()
           await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
+          configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
         } catch (error) {
-          console.error('[Electron] Falha ao reativar backend Rust:', error)
+          logMain('electron', 'Falha ao reativar backend Rust', error)
         }
       })()
     }
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow()
+      if (!tray && mainWindow) createTray(mainWindow)
+    }
   })
 })
 
@@ -702,6 +939,8 @@ app.on('window-all-closed', () => {
 
 // Garante que o backend para mesmo se o Electron fechar inesperadamente
 app.on('before-quit', () => {
+  tray?.destroy()
+  tray = null
   backendRuntime.markQuitting()
   backendRuntime.stop()
   rustPort = null

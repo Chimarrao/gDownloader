@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
 
 import { app } from 'electron'
+import { logMain } from './debug-log'
 
 export interface BackendRuntimeOptions {
   dbPath: string
@@ -82,6 +83,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     clearRestartTimer()
     startPromise = null
     if (backend) {
+      logMain('backend-runtime', 'Encerrando processo backend ativo')
       backend.kill()
       backend = null
     }
@@ -95,6 +97,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
 
     const delayMs = Math.min(15_000, 1000 * 2 ** Math.min(restartAttempts, 4))
     restartAttempts += 1
+    logMain('backend-runtime', 'Agendando reinício do backend', { delayMs, restartAttempts })
     restartTimer = setTimeout(() => {
       restartTimer = null
       void restart()
@@ -107,9 +110,11 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     }
 
     try {
+      logMain('backend-runtime', 'Tentando reiniciar backend')
       const nextPort = await start()
       await options.onRestarted?.(nextPort)
     } catch (error) {
+      logMain('backend-runtime', 'Falha no reinício do backend', error)
       options.onStdErr?.(`[Electron] Falha ao reiniciar backend Rust: ${String(error)}`)
       scheduleRestart()
     }
@@ -127,6 +132,10 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     startPromise = new Promise((resolve, reject) => {
       const binaryPath = getRustBinaryPath()
       mkdirSync(dirname(options.dbPath), { recursive: true })
+      logMain('backend-runtime', 'Iniciando backend Rust', {
+        binaryPath,
+        dbPath: options.dbPath,
+      })
       backend = spawn(binaryPath, [options.dbPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: options.createEnv(options.dbPath),
@@ -151,17 +160,20 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
           restartAttempts = 0
           clearRestartTimer()
           clearTimeout(startupTimeout)
+          logMain('backend-runtime', 'Backend sinalizou prontidão', { port: readyPort })
           resolve(readyPort)
         }
       })
 
       backend.stderr?.on('data', (data: Buffer) => {
+        logMain('backend-runtime', 'stderr do backend', data.toString().trim())
         options.onStdErr?.(data.toString().trim())
       })
 
       backend.on('error', (error) => {
         clearTimeout(startupTimeout)
         startPromise = null
+        logMain('backend-runtime', 'Processo backend emitiu erro', error)
         if (!settled) {
           settled = true
           reject(error)
@@ -173,6 +185,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
         backend = null
         port = null
         startPromise = null
+        logMain('backend-runtime', 'Processo backend encerrou', { code, settled })
         if (!settled) {
           settled = true
           reject(new Error(`Backend Rust encerrou antes de sinalizar prontidão (código ${code})`))

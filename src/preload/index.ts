@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { AppSettingsSnapshot } from '../shared/types'
+import type { AppSettingsSnapshot, CreateDownloadPackagePayload } from '../shared/types'
 import { splitSseMessages } from './mirror-sse'
 
 // Porta do backend Rust (obtida via IPC e cacheada)
@@ -66,13 +66,21 @@ let activeMirrorSearchSeq = 0
 
 type DownloadChannel =
   | 'download:progress'
+  | 'download:verifying'
   | 'download:status'
   | 'download:complete'
   | 'download:error'
   | 'download:cancelled'
 
+type ClipboardLinkPayload = {
+  url: string
+  provider: string
+  providerName?: string
+}
+
 const downloadListeners: Record<DownloadChannel, Set<(data: unknown) => void>> = {
   'download:progress': new Set(),
+  'download:verifying': new Set(),
   'download:status': new Set(),
   'download:complete': new Set(),
   'download:error': new Set(),
@@ -99,6 +107,11 @@ function routeDownloadEvent(event: Record<string, unknown>): void {
     return
   }
 
+  if (event.type === 'verifying') {
+    dispatchDownloadEvent('download:verifying', event)
+    return
+  }
+
   if (event.type === 'status' || event.type === 'status_changed') {
     dispatchDownloadEvent('download:status', event)
     if (event.type === 'status' && event.status === 'cancelled') {
@@ -114,6 +127,12 @@ function routeDownloadEvent(event: Record<string, unknown>): void {
 
   if (event.type === 'error') {
     dispatchDownloadEvent('download:error', event)
+    return
+  }
+
+  if (event.type === 'stats_tick') {
+    // Dispatch as a custom DOM event so StatsView can listen without extra IPC plumbing
+    window.dispatchEvent(new CustomEvent('stats-tick', { detail: event }))
   }
 }
 
@@ -241,7 +260,8 @@ const api = {
       _title: string,
       _size: number,
       destDir: string,
-      selectedChildren?: string[]
+      selectedChildren?: string[],
+      expectedHash?: { algorithm: string; value: string }
     ) => {
       const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
@@ -254,6 +274,7 @@ const api = {
           speed_limit_kib: settings?.speedLimitKib ?? 0,
           parallel_parts: settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
+          expected_hash: expectedHash,
         }),
       })
       if (!resp.ok) {
@@ -313,6 +334,10 @@ const api = {
       await fetchBackend('/downloads/finished', { method: 'DELETE' })
     },
 
+    togglePin: async (id: string) => {
+      await fetchBackend(`/downloads/${id}/pin`, { method: 'POST' })
+    },
+
     // Subscreve a eventos de progresso via WebSocket
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => {
       downloadListeners[channel].add(cb)
@@ -330,6 +355,10 @@ const api = {
     load: (): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:load'),
     save: (s: AppSettingsSnapshot): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:save', s),
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
+  },
+
+  config: {
+    testProxy: (): Promise<{ ip: string }> => ipcRenderer.invoke('config:test-proxy'),
   },
 
   auth: {
@@ -350,12 +379,63 @@ const api = {
   showInFolder: (path: string): Promise<void> => ipcRenderer.invoke('shell:showInFolder', path),
   clipboard: {
     writeText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:writeText', text),
+    onLinkDetected: (cb: (payload: ClipboardLinkPayload) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload) => cb(payload)
+      ipcRenderer.on('clipboard:link-detected', handler)
+      return () => ipcRenderer.removeListener('clipboard:link-detected', handler)
+    },
   },
   system: {
     notify: (title: string, body?: string): Promise<boolean> => ipcRenderer.invoke('system:notify', title, body),
   },
   archive: {
     extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
+    autoExtract: (archivePath: string, passwords: string[]): Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }> =>
+      ipcRenderer.invoke('archive:auto-extract', archivePath, passwords),
+  },
+  packages: {
+    list: async () => {
+      const resp = await fetchBackend('/packages')
+      if (!resp.ok) return []
+      return resp.json()
+    },
+    create: async (payload: CreateDownloadPackagePayload) => {
+      const resp = await fetchBackend('/packages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({ error: 'Falha ao criar pacote' }))
+        throw new Error(String(body.error ?? 'Falha ao criar pacote'))
+      }
+      return resp.json()
+    },
+    remove: async (id: string) => {
+      await fetchBackend(`/packages/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    },
+    assign: async (packageId: string, downloadId: string) => {
+      await fetchBackend(`/packages/${encodeURIComponent(packageId)}/assign/${encodeURIComponent(downloadId)}`, { method: 'POST' })
+    },
+    unassign: async (downloadId: string) => {
+      await fetchBackend(`/packages/unassign/${encodeURIComponent(downloadId)}`, { method: 'DELETE' })
+    },
+  },
+  links: {
+    importContainer: async (file: File): Promise<Array<{ url: string; filename: string; size: number }>> => {
+      const form = new FormData()
+      form.append('file', file, file.name)
+      const resp = await fetchBackend('/links/import-container', {
+        method: 'POST',
+        body: form,
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({ error: 'Falha ao importar container' }))
+        throw new Error(String(body.error ?? 'Falha ao importar container'))
+      }
+      const data = await resp.json() as { links?: Array<{ url: string; filename: string; size: number }> }
+      return data.links ?? []
+    },
   },
   terabox: {
     netRequest: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<unknown> =>
@@ -542,9 +622,31 @@ const api = {
     },
   },
 
+  // Stats
+  getRealtimeStats: async () => {
+    try {
+      const resp = await fetchBackend('/stats/realtime')
+      if (!resp.ok) return { ticks: [] }
+      return resp.json()
+    } catch {
+      return { ticks: [] }
+    }
+  },
+
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
+
+  tray: {
+    updateStats: (data: { activeCount: number; speed: string }) =>
+      ipcRenderer.send('tray:update-stats', data),
+  },
 }
+
+// Listen for tray commands and forward as window events
+ipcRenderer.on('tray:pause-all', () => window.dispatchEvent(new Event('tray-pause-all')))
+ipcRenderer.on('tray:resume-all', () => window.dispatchEvent(new Event('tray-resume-all')))
+ipcRenderer.on('tray:set-speed-limit', (_e, limit: number) =>
+  window.dispatchEvent(new CustomEvent('tray-set-speed-limit', { detail: limit })))
 
 function normalizeModuleId(provider: unknown): string {
   const raw = String(provider ?? '').trim().toLowerCase()
@@ -606,11 +708,14 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     maxRetries: d.max_retries ?? 0,
     retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
     error: d.error ?? '',
+    expectedHash: d.expected_hash ?? undefined,
     captchaType: d.captcha_type ?? undefined,
     captchaSitekey: d.captcha_sitekey ?? undefined,
     captchaPageUrl: d.captcha_page_url ?? undefined,
     outputPath: d.dest_path,
     priority: d.priority ?? 0,
+    pinned: Boolean(d.pinned),
+    packageId: typeof d.package_id === 'string' ? d.package_id : undefined,
     addedAt: ((d.created_at as number) ?? 0) * 1000,
     startedAt: d.started_at ? (d.started_at as number) * 1000 : undefined,
     completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,

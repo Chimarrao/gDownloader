@@ -3,6 +3,8 @@
 import type {
   AppSettingsSnapshot,
   CachedFileInfoSnapshot,
+  CreateDownloadPackagePayload,
+  DownloadPackage,
   DownloadHistoryItem,
   DownloadItem,
   FileInfo,
@@ -31,6 +33,7 @@ interface ModuleSummary {
 
 type DownloadChannel =
   | 'download:progress'
+  | 'download:verifying'
   | 'download:status'
   | 'download:complete'
   | 'download:error'
@@ -103,7 +106,8 @@ interface RendererApi {
       title: string,
       size: number,
       destDir: string,
-      selectedChildren?: string[]
+      selectedChildren?: string[],
+      expectedHash?: { algorithm: string; value: string }
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
     pause: (id: string) => Promise<void>
@@ -114,6 +118,7 @@ interface RendererApi {
     remove: (id: string) => Promise<void>
     removeWithFiles: (id: string) => Promise<void>
     clearFinished: () => Promise<void>
+    togglePin: (id: string) => Promise<void>
     list: () => Promise<DownloadItem[]>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }
@@ -124,12 +129,27 @@ interface RendererApi {
   showInFolder: (path: string) => Promise<void>
   clipboard: {
     writeText: (text: string) => Promise<boolean>
+    onLinkDetected: (cb: (payload: { url: string; provider: string; providerName?: string }) => void) => () => void
   }
   system: {
     notify: (title: string, body?: string) => Promise<boolean>
   }
   archive: {
     extract: (archivePath: string) => Promise<string>
+    autoExtract: (
+      archivePath: string,
+      passwords: string[]
+    ) => Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }>
+  }
+  packages: {
+    list: () => Promise<DownloadPackage[]>
+    create: (payload: CreateDownloadPackagePayload) => Promise<DownloadPackage>
+    remove: (id: string) => Promise<void>
+    assign: (packageId: string, downloadId: string) => Promise<void>
+    unassign: (downloadId: string) => Promise<void>
+  }
+  links: {
+    importContainer: (file: File) => Promise<Array<{ url: string; filename: string; size: number }>>
   }
   captcha: {
     nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }) => Promise<string | null>
@@ -141,7 +161,17 @@ interface RendererApi {
     abort: () => void
     onEvent: (cb: (event: MirrorEvent) => void) => () => void
   }
+  getRealtimeStats: () => Promise<{ ticks: Array<{ timestamp: number; total_speed_bps: number; per_host_speed: Record<string, number> }> }>
+  config: {
+    testProxy: () => Promise<{ ip: string }>
+  }
+  terabox: {
+    netRequest: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => Promise<unknown>
+  }
   getBackendPort: () => Promise<number>
+  tray: {
+    updateStats: (data: { activeCount: number; speed: string }) => void
+  }
 }
 
 declare global {

@@ -1,5 +1,27 @@
 <template>
   <div class="stats-view">
+    <!-- Realtime speed chart -->
+    <div class="speed-chart-section">
+      <div class="speed-cards">
+        <div class="speed-card">
+          <div class="speed-label">Velocidade atual</div>
+          <div class="speed-value">{{ formatSpeed(currentSpeedBps) }}</div>
+        </div>
+        <div class="speed-card">
+          <div class="speed-label">Pico de hoje</div>
+          <div class="speed-value">{{ formatSpeed(peakSpeedBps) }}</div>
+        </div>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas ref="canvasRef" width="600" height="80" class="speed-canvas"></canvas>
+        <div class="chart-x-labels">
+          <span>-60s</span>
+          <span>-30s</span>
+          <span>Agora</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Summary cards -->
     <div class="stat-cards">
       <div class="stat-card">
@@ -100,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { DownloadHistoryItem } from '../../../shared/types'
 
 interface DayStat {
@@ -115,7 +137,88 @@ interface FormatStat {
   pct: number
 }
 
+interface SpeedTick {
+  timestamp: number
+  totalSpeedBps: number
+  perHostSpeed: Record<string, number>
+}
+
 const history = ref<DownloadHistoryItem[]>([])
+const speedTicks = ref<SpeedTick[]>([])
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+const peakSpeedBps = ref(0)
+const currentSpeedBps = ref(0)
+
+function formatSpeed(bps: number): string {
+  if (bps >= 1_048_576) return (bps / 1_048_576).toFixed(1) + ' MB/s'
+  if (bps >= 1024) return (bps / 1024).toFixed(0) + ' KB/s'
+  return bps + ' B/s'
+}
+
+function drawSpeedChart(): void {
+  const canvas = canvasRef.value
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const w = canvas.width
+  const h = canvas.height
+  ctx.clearRect(0, 0, w, h)
+
+  const ticks = speedTicks.value
+  if (ticks.length < 2) return
+
+  const maxSpeed = Math.max(...ticks.map((t) => t.totalSpeedBps), 1024)
+  const points = ticks.map((t, i) => ({
+    x: (i / (ticks.length - 1)) * w,
+    y: h - (t.totalSpeedBps / maxSpeed) * (h - 4) - 2,
+  }))
+
+  // Gradient fill
+  const gradient = ctx.createLinearGradient(0, 0, 0, h)
+  gradient.addColorStop(0, 'rgba(124, 111, 255, 0.5)')
+  gradient.addColorStop(1, 'rgba(124, 111, 255, 0.02)')
+
+  ctx.beginPath()
+  ctx.moveTo(0, h)
+  ctx.lineTo(points[0].x, points[0].y)
+  for (let i = 1; i < points.length; i++) {
+    const cp1x = (points[i].x + points[i - 1].x) / 2
+    ctx.bezierCurveTo(cp1x, points[i - 1].y, cp1x, points[i].y, points[i].x, points[i].y)
+  }
+  ctx.lineTo(points[points.length - 1].x, h)
+  ctx.closePath()
+  ctx.fillStyle = gradient
+  ctx.fill()
+
+  // Line
+  ctx.beginPath()
+  ctx.moveTo(points[0].x, points[0].y)
+  for (let i = 1; i < points.length; i++) {
+    const cp1x = (points[i].x + points[i - 1].x) / 2
+    ctx.bezierCurveTo(cp1x, points[i - 1].y, cp1x, points[i].y, points[i].x, points[i].y)
+  }
+  ctx.strokeStyle = 'rgba(124, 111, 255, 0.9)'
+  ctx.lineWidth = 2
+  ctx.stroke()
+}
+
+function onStatsTick(e: Event): void {
+  const detail = (e as CustomEvent).detail as {
+    timestamp: number
+    total_speed_bps: number
+    per_host_speed?: Record<string, number>
+  }
+  const tick: SpeedTick = {
+    timestamp: detail.timestamp,
+    totalSpeedBps: detail.total_speed_bps,
+    perHostSpeed: detail.per_host_speed ?? {},
+  }
+  speedTicks.value.push(tick)
+  if (speedTicks.value.length > 60) speedTicks.value.shift()
+  currentSpeedBps.value = tick.totalSpeedBps
+  if (tick.totalSpeedBps > peakSpeedBps.value) peakSpeedBps.value = tick.totalSpeedBps
+  drawSpeedChart()
+}
 
 onMounted(async () => {
   try {
@@ -123,7 +226,33 @@ onMounted(async () => {
   } catch {
     history.value = []
   }
+
+  // Load initial realtime stats
+  try {
+    const data = await window.api.getRealtimeStats()
+    speedTicks.value = (data.ticks || []).map((t) => ({
+      timestamp: t.timestamp,
+      totalSpeedBps: t.total_speed_bps,
+      perHostSpeed: t.per_host_speed || {},
+    }))
+    if (speedTicks.value.length > 0) {
+      const last = speedTicks.value[speedTicks.value.length - 1]
+      currentSpeedBps.value = last.totalSpeedBps
+      peakSpeedBps.value = Math.max(...speedTicks.value.map((t) => t.totalSpeedBps))
+    }
+    drawSpeedChart()
+  } catch {
+    // ignore — chart stays empty
+  }
+
+  window.addEventListener('stats-tick', onStatsTick)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('stats-tick', onStatsTick)
+})
+
+watch(canvasRef, () => drawSpeedChart())
 
 const stats = computed(() => {
   const items = history.value
@@ -176,6 +305,70 @@ const stats = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* ── Realtime speed chart ───────────────────────────────────── */
+.speed-chart-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.speed-cards {
+  display: flex;
+  gap: 16px;
+}
+
+.speed-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.speed-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  font-weight: 600;
+}
+
+.speed-value {
+  font-size: 18px;
+  font-weight: 800;
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1.2;
+}
+
+.chart-canvas-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.speed-canvas {
+  width: 100%;
+  height: 80px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-card) 60%, rgba(124, 111, 255, 0.04));
+  border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+  display: block;
+}
+
+.chart-x-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 0 2px;
+  opacity: 0.7;
 }
 
 /* ── Summary cards ──────────────────────────────────────────── */

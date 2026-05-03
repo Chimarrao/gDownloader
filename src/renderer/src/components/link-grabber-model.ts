@@ -1,4 +1,4 @@
-import type { DownloadChild, FileInfo } from '../../../shared/types'
+import type { DownloadChild, ExpectedHash, FileInfo } from '../../../shared/types'
 
 export interface ModuleSummary {
   id: string
@@ -28,6 +28,7 @@ export interface CapturedRow {
   expanded: boolean
   sourceUrls: string[]
   sourceLabels: string[]
+  expectedHash?: ExpectedHash
 }
 
 export interface MirrorViewResult {

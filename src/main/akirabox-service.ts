@@ -11,14 +11,13 @@ import {
   parseHumanSize,
   sanitizeFilename,
 } from './browser-helper-common'
+import { logMain } from './debug-log'
 
 const AKIRABOX_PARTITION = 'persist:akirabox'
 const CHALLENGE_HINTS = [
   'just a moment',
-  'um momento',
   'performing security verification',
   'executando verificação de segurança',
-  'verifica se você não é um bot',
   'enable javascript and cookies to continue',
   '/cdn-cgi/challenge-platform/',
   'window._cf_chl_opt',
@@ -29,8 +28,16 @@ interface AkiraboxPageSnapshot {
   title: string
   bodyText: string
   isChallenge: boolean
+  challengeType: string | null
+  challengeSitekey: string | null
+  challengeToken: string | null
+  hasChallengeWidget: boolean
   filenameCandidates: string[]
   sizeCandidates: string[]
+}
+
+interface AkiraboxServiceOptions {
+  solveCaptcha?: (params: { type: string; sitekey: string; pageurl: string }) => Promise<string | null>
 }
 
 interface AkiraboxDownloadJob {
@@ -53,6 +60,7 @@ interface AkiraboxDownloadJob {
   lastTickAt: number
   lastProgressAt: number
   smoothedSpeedBps: number
+  challengeAutoSolveAttempted: boolean
 }
 
 function fallbackNameFromUrl(url: string): string {
@@ -65,7 +73,7 @@ function fallbackNameFromUrl(url: string): string {
   }
 }
 
-export function createAkiraboxService() {
+export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
   const jobs = new Map<string, AkiraboxDownloadJob>()
   let helperWindow: BrowserWindow | null = null
   let sessionWired = false
@@ -95,7 +103,16 @@ export function createAkiraboxService() {
       },
     })
     helperWindow.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
+    helperWindow.webContents.on('did-navigate', (_event, url) => {
+      logMain('akirabox', 'Navegação do helper', { url })
+    })
+    helperWindow.webContents.on('did-finish-load', () => {
+      logMain('akirabox', 'Página do helper carregada', {
+        url: helperWindow?.webContents.getURL(),
+      })
+    })
     helperWindow.on('closed', () => {
+      logMain('akirabox', 'Janela helper encerrada')
       helperWindow = null
     })
     return helperWindow
@@ -110,8 +127,41 @@ export function createAkiraboxService() {
         const htmlHead = document.documentElement.outerHTML.slice(0, 16000)
         const lowerBlob = (title + '\\n' + bodyText + '\\n' + htmlHead).toLowerCase()
         const challengeHints = ${JSON.stringify(CHALLENGE_HINTS)}
+        const iframes = Array.from(document.querySelectorAll('iframe')).map((frame) => frame.src || '')
+        const widget =
+          document.querySelector('.cf-turnstile, iframe[src*="turnstile"], iframe[src*="challenge-platform"], iframe[src*="challenges.cloudflare.com"], textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]')
+        const tokenNode =
+          document.querySelector('textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"], textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]')
+        const challengeToken =
+          tokenNode instanceof HTMLTextAreaElement || tokenNode instanceof HTMLInputElement
+            ? tokenNode.value.trim()
+            : ''
+        const sitekeyNode = document.querySelector('[data-sitekey]')
+        const sitekeyFromNode = sitekeyNode?.getAttribute('data-sitekey') || ''
+        const iframeBlob = iframes.join('\\n')
+        const sitekeyFromIframe =
+          iframeBlob.match(/[?&]k=([^&]+)/i)?.[1]
+          || iframeBlob.match(/[?&]sitekey=([^&]+)/i)?.[1]
+          || ''
+        const sitekeyFromHtml =
+          htmlHead.match(/data-sitekey=["']([^"']+)["']/i)?.[1]
+          || htmlHead.match(/sitekey["': ]+([A-Za-z0-9_-]{10,})/i)?.[1]
+          || ''
+        const challengeSitekey = sitekeyFromNode || sitekeyFromIframe || sitekeyFromHtml
+        const challengeType =
+          lowerBlob.includes('turnstile') || Boolean(document.querySelector('.cf-turnstile'))
+            ? 'turnstile'
+            : lowerBlob.includes('recaptcha')
+              ? 'recaptcha2'
+              : lowerBlob.includes('hcaptcha')
+                ? 'hcaptcha'
+                : null
         const isChallenge =
           location.pathname.toLowerCase().startsWith('/cdn-cgi/challenge-platform/')
+          || location.search.toLowerCase().includes('__cf_chl_')
+          || title.toLowerCase().includes('just a moment')
+          || lowerBlob.includes('enable javascript and cookies to continue')
+          || Boolean((window)._cf_chl_opt)
           || challengeHints.some((hint) => lowerBlob.includes(hint))
 
         const filenameCandidates = []
@@ -166,6 +216,10 @@ export function createAkiraboxService() {
           title,
           bodyText,
           isChallenge,
+          challengeType,
+          challengeSitekey: challengeSitekey || null,
+          challengeToken: challengeToken || null,
+          hasChallengeWidget: Boolean(widget),
           filenameCandidates,
           sizeCandidates,
         }
@@ -183,9 +237,157 @@ export function createAkiraboxService() {
     }
   }
 
+  async function setChallengeWindowMode(enabled: boolean): Promise<void> {
+    const win = getWindow()
+    if (enabled) {
+      win.setSize(560, 760)
+      win.center()
+    } else {
+      win.setSize(1280, 900)
+    }
+
+    await win.webContents.executeJavaScript(
+      `(() => {
+        const styleId = 'gdl-akirabox-challenge-only'
+        const previous = document.getElementById(styleId)
+        if (${enabled ? 'true' : 'false'}) {
+          if (!previous) {
+            const style = document.createElement('style')
+            style.id = styleId
+            style.textContent = \`
+              html, body {
+                width: 100% !important;
+                height: 100% !important;
+                margin: 0 !important;
+                overflow: hidden !important;
+                background: #f5f7fb !important;
+              }
+              body {
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                padding: 24px !important;
+                box-sizing: border-box !important;
+              }
+              body > * {
+                display: none !important;
+              }
+              /* Regular captcha pages (brupload, katfile, etc.) */
+              .main-wrapper,
+              .main-content,
+              #content,
+              .container,
+              .wrap {
+                display: block !important;
+                width: 100% !important;
+                max-width: 520px !important;
+                margin: 0 auto !important;
+              }
+              /* Cloudflare challenge interstitial elements */
+              #challenge-running,
+              #cf-challenge-running,
+              .cf-challenge-running,
+              #trk_jschal_js,
+              #challenge-stage,
+              #challenge-form,
+              #challenge-body-text,
+              [id^="challenge-"],
+              [class*="cf-challenge"],
+              [id*="turnstile"],
+              .cf-turnstile {
+                display: block !important;
+                width: 100% !important;
+              }
+              /* Always show iframes – Turnstile and hCaptcha run inside cross-origin iframes */
+              iframe {
+                display: block !important;
+                max-width: 100% !important;
+              }
+              form,
+              [class*="challenge"] {
+                max-width: 100% !important;
+              }
+            \`
+            document.head.appendChild(style)
+          }
+        } else if (previous) {
+          previous.remove()
+        }
+      })()`,
+      true,
+    ).catch(() => undefined)
+  }
+
+  async function injectChallengeToken(token: string): Promise<void> {
+    const win = getWindow()
+    await win.webContents.executeJavaScript(
+      `((token) => {
+        const selectors = [
+          'textarea[name="cf-turnstile-response"]',
+          'input[name="cf-turnstile-response"]',
+          'textarea[name="g-recaptcha-response"]',
+          'input[name="g-recaptcha-response"]',
+          'textarea[name="h-captcha-response"]',
+          'input[name="h-captcha-response"]'
+        ]
+
+        for (const selector of selectors) {
+          const node = document.querySelector(selector)
+          if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+            node.value = token
+            node.dispatchEvent(new Event('input', { bubbles: true }))
+            node.dispatchEvent(new Event('change', { bubbles: true }))
+          }
+        }
+
+        const submitButton =
+          document.querySelector('button[type="submit"]')
+          || document.querySelector('input[type="submit"]')
+          || document.querySelector('form button')
+        if (submitButton instanceof HTMLElement) {
+          submitButton.click()
+        }
+      })(${JSON.stringify(token)})`,
+      true,
+    )
+  }
+
+  async function tryAutoSolveChallenge(snapshot: AkiraboxPageSnapshot): Promise<boolean> {
+    if (!options.solveCaptcha || !snapshot.challengeSitekey || !snapshot.challengeType) {
+      return false
+    }
+
+    logMain('akirabox', 'Tentando resolver challenge automaticamente', {
+      type: snapshot.challengeType,
+      pageUrl: snapshot.url,
+      hasSitekey: Boolean(snapshot.challengeSitekey),
+    })
+
+    const token = await options.solveCaptcha({
+      type: snapshot.challengeType,
+      sitekey: snapshot.challengeSitekey,
+      pageurl: snapshot.url,
+    }).catch((error) => {
+      logMain('akirabox', 'Falha na chamada ao solvedor automático', error)
+      return null
+    })
+
+    if (!token) {
+      logMain('akirabox', 'Solvedor automático não retornou token')
+      return false
+    }
+
+    await injectChallengeToken(token).catch((error) => {
+      logMain('akirabox', 'Falha ao injetar token automático do challenge', error)
+    })
+    await delay(3000)
+    return true
+  }
+
   async function waitForResolvedPage(sourceUrl: string, timeoutMs: number): Promise<AkiraboxPageSnapshot | null> {
     const deadline = Date.now() + timeoutMs
     let forcedReloadAfterClearance = false
+    let autoSolveAttempted = false
     while (Date.now() < deadline) {
       const currentUrl = getWindow().webContents.getURL()
       if (!currentUrl || currentUrl === 'about:blank') {
@@ -195,12 +397,30 @@ export function createAkiraboxService() {
 
       try {
         const snapshot = await readPageSnapshot()
+        logMain('akirabox', 'Snapshot da página', {
+          url: snapshot.url,
+          isChallenge: snapshot.isChallenge,
+          challengeType: snapshot.challengeType,
+          hasWidget: snapshot.hasChallengeWidget,
+          hasSitekey: Boolean(snapshot.challengeSitekey),
+          hasToken: Boolean(snapshot.challengeToken),
+        })
         if (!snapshot.isChallenge) {
+          await setChallengeWindowMode(false)
           return snapshot
         }
 
+        if (!autoSolveAttempted) {
+          autoSolveAttempted = true
+          await tryAutoSolveChallenge(snapshot)
+        }
+
         if (!forcedReloadAfterClearance && (await hasClearanceCookie(sourceUrl))) {
+          logMain('akirabox', 'Cookie cf_clearance detectado, recarregando URL original', {
+            sourceUrl,
+          })
           forcedReloadAfterClearance = true
+          await setChallengeWindowMode(false)
           await getWindow().loadURL(sourceUrl).catch(() => undefined)
           await delay(1200)
           continue
@@ -216,6 +436,7 @@ export function createAkiraboxService() {
 
   async function ensureReadyPage(url: string): Promise<AkiraboxPageSnapshot> {
     const win = getWindow()
+    logMain('akirabox', 'Abrindo URL no helper', { url })
     await win.loadURL(url)
 
     let snapshot = await waitForResolvedPage(url, 12_000)
@@ -223,12 +444,18 @@ export function createAkiraboxService() {
       if (win.isVisible()) {
         win.hide()
       }
+      logMain('akirabox', 'Página pronta sem intervenção manual', {
+        url: snapshot.url,
+        filenameCandidates: snapshot.filenameCandidates.slice(0, 3),
+      })
       return snapshot
     }
 
-    win.setTitle('AkiraBox - conclua a verificação de segurança')
+    await setChallengeWindowMode(true)
+    win.setTitle('AkiraBox - resolva apenas o captcha para continuar')
     win.show()
     win.focus()
+    logMain('akirabox', 'Challenge manual exibido ao usuário')
 
     snapshot = await waitForResolvedPage(url, 180_000)
     if (!snapshot) {
@@ -237,7 +464,9 @@ export function createAkiraboxService() {
       )
     }
 
+    await setChallengeWindowMode(false)
     win.hide()
+    logMain('akirabox', 'Challenge concluído, fluxo liberado', { url: snapshot.url })
     return snapshot
   }
 
@@ -299,12 +528,14 @@ export function createAkiraboxService() {
       pendingDownloadJobId = null
 
       if (!jobId) {
+        logMain('akirabox', 'Evento will-download sem job pendente, cancelando item')
         item.cancel()
         return
       }
 
       const job = jobs.get(jobId)
       if (!job) {
+        logMain('akirabox', 'Evento will-download sem job encontrado, cancelando item', { jobId })
         item.cancel()
         return
       }
@@ -324,6 +555,12 @@ export function createAkiraboxService() {
       job.lastTickAt = Date.now()
       job.lastProgressAt = Date.now()
       job.smoothedSpeedBps = 0
+      logMain('akirabox', 'Download do navegador iniciado', {
+        jobId,
+        savePath: job.destPath,
+        filename: job.filename,
+        totalBytes: job.totalBytes,
+      })
       job.startResolve?.()
       job.startResolve = undefined
       job.startReject = undefined
@@ -387,6 +624,10 @@ export function createAkiraboxService() {
         if (state === 'completed') {
           job.status = 'complete'
           job.bytesDownloaded = job.totalBytes || item.getReceivedBytes()
+          logMain('akirabox', 'Download concluído', {
+            jobId,
+            bytesDownloaded: job.bytesDownloaded,
+          })
           return
         }
 
@@ -395,6 +636,11 @@ export function createAkiraboxService() {
           state === 'cancelled'
             ? 'Download cancelado pelo navegador do AkiraBox.'
             : 'O navegador do AkiraBox interrompeu o download antes da conclusão.'
+        logMain('akirabox', 'Download encerrado com falha', {
+          jobId,
+          state,
+          error: job.error,
+        })
       })
     })
   }
@@ -486,17 +732,26 @@ export function createAkiraboxService() {
 
     if (snapshot.isChallenge) {
       if (!win.isVisible()) {
-        win.setTitle('AkiraBox - conclua a verificação de segurança')
+        await setChallengeWindowMode(true)
+        win.setTitle('AkiraBox - resolva apenas o captcha para continuar')
         win.show()
         win.focus()
       }
 
       if (await hasClearanceCookie(job.sourceUrl)) {
+        logMain('akirabox', 'Clearance detectada durante o início do download, recarregando origem', {
+          sourceUrl: job.sourceUrl,
+        })
+        await setChallengeWindowMode(false)
         await win.loadURL(job.sourceUrl).catch(() => undefined)
+      } else if (!job.challengeAutoSolveAttempted) {
+        job.challengeAutoSolveAttempted = true
+        void tryAutoSolveChallenge(snapshot)
       }
       return
     }
 
+    await setChallengeWindowMode(false)
     await clickDownloadCandidate().catch(() => false)
   }
 
@@ -519,6 +774,7 @@ export function createAkiraboxService() {
       })
 
       if (!clicked) {
+        logMain('akirabox', 'Nenhum botão de download utilizável encontrado')
         pendingDownloadJobId = null
         job.startResolve = undefined
         job.startReject = undefined
@@ -533,7 +789,8 @@ export function createAkiraboxService() {
       job.showTimeout = setTimeout(() => {
         const win = getWindow()
         if (!win.isVisible()) {
-          win.setTitle('AkiraBox - finalize a etapa manual para continuar')
+          void setChallengeWindowMode(true)
+          win.setTitle('AkiraBox - finalize apenas o captcha para continuar')
           win.show()
           win.focus()
         }
@@ -544,6 +801,9 @@ export function createAkiraboxService() {
           pendingDownloadJobId = null
           clearJobTimers(job)
           job.startResolve = undefined
+          logMain('akirabox', 'Timeout aguardando o navegador iniciar o download', {
+            sourceUrl: job.sourceUrl,
+          })
           job.startReject?.(new Error('O AkiraBox não iniciou o download a tempo.'))
           job.startReject = undefined
         }
@@ -558,6 +818,11 @@ export function createAkiraboxService() {
     }
 
     try {
+      logMain('akirabox', 'Iniciando job de download', {
+        jobId,
+        sourceUrl: job.sourceUrl,
+        destPath: job.destPath,
+      })
       const snapshot = await runExclusive(async () => {
         const state = await ensureReadyPage(job.sourceUrl)
         job.filename = chooseFilename(state, job.sourceUrl)
@@ -575,6 +840,11 @@ export function createAkiraboxService() {
       job.speedBps = 0
       job.etaSecs = 0
       job.error = error instanceof Error ? error.message : String(error)
+      logMain('akirabox', 'Job falhou', {
+        jobId,
+        sourceUrl: job.sourceUrl,
+        error: job.error,
+      })
       job.startReject?.(new Error(job.error))
       job.startResolve = undefined
       job.startReject = undefined
@@ -597,7 +867,9 @@ export function createAkiraboxService() {
       lastTickAt: Date.now(),
       lastProgressAt: Date.now(),
       smoothedSpeedBps: 0,
+      challengeAutoSolveAttempted: false,
     })
+    logMain('akirabox', 'Job criado', { jobId, url, destPath })
     void runDownload(jobId)
     return jobId
   }

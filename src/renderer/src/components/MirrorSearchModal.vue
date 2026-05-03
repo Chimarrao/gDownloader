@@ -98,11 +98,21 @@
                 :key="result.url"
                 type="button"
                 class="mirror-result-card"
+                :class="{ 'mirror-result-best': isBestMirror(result.url) }"
                 @click="$emit('copy-one', result.url)"
               >
                 <div class="mirror-result-top">
                   <span class="mirror-result-source">{{ result.source }}</span>
-                  <span class="mirror-result-score">score {{ result.score }}</span>
+                  <div class="mirror-result-badges">
+                    <span v-if="isBestMirror(result.url)" class="mirror-badge-best">
+                      <i class="pi pi-star-fill"></i>
+                      Recomendado
+                    </span>
+                    <span v-else-if="estimatingUrls.has(result.url)" class="mirror-badge-estimating">
+                      <i class="pi pi-spin pi-spinner"></i>
+                    </span>
+                    <span class="mirror-result-score">score {{ result.score }}</span>
+                  </div>
                 </div>
                 <div class="mirror-result-url">{{ result.url }}</div>
                 <div class="mirror-result-meta">
@@ -157,6 +167,58 @@ const props = defineProps<{
   results: MirrorViewResult[]
   log: string[]
 }>()
+
+// ── Mirror speed estimation ───────────────────────────────────────────────
+// Map from URL to estimated quality score (higher = faster)
+const mirrorSpeeds = ref<Map<string, number>>(new Map())
+// Set of URLs currently being estimated
+const estimatingUrls = ref<Set<string>>(new Set())
+
+async function estimateMirrorSpeed(url: string): Promise<void> {
+  if (estimatingUrls.value.has(url) || mirrorSpeeds.value.has(url)) return
+  estimatingUrls.value = new Set([...estimatingUrls.value, url])
+  try {
+    const start = Date.now()
+    const resp = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(3000) })
+    const elapsed = Date.now() - start
+    const contentLength = parseInt(resp.headers.get('content-length') || '0')
+    const score = contentLength > 0 ? contentLength / elapsed * 1000 : 1000 / elapsed
+    mirrorSpeeds.value = new Map([...mirrorSpeeds.value, [url, score]])
+  } catch {
+    // Mark as 0 so we don't retry
+    mirrorSpeeds.value = new Map([...mirrorSpeeds.value, [url, 0]])
+  } finally {
+    const next = new Set(estimatingUrls.value)
+    next.delete(url)
+    estimatingUrls.value = next
+  }
+}
+
+function getBestMirrorUrl(): string | null {
+  if (props.results.length === 0) return null
+  let best: string | null = null
+  let bestScore = -1
+  for (const result of props.results) {
+    const speed = mirrorSpeeds.value.get(result.url) ?? -1
+    if (speed > bestScore) {
+      bestScore = speed
+      best = result.url
+    }
+  }
+  return bestScore > 0 ? best : null
+}
+
+function isBestMirror(url: string): boolean {
+  return getBestMirrorUrl() === url
+}
+
+// Kick off estimation for each new result (up to 10 to avoid too many requests)
+watch(() => props.results, (newResults) => {
+  const toEstimate = newResults.filter((r) => !mirrorSpeeds.value.has(r.url)).slice(0, 10)
+  for (const r of toEstimate) {
+    void estimateMirrorSpeed(r.url)
+  }
+}, { deep: true })
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -354,6 +416,39 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+.mirror-result-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mirror-badge-best {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.mirror-badge-estimating {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.mirror-result-best {
+  border-color: color-mix(in srgb, #fbbf24 35%, var(--border-color)) !important;
+  background: color-mix(in srgb, var(--bg-card) 92%, rgba(251, 191, 36, 0.08)) !important;
 }
 
 .mirror-result-url {

@@ -16,6 +16,7 @@ export const defaultPublicSettings: PersistedSettings = {
   fontFamily: 'Inter',
   uiZoom: 1,
   nativeNotification: true,
+  clipboardMonitorEnabled: false,
   accentColor: undefined,
 }
 

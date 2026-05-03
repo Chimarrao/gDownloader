@@ -27,24 +27,29 @@ export const DOWNLOAD_SORT_OPTIONS: Array<{ value: DownloadSortMode; label: stri
 export const STATUS_LABELS: Record<string, string> = {
   [DownloadStatus.Pending]: 'Na fila',
   [DownloadStatus.Downloading]: 'Baixando',
+  [DownloadStatus.Verifying]: 'Verificando',
   [DownloadStatus.Complete]: 'Concluído',
+  [DownloadStatus.Corrupted]: 'Corrompido',
   [DownloadStatus.Error]: 'Erro',
   [DownloadStatus.Cancelled]: 'Cancelado',
   [DownloadStatus.Paused]: 'Pausado',
   [DownloadStatus.RateLimited]: 'Aguardando',
   [DownloadStatus.WaitingCaptcha]: 'Captcha',
+  [DownloadStatus.DiskFull]: 'Disco cheio',
 }
 
 export function isTerminal(status: DownloadItem['status']): boolean {
   return (
     status === DownloadStatus.Complete
     || status === DownloadStatus.Error
+    || status === DownloadStatus.Corrupted
     || status === DownloadStatus.Cancelled
+    || status === DownloadStatus.DiskFull
   )
 }
 
 export function activePriority(item: DownloadItem): number {
-  if (item.status === DownloadStatus.Downloading) return 0
+  if (item.status === DownloadStatus.Downloading || item.status === DownloadStatus.Verifying) return 0
   if (
     item.status === DownloadStatus.Pending
     || item.status === DownloadStatus.RateLimited
@@ -131,16 +136,19 @@ export function getDownloadActions(item: DownloadItem): Record<string, boolean> 
   const retryable =
     item.status === DownloadStatus.Paused
     || item.status === DownloadStatus.Error
+    || item.status === DownloadStatus.Corrupted
     || item.status === DownloadStatus.Cancelled
     || item.status === DownloadStatus.RateLimited
+    || item.status === DownloadStatus.DiskFull
 
   return {
-    canPause: item.status === DownloadStatus.Pending || item.status === DownloadStatus.Downloading,
+    canPause: item.status === DownloadStatus.Pending || item.status === DownloadStatus.Downloading || item.status === DownloadStatus.Verifying,
     canResume: item.status === DownloadStatus.Paused,
     canOpenCaptcha: item.status === DownloadStatus.WaitingCaptcha && Boolean(item.captchaSitekey),
     canCancel:
       item.status === DownloadStatus.Pending
       || item.status === DownloadStatus.Downloading
+      || item.status === DownloadStatus.Verifying
       || item.status === DownloadStatus.Paused
       || item.status === DownloadStatus.RateLimited
       || item.status === DownloadStatus.WaitingCaptcha,
@@ -149,12 +157,16 @@ export function getDownloadActions(item: DownloadItem): Record<string, boolean> 
       item.status === DownloadStatus.Pending
       || item.status === DownloadStatus.Paused
       || item.status === DownloadStatus.Error
-      || item.status === DownloadStatus.RateLimited,
+      || item.status === DownloadStatus.Corrupted
+      || item.status === DownloadStatus.RateLimited
+      || item.status === DownloadStatus.DiskFull,
     canRestart:
       item.status === DownloadStatus.Paused
       || item.status === DownloadStatus.Error
+      || item.status === DownloadStatus.Corrupted
       || item.status === DownloadStatus.Cancelled
-      || item.status === DownloadStatus.Complete,
+      || item.status === DownloadStatus.Complete
+      || item.status === DownloadStatus.DiskFull,
     canOpenFolder: item.status === DownloadStatus.Complete && Boolean(item.outputPath),
     canRemove: isTerminal(item.status),
     canRemoveWithFiles: isTerminal(item.status) && Boolean(item.outputPath),

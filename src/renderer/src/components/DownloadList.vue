@@ -34,6 +34,13 @@
       <div v-if="items.length > 0" class="list-toolbar">
         <span class="list-count">{{ items.length }} item(ns) na sessão</span>
         <div class="toolbar-actions">
+          <button
+            class="toolbar-btn"
+            title="Criar pacote"
+            @click="createPackage"
+          >
+            Novo pacote
+          </button>
           <label class="toolbar-sort">
             <span>Ordenar</span>
             <select v-model="sortMode" class="toolbar-select">
@@ -62,7 +69,7 @@
           v-for="item in visibleItems"
           :key="item.id"
           class="download-card"
-          :class="`status-bg-${item.status}`"
+          :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned }]"
         >
           <!-- Left: provider icon -->
           <div
@@ -89,6 +96,14 @@
                   <span class="badge-dot" :class="`dot-${item.status}`"></span>
                   {{ statusTextValue(item) }}
                 </span>
+                <button
+                  class="action-btn pin-btn"
+                  :class="{ 'pin-btn-active': item.pinned }"
+                  :title="item.pinned ? 'Desafixar' : 'Fixar no topo'"
+                  @click="togglePin(item.id)"
+                >
+                  <i class="pi pi-star" :class="{ 'pi-star-fill': item.pinned }"></i>
+                </button>
                 <button
                   class="action-btn"
                   :title="item.isFolder ? 'Copiar URLs' : 'Copiar URL'"
@@ -155,7 +170,7 @@
                 <button
                   v-if="actionsFor(item).canRestart"
                   class="action-btn"
-                  title="Reiniciar"
+                  :title="item.status === 'corrupted' ? 'Re-baixar' : 'Reiniciar'"
                   @click="restart(item.id)"
                 >
                   <i class="pi pi-replay"></i>
@@ -199,7 +214,7 @@
             <div class="progress-track">
               <div
                 class="progress-fill"
-                :class="{ 'progress-shimmer': item.status === 'downloading' }"
+                :class="{ 'progress-shimmer': item.status === 'downloading' || item.status === 'verifying' }"
                 :style="{
                   width: item.percent + '%',
                   background: getProgressColor(item)
@@ -216,6 +231,14 @@
                 <span class="meta-speed">{{ formatSpeed(effectiveSpeedValue(item)) }}</span>
                 <span class="meta-sep">·</span>
                 <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} restante</span>
+              </template>
+
+              <template v-else-if="item.status === 'verifying'">
+                <span class="meta-sep">·</span>
+                <span class="meta-verifying">
+                  <i class="pi pi-shield"></i>
+                  Verificando {{ item.expectedHash?.algorithm?.toUpperCase() ?? 'hash' }}
+                </span>
               </template>
 
               <template v-else-if="item.status === 'rate_limited'">
@@ -260,7 +283,15 @@
                 <span class="meta-wait-reason" :title="item.error">{{ item.error }}</span>
               </template>
 
-              <template v-else-if="item.status === 'error' && item.error">
+              <template v-else-if="item.status === 'disk_full'">
+                <span class="meta-sep">·</span>
+                <span class="meta-disk-full">
+                  <i class="pi pi-database"></i>
+                  Espaço em disco insuficiente
+                </span>
+              </template>
+
+              <template v-else-if="(item.status === 'error' || item.status === 'corrupted') && item.error">
                 <span class="meta-sep">·</span>
                 <span class="meta-error" :title="item.error">{{ item.error }}</span>
               </template>
@@ -271,7 +302,51 @@
                   tentativa {{ (item.retryCount ?? 0) + 1 }}/{{ (item.maxRetries ?? 0) + 1 }}
                 </span>
               </template>
+
+              <template v-if="packages.length > 0">
+                <span class="meta-sep">·</span>
+                <label class="package-picker">
+                  <span
+                    class="package-dot"
+                    :style="{ backgroundColor: packageColor(item.packageId) }"
+                  ></span>
+                  <select
+                    :value="item.packageId ?? ''"
+                    title="Mover para pacote"
+                    @change="assignPackage(item, ($event.target as HTMLSelectElement).value)"
+                  >
+                    <option value="">Sem pacote</option>
+                    <option
+                      v-for="pkg in packages"
+                      :key="pkg.id"
+                      :value="pkg.id"
+                    >
+                      {{ pkg.name }}
+                    </option>
+                  </select>
+                </label>
+              </template>
             </div>
+
+            <!-- ErrorState for specific error types -->
+            <ErrorState
+              v-if="item.status === 'disk_full'"
+              title="Disco cheio"
+              :description="item.error || 'Não há espaço suficiente para salvar o arquivo.'"
+              icon="pi pi-database"
+              :actions="[
+                { label: 'Trocar pasta', icon: 'pi pi-folder', variant: 'primary', handler: () => chooseOutputDir() },
+                { label: 'Tentar novamente', icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+              ]"
+            />
+            <ErrorState
+              v-else-if="item.status === 'error' && item.error"
+              :title="item.error"
+              icon="pi pi-exclamation-circle"
+              :actions="[
+                { label: 'Tentar novamente', icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+              ]"
+            />
 
             <!-- Row 5: output path (clickable) -->
             <div
@@ -388,7 +463,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
-import type { DownloadChild, DownloadItem } from '../../../shared/types'
+import type { DownloadChild, DownloadItem, DownloadPackage } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
 import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
@@ -407,6 +482,7 @@ import {
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatSpeed } from '../utils/format'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
+import ErrorState from './ErrorState.vue'
 
 interface ModuleSummary {
   id: string
@@ -430,6 +506,7 @@ const emit = defineEmits<{
 
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
+const packages = ref<DownloadPackage[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const activeCaptchaId = ref<string | null>(null)
@@ -452,10 +529,17 @@ const nowTick = ref(Date.now())
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 const sortOptions = DOWNLOAD_SORT_OPTIONS
+// Set of download IDs that recently changed status (for flash animation)
+const flashingIds = ref<Set<string>>(new Set())
 
 // ── Computed ───────────────────────────────────────────────
 const orderedItems = computed(() =>
-  [...items.value].sort((left, right) => compareDownloads(left, right, sortMode.value, nowTick.value))
+  [...items.value].sort((left, right) => {
+    // Pinned items float to the top
+    const pinnedDiff = (right.pinned ? 1 : 0) - (left.pinned ? 1 : 0)
+    if (pinnedDiff !== 0) return pinnedDiff
+    return compareDownloads(left, right, sortMode.value, nowTick.value)
+  })
 )
 const finishedCount = computed(() =>
   items.value.filter((item) => isTerminal(item.status)).length
@@ -518,6 +602,8 @@ onMounted(async () => {
     acc[mod.id] = { id: mod.id, name: mod.name, color: mod.color }
     return acc
   }, {})
+
+  packages.value = await window.api.packages.list().catch(() => [])
 
   // Load existing downloads from backend
   await hydrate()
@@ -617,6 +703,38 @@ onMounted(async () => {
   )
 
   unsubs.push(
+    window.api.downloads.on('download:verifying', (event: unknown) => {
+      const ev = event as {
+        id: string
+        bytes_done?: number
+        bytes_total?: number
+      }
+      if (!ev?.id) return
+      const idx = itemIndexById.value[ev.id] ?? -1
+      if (idx < 0) {
+        void hydrate()
+        return
+      }
+
+      const total = ev.bytes_total ?? items.value[idx].size
+      const bytesDone = ev.bytes_done ?? 0
+      const percent = total > 0
+        ? Math.min(100, Math.floor((bytesDone / total) * 100))
+        : items.value[idx].percent
+
+      items.value[idx] = {
+        ...items.value[idx],
+        status: DownloadStatusEnum.Verifying,
+        percent,
+        size: total > 0 ? total : items.value[idx].size,
+        speedBps: 0,
+        etaSec: 0,
+        lastProgressAt: Date.now(),
+      }
+    })
+  )
+
+  unsubs.push(
     window.api.downloads.on('download:complete', (event: unknown) => {
       const ev = event as { id: string; path?: string; outputPath?: string }
       if (!ev?.id) return
@@ -632,6 +750,21 @@ onMounted(async () => {
           outputPath
         }
         emit('download-complete', { id: ev.id, outputPath })
+
+        // Auto-extract if enabled
+        if (outputPath) {
+          void window.api.settings.load().then((settings) => {
+            if (!settings.autoExtract) return
+            const passwords = (settings as any).passwordList ?? []
+            return window.api.archive.autoExtract(outputPath, passwords).then((result) => {
+              if (result.success && result.outputDir) {
+                void window.api.system.notify('Extração concluída', result.outputDir).catch(() => null)
+              } else if (result.error === 'WRONG_PASSWORD') {
+                void window.api.system.notify('Extração falhou', 'Nenhuma senha funcionou').catch(() => null)
+              }
+            })
+          }).catch(() => null)
+        }
       }
       void hydrate()
     })
@@ -680,6 +813,11 @@ onMounted(async () => {
           speedBps: 0,
           etaSec: 0,
         })
+        // Flash animation for status change
+        flashingIds.value = new Set([...flashingIds.value, ev.id])
+        setTimeout(() => {
+          flashingIds.value = new Set([...flashingIds.value].filter((id) => id !== ev.id))
+        }, 400)
         void maybeResolveCaptchaById(ev.id)
       } else {
         void hydrate()
@@ -775,6 +913,32 @@ async function hydrate(): Promise<void> {
   }
 }
 
+async function createPackage(): Promise<void> {
+  const name = window.prompt('Nome do pacote')
+  if (!name?.trim()) return
+  const palette = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2']
+  const color = palette[packages.value.length % palette.length]
+  const created = await window.api.packages.create({ name: name.trim(), color }).catch(() => null)
+  if (created) packages.value = [created, ...packages.value]
+}
+
+async function assignPackage(item: DownloadItem, packageId: string): Promise<void> {
+  if (packageId) {
+    await window.api.packages.assign(packageId, item.id).catch(() => null)
+  } else {
+    await window.api.packages.unassign(item.id).catch(() => null)
+  }
+  const idx = itemIndexById.value[item.id] ?? -1
+  if (idx >= 0) {
+    items.value[idx] = { ...items.value[idx], packageId: packageId || undefined }
+  }
+}
+
+function packageColor(packageId: string | undefined): string {
+  if (!packageId) return '#9ca3af'
+  return packages.value.find((pkg) => pkg.id === packageId)?.color ?? '#9ca3af'
+}
+
 function upsertById(id: string, patch: Partial<DownloadItem>): void {
   const idx = itemIndexById.value[id] ?? -1
   if (idx === -1) {
@@ -839,6 +1003,25 @@ async function removeWithFiles(id: string): Promise<void> {
 async function clearFinished(): Promise<void> {
   await window.api.downloads.clearFinished().catch(() => null)
   await hydrate()
+}
+
+async function togglePin(id: string): Promise<void> {
+  const idx = itemIndexById.value[id] ?? -1
+  if (idx >= 0) {
+    // Optimistic update
+    items.value[idx] = { ...items.value[idx], pinned: !items.value[idx].pinned }
+  }
+  await window.api.downloads.togglePin(id).catch(() => null)
+}
+
+function chooseOutputDir(): void {
+  window.api.settings.chooseDirectory().then((dir) => {
+    if (dir) {
+      window.api.settings.load().then((settings) => {
+        window.api.settings.save({ ...settings, outputDir: dir }).catch(() => null)
+      }).catch(() => null)
+    }
+  }).catch(() => null)
 }
 
 async function copyUrl(item: DownloadItem): Promise<void> {
@@ -967,7 +1150,9 @@ function getIcon(moduleId: string) {
 }
 
 function getProgressColor(item: DownloadItem): string {
-  if (item.status === 'error') return '#ef4444'
+  if (item.status === 'error' || item.status === 'corrupted') return '#ef4444'
+  if (item.status === 'disk_full') return '#ef4444'
+  if (item.status === 'verifying') return 'linear-gradient(90deg, #38bdf8, #60a5fa)'
   if (item.status === 'complete') return 'linear-gradient(90deg, #22c55e, #4ade80)'
   if (item.status === 'cancelled') return '#666'
   if (isWaitingRetryNow(item)) return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
@@ -1199,11 +1384,17 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
+.download-card.status-bg-verifying::before {
+  background: linear-gradient(180deg, #38bdf8, #60a5fa);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
 .download-card.status-bg-complete::before {
   background: linear-gradient(180deg, #22c55e, #4ade80);
 }
 
-.download-card.status-bg-error::before {
+.download-card.status-bg-error::before,
+.download-card.status-bg-corrupted::before {
   background: #ef4444;
 }
 
@@ -1308,12 +1499,18 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   color: var(--status-downloading);
 }
 
+.badge-verifying {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
 .badge-complete {
   background: rgba(34, 197, 94, 0.15);
   color: var(--status-complete);
 }
 
-.badge-error {
+.badge-error,
+.badge-corrupted {
   background: rgba(239, 68, 68, 0.15);
   color: var(--status-error);
 }
@@ -1340,8 +1537,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: var(--status-downloading);
   animation: pulse-glow 1.2s ease-in-out infinite;
 }
+.dot-verifying {
+  background: #38bdf8;
+  animation: pulse-glow 1.2s ease-in-out infinite;
+}
 .dot-complete { background: var(--status-complete); }
-.dot-error { background: var(--status-error); }
+.dot-error,
+.dot-corrupted { background: var(--status-error); }
 .dot-cancelled { background: var(--status-cancelled); }
 .dot-paused { background: var(--status-paused); }
 .dot-rate_limited { background: #f59e0b; animation: pulse-glow 1.5s ease-in-out infinite; }
@@ -1478,6 +1680,14 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .meta-wait {
+  font-weight: 600;
+}
+
+.meta-verifying {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #38bdf8;
   font-weight: 600;
 }
 
@@ -1766,6 +1976,29 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   font-weight: 600;
 }
 
+.package-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.package-picker select {
+  max-width: 150px;
+  height: 24px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.package-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -1798,4 +2031,76 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .skeleton-title    { height: 14px; width: 55%; }
 .skeleton-progress { height: 8px;  width: 100%; }
 .skeleton-meta     { height: 10px; width: 35%; }
+
+/* ── disk_full meta ─────────────────────────────────────────── */
+.meta-disk-full {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #ef4444;
+  font-weight: 600;
+}
+
+/* ── Status flash animation ─────────────────────────────────── */
+@keyframes statusFlash {
+  0% { background-color: color-mix(in srgb, var(--accent-color) 15%, transparent); }
+  100% { background-color: transparent; }
+}
+
+.status-flash {
+  animation: statusFlash 400ms ease-out;
+}
+
+/* ── Progress bar smooth transition ────────────────────────── */
+.progress-fill {
+  transition: width 0.4s ease-out;
+}
+
+/* ── Pin button ─────────────────────────────────────────────── */
+.pin-btn {
+  color: var(--text-muted);
+}
+
+.pin-btn-active {
+  color: #fbbf24 !important;
+  border-color: rgba(251, 191, 36, 0.4) !important;
+  background: rgba(251, 191, 36, 0.1) !important;
+}
+
+.pin-btn:hover {
+  color: #fbbf24 !important;
+  border-color: rgba(251, 191, 36, 0.4) !important;
+  background: rgba(251, 191, 36, 0.1) !important;
+}
+
+/* ── Pinned card indicator ──────────────────────────────────── */
+.card-pinned {
+  border-color: color-mix(in srgb, #fbbf24 30%, var(--border-color)) !important;
+}
+
+.card-pinned::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fbbf24;
+  opacity: 0.7;
+}
+
+/* ── disk_full card indicator ──────────────────────────────── */
+.download-card.status-bg-disk_full::before {
+  background: #ef4444;
+}
+
+.badge-disk_full {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.dot-disk_full {
+  background: #ef4444;
+}
 </style>

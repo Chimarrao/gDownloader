@@ -1,5 +1,6 @@
 import { BrowserWindow, shell } from 'electron'
 import { delay, HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
+import { logMain } from './debug-log'
 
 const CAPTCHA_PARTITION = 'persist:captcha-helper'
 
@@ -215,10 +216,17 @@ export function createCaptchaWindowService() {
       throw new Error('Captcha sem URL de origem.')
     }
 
+    logMain('captcha-window', 'Abrindo resolvedor manual', {
+      provider: request.provider,
+      pageUrl: request.pageUrl,
+      sourceUrl: request.sourceUrl,
+    })
+
     const win = createWindow()
     let closedByUser = false
     win.once('closed', () => {
       closedByUser = true
+      logMain('captcha-window', 'Janela manual encerrada pelo usuário')
     })
 
     await win.loadURL(startUrl)
@@ -235,6 +243,10 @@ export function createCaptchaWindowService() {
 
       const state = await readCaptchaState(win).catch(() => null)
       if (state?.token) {
+        logMain('captcha-window', 'Token capturado manualmente', {
+          provider: request.provider,
+          pageUrl: request.pageUrl,
+        })
         if (!win.isDestroyed()) {
           win.close()
         }
@@ -247,6 +259,10 @@ export function createCaptchaWindowService() {
     if (!win.isDestroyed()) {
       win.close()
     }
+    logMain('captcha-window', 'Resolvedor manual encerrado sem token', {
+      provider: request.provider,
+      pageUrl: request.pageUrl,
+    })
     return null
   }
 

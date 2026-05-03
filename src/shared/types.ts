@@ -76,12 +76,40 @@ export interface DownloadItem {
   captchaSitekey?: string
   captchaPageUrl?: string
   error: string
+  expectedHash?: ExpectedHash
   outputPath?: string
   priority?: number
+  pinned?: boolean
+  packageId?: string
   addedAt: number
   startedAt?: number
   completedAt?: number
   lastProgressAt?: number
+}
+
+export interface DownloadPackage {
+  id: string
+  name: string
+  color: string
+  comment?: string | null
+  destDirOverride?: string | null
+  priority: number
+  createdAt: number
+}
+
+export interface CreateDownloadPackagePayload {
+  name: string
+  color?: string
+  comment?: string
+  destDirOverride?: string
+  priority?: number
+}
+
+export type HashAlgorithm = 'md5' | 'sha1' | 'sha256' | 'crc32'
+
+export interface ExpectedHash {
+  algorithm: HashAlgorithm
+  value: string
 }
 
 export interface PersistedDownloadItem {
@@ -109,7 +137,24 @@ export interface PersistedSettings {
   fontFamily: string
   uiZoom: number
   nativeNotification: boolean
+  clipboardMonitorEnabled: boolean
   accentColor?: string
+  proxyMode?: string
+  proxyHost?: string
+  proxyPort?: number
+  proxyUsername?: string
+  proxyPassword?: string
+  startTor?: boolean
+  useReconnectOnRateLimit?: boolean
+  reconnectMethod?: string
+  reconnectCommand?: string
+  routerIp?: string
+  postDownloadAction?: string
+  postDownloadActionTrigger?: string
+  postDownloadCommand?: string
+  postDownloadWebhookUrl?: string
+  autoExtract?: boolean
+  passwordList?: string[]
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {
@@ -135,9 +180,12 @@ export interface CachedFileInfoSnapshot extends FileInfo {
 export type DownloadStatusExtended =
   | 'pending'
   | 'downloading'
+  | 'verifying'
   | 'paused'
   | 'complete'
+  | 'corrupted'
   | 'error'
   | 'cancelled'
   | 'rate_limited'
   | 'waiting_captcha'
+  | 'disk_full'

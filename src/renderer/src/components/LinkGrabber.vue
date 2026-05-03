@@ -1,6 +1,12 @@
 <template>
   <div class="link-grabber">
-    <LinkInputPanel v-model="urlsInput" @resize="autoResize" />
+    <LinkInputPanel
+      v-model="urlsInput"
+      @resize="autoResize"
+      @imported-links="appendImportedLinks"
+      @imported-hashes="appendImportedHashes"
+      @import-error="showImportError"
+    />
 
     <CapturedResultsPanel
       v-if="rows.length > 0"
@@ -35,6 +41,7 @@
       @set-row-selection="setRowSelectionChecked"
       @toggle-expanded="toggleExpanded"
       @open-mirrors="openMirrors"
+      @filtered-change="visibleFilteredUrls = new Set($event)"
     />
 
     <p v-if="lastError" class="error-msg">
@@ -78,7 +85,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { FileInfo } from '../../../shared/types'
+import type { ExpectedHash, FileInfo } from '../../../shared/types'
 import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes, formatDuration } from '../utils/format'
@@ -116,6 +123,10 @@ interface StoredMirrorSession {
   state: MirrorSearchState
 }
 
+const props = defineProps<{
+  incomingUrl?: string
+}>()
+
 const emit = defineEmits<{
   (e: 'added'): void
   (e: 'adding-urls', count: number): void
@@ -124,12 +135,14 @@ const { t } = useI18n()
 
 const urlsInput = ref('')
 const rows = ref<CapturedRow[]>([])
+const visibleFilteredUrls = ref<Set<string> | null>(null)
 const adding = ref(false)
 const lastError = ref('')
 const detectToken = ref(0)
 const actionsRef = ref<HTMLElement | null>(null)
 const addQueueDone = ref(0)
 const addQueueTotal = ref(0)
+const expectedHashesByFilename = ref<Record<string, ExpectedHash>>({})
 let detectTimer: number | null = null
 
 // ── Mirrors ───────────────────────────────────────────────────────────────
@@ -449,6 +462,7 @@ interface QueueEntry {
   size: number
   sourceLabel: string
   selectedChildren?: string[]
+  expectedHash?: ExpectedHash
 }
 
 const selectableRows = computed(() => rows.value.filter((row) => rowSelectableUnitCount(row) > 0))
@@ -456,6 +470,9 @@ const selectedEntries = computed<QueueEntry[]>(() => {
   const entries: QueueEntry[] = []
 
   for (const row of rows.value) {
+    if (visibleFilteredUrls.value && !visibleFilteredUrls.value.has(row.url)) {
+      continue
+    }
     if (!row.module || row.loading || row.error || !row.info) {
       continue
     }
@@ -474,6 +491,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           title: row.info.name,
           size: row.info.size,
           sourceLabel: row.module.name,
+          expectedHash: row.expectedHash,
         })
         continue
       }
@@ -487,6 +505,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         selectedChildren: chosen
           .map((child) => child.sourceUrl)
           .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
+        expectedHash: row.expectedHash,
       })
       continue
     }
@@ -498,6 +517,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         title: row.info.name,
         size: row.info.size,
         sourceLabel: row.module.name,
+        expectedHash: row.expectedHash,
       })
     }
   }
@@ -548,6 +568,14 @@ watch(urlsInput, () => {
 })
 
 watch(
+  () => props.incomingUrl,
+  (url) => {
+    if (!url) return
+    appendImportedLinks([url])
+  }
+)
+
+watch(
   rows,
   () => {
     const target = activeMirrorTarget.value
@@ -595,6 +623,23 @@ function parseUrls(text: string): string[] {
   return parseCapturedUrls(text)
 }
 
+function appendImportedLinks(urls: string[]): void {
+  const currentUrls = new Set(parseUrls(urlsInput.value))
+  const uniqueUrls = urls.filter((url) => !currentUrls.has(url))
+  if (uniqueUrls.length === 0) {
+    lastError.value = ''
+    return
+  }
+  const current = urlsInput.value.trim()
+  const imported = uniqueUrls.join('\n')
+  urlsInput.value = current ? `${current}\n${imported}` : imported
+  lastError.value = ''
+}
+
+function showImportError(message: string): void {
+  lastError.value = message
+}
+
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     window.requestAnimationFrame(() => resolve())
@@ -624,6 +669,7 @@ async function detectProviders(): Promise<void> {
     expanded: false,
     sourceUrls: [url],
     sourceLabels: [],
+    expectedHash: expectedHashFromUrl(url),
   }))
 
   const queue = rows.value.map((_, index) => index)
@@ -661,6 +707,7 @@ async function detectProviders(): Promise<void> {
         if (cached) {
           rows.value[index].info = hydrateInfoForSelection(cached)
           rows.value[index].displayName = cached.name
+          applyExpectedHash(rows.value[index])
           rows.value[index].cachedInfo = true
           rows.value[index].availability = 'checking'
         }
@@ -670,6 +717,7 @@ async function detectProviders(): Promise<void> {
           if (token !== detectToken.value) return
           rows.value[index].info = hydrateInfoForSelection(info)
           rows.value[index].displayName = info.name
+          applyExpectedHash(rows.value[index])
           rows.value[index].selected = isRowChecked(rows.value[index])
           rows.value[index].loading = false
           rows.value[index].availability = 'online'
@@ -727,7 +775,8 @@ async function addAll(): Promise<void> {
         entry.title,
         entry.size,
         outputDir,
-        entry.selectedChildren
+        entry.selectedChildren,
+        entry.expectedHash
       )
       addedCount += 1
       addQueueDone.value = addedCount
@@ -756,7 +805,55 @@ function clear(): void {
   urlsInput.value = ''
   rows.value = []
   lastError.value = ''
+  expectedHashesByFilename.value = {}
   closeMirrors()
+}
+
+function appendImportedHashes(hashes: Array<{ filename: string; value: string }>): void {
+  const next = { ...expectedHashesByFilename.value }
+  for (const item of hashes) {
+    next[normalizeFilename(item.filename)] = {
+      algorithm: 'crc32',
+      value: item.value,
+    }
+  }
+  expectedHashesByFilename.value = next
+  for (const row of rows.value) {
+    applyExpectedHash(row)
+  }
+  lastError.value = `${hashes.length} CRC32 importado(s) do .sfv`
+}
+
+function normalizeFilename(filename: string): string {
+  return filename.trim().toLowerCase()
+}
+
+function expectedHashFromUrl(url: string): ExpectedHash | undefined {
+  const fragment = url.split('#')[1] ?? ''
+  for (const part of fragment.split('&')) {
+    const [key, value] = part.split('=')
+    const algorithm = key?.toLowerCase()
+    if (!value || !['md5', 'sha1', 'sha256', 'crc32'].includes(algorithm)) {
+      continue
+    }
+    const normalized = value.replace(/[^a-fA-F0-9]/g, '').toLowerCase()
+    if (normalized) {
+      return {
+        algorithm: algorithm as ExpectedHash['algorithm'],
+        value: normalized,
+      }
+    }
+  }
+  return undefined
+}
+
+function applyExpectedHash(row: CapturedRow): void {
+  row.expectedHash = expectedHashFromUrl(row.url) ?? row.expectedHash
+  const filename = row.info?.name ?? row.displayName
+  const sfvHash = expectedHashesByFilename.value[normalizeFilename(filename)]
+  if (sfvHash) {
+    row.expectedHash = sfvHash
+  }
 }
 
 function autoResize(event: Event): void {
@@ -797,6 +894,7 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
     if (!existing.module && row.module) existing.module = row.module
     if ((!existing.info || !existing.info.children?.length) && row.info) existing.info = row.info
     if (!existing.error && row.error) existing.error = row.error
+    if (!existing.expectedHash && row.expectedHash) existing.expectedHash = row.expectedHash
   }
 
   for (const row of grouped.values()) {

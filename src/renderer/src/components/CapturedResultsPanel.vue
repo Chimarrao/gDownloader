@@ -47,9 +47,68 @@
       </span>
     </div>
 
+    <div class="filter-bar">
+      <input
+        v-model="searchQuery"
+        class="filter-search"
+        type="text"
+        placeholder="Buscar por nome..."
+      />
+      <div class="filter-chips">
+        <label class="filter-chip" :class="{ active: filterOnlineOnly }">
+          <input type="checkbox" v-model="filterOnlineOnly" />
+          <span>Só online</span>
+        </label>
+        <button
+          v-if="availableHosts.length > 0"
+          class="filter-chip filter-hosts-btn"
+          :class="{ active: filterHosts.length > 0 }"
+          @click="showHostFilter = !showHostFilter"
+        >
+          <i class="pi pi-server"></i>
+          <span>{{ filterHosts.length > 0 ? filterHosts.length + ' host(s)' : 'Hosts' }}</span>
+        </button>
+        <button
+          v-if="hasActiveFilters"
+          class="filter-clear-btn"
+          @click="clearFilters"
+        >
+          <i class="pi pi-times"></i>
+        </button>
+      </div>
+      <div class="filter-size">
+        <input v-model.number="filterSizeMin" type="number" min="0" placeholder="Min MB" class="filter-size-input" />
+        <span class="filter-size-sep">–</span>
+        <input v-model.number="filterSizeMax" type="number" min="0" placeholder="Max MB" class="filter-size-input" />
+        <span class="filter-size-label">MB</span>
+      </div>
+      <input
+        v-model="excludeRegex"
+        class="filter-search filter-regex"
+        type="text"
+        placeholder="Excluir regex..."
+        title="Remove da seleção/adicionar itens cujo nome ou URL case com a regex"
+      />
+      <div v-if="showHostFilter && availableHosts.length > 0" class="host-filter-dropdown">
+        <label
+          v-for="host in availableHosts"
+          :key="host"
+          class="host-filter-item"
+          :class="{ active: filterHosts.includes(host) }"
+        >
+          <input
+            type="checkbox"
+            :checked="filterHosts.includes(host)"
+            @change="toggleHostFilter(host)"
+          />
+          <span>{{ host }}</span>
+        </label>
+      </div>
+    </div>
+
     <div class="captured-list">
       <div
-        v-for="row in rows"
+        v-for="row in filteredRows"
         :key="row.url"
         class="captured-row"
         :class="{ unavailable: !row.module || row.error }"
@@ -100,6 +159,10 @@
               <span v-else-if="row.loading">{{ t('linkGrabberReadingMetadata') }}</span>
               <span v-else-if="row.error">{{ row.error }}</span>
               <span v-else-if="row.info">{{ fmtBytes(row.info.size) }}</span>
+              <template v-if="row.expectedHash">
+                <span>·</span>
+                <span class="hash-chip">{{ row.expectedHash.algorithm.toUpperCase() }} {{ row.expectedHash.value }}</span>
+              </template>
             </div>
           </div>
 
@@ -216,6 +279,7 @@
 
 <script setup lang="ts">
 import type { PropType } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 import { useI18n } from '../i18n'
 import { getFileIcon } from '../assets/file-icons'
@@ -330,9 +394,93 @@ const emit = defineEmits<{
   (e: 'set-row-selection', payload: { row: CapturedRow; checked: boolean }): void
   (e: 'toggle-expanded', row: CapturedRow): void
   (e: 'open-mirrors', row: CapturedRow): void
+  (e: 'filtered-change', urls: string[]): void
 }>()
 
 const { t } = useI18n()
+
+// ── Filter state ──────────────────────────────────────────────────────────────
+const searchQuery = ref('')
+const filterHosts = ref<string[]>([])
+const filterSizeMin = ref<number>(0)
+const filterSizeMax = ref<number>(0)
+const filterOnlineOnly = ref(false)
+const excludeRegex = ref('')
+const showHostFilter = ref(false)
+
+const availableHosts = computed(() => {
+  const hosts = new Set<string>()
+  for (const row of props.rows) {
+    const host = row.module?.name ?? ''
+    if (host) hosts.add(host)
+  }
+  return [...hosts].sort()
+})
+
+const filteredRows = computed(() => {
+  const q = searchQuery.value.toLowerCase().trim()
+  return props.rows.filter(row => {
+    // Search by name
+    if (q) {
+      const name = (row.info?.name ?? row.displayName ?? '').toLowerCase()
+      if (!name.includes(q)) return false
+    }
+    // Host filter
+    if (filterHosts.value.length > 0) {
+      const rowHost = row.module?.name ?? ''
+      if (!filterHosts.value.includes(rowHost)) return false
+    }
+    // Size range (info.size is in bytes)
+    const size = row.info?.size ?? 0
+    if (filterSizeMin.value > 0 && size > 0 && size < filterSizeMin.value * 1_048_576) return false
+    if (filterSizeMax.value > 0 && size > filterSizeMax.value * 1_048_576) return false
+    // Online-only toggle
+    if (filterOnlineOnly.value && row.availability === 'offline') return false
+    if (excludeRegex.value.trim()) {
+      try {
+        const rule = new RegExp(excludeRegex.value.trim(), 'i')
+        const haystack = `${row.info?.name ?? row.displayName ?? ''}\n${row.url}`
+        if (rule.test(haystack)) return false
+      } catch {
+        // Regex incompleta durante a digitação: ignora até ficar válida.
+      }
+    }
+    return true
+  })
+})
+
+watch(
+  filteredRows,
+  (rows) => emit('filtered-change', rows.map((row) => row.url)),
+  { immediate: true }
+)
+
+function toggleHostFilter(host: string): void {
+  const idx = filterHosts.value.indexOf(host)
+  if (idx === -1) {
+    filterHosts.value = [...filterHosts.value, host]
+  } else {
+    filterHosts.value = filterHosts.value.filter(h => h !== host)
+  }
+}
+
+function clearFilters(): void {
+  searchQuery.value = ''
+  filterHosts.value = []
+  filterSizeMin.value = 0
+  filterSizeMax.value = 0
+  filterOnlineOnly.value = false
+  excludeRegex.value = ''
+}
+
+const hasActiveFilters = computed(() =>
+  searchQuery.value !== '' ||
+  filterHosts.value.length > 0 ||
+  filterSizeMin.value > 0 ||
+  filterSizeMax.value > 0 ||
+  filterOnlineOnly.value ||
+  excludeRegex.value.trim() !== ''
+)
 
 function rowBadgeLabel(row: CapturedRow): string {
   if (row.loading) {
@@ -556,6 +704,11 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   color: var(--text-muted);
 }
 
+.hash-chip {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .row-actions {
   display: inline-flex;
   align-items: center;
@@ -759,5 +912,189 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   text-align: right;
   color: var(--accent-color);
   font-weight: 700;
+}
+
+/* ── Filter bar ──────────────────────────────────────────────────────────── */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(126, 139, 164, 0.16);
+  position: relative;
+  background: var(--bg-card);
+}
+
+.filter-search {
+  flex: 1;
+  min-width: 160px;
+  background: color-mix(in srgb, var(--bg-primary) 80%, var(--bg-card));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.filter-search::placeholder {
+  color: var(--text-muted);
+}
+
+.filter-search:focus {
+  border-color: var(--accent-color);
+}
+
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(126, 139, 164, 0.1);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.filter-chip input[type="checkbox"] {
+  display: none;
+}
+
+.filter-chip:hover {
+  background: rgba(126, 139, 164, 0.18);
+  color: var(--text-primary);
+}
+
+.filter-chip.active {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 40%, transparent);
+  color: var(--accent-color);
+}
+
+.filter-hosts-btn {
+  border: 1px solid rgba(126, 139, 164, 0.22);
+  background: var(--bg-card);
+}
+
+.filter-hosts-btn.active {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 40%, transparent);
+  color: var(--accent-color);
+}
+
+.filter-clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 83, 80, 0.3);
+  background: rgba(239, 83, 80, 0.08);
+  color: #d64541;
+  cursor: pointer;
+  font-size: 10px;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.filter-clear-btn:hover {
+  background: rgba(239, 83, 80, 0.16);
+}
+
+.filter-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.filter-size-input {
+  width: 64px;
+  background: color-mix(in srgb, var(--bg-primary) 80%, var(--bg-card));
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 5px 6px;
+  outline: none;
+  transition: border-color 0.15s;
+  text-align: center;
+}
+
+.filter-size-input::placeholder {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.filter-size-input:focus {
+  border-color: var(--accent-color);
+}
+
+.filter-size-sep {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.filter-size-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.host-filter-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 14px;
+  z-index: 100;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.host-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.host-filter-item:hover {
+  background: rgba(126, 139, 164, 0.1);
+}
+
+.host-filter-item.active {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+
+.host-filter-item input[type="checkbox"] {
+  accent-color: var(--accent-color);
 }
 </style>

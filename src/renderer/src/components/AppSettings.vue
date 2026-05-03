@@ -175,6 +175,23 @@
           @change="save"
         />
       </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('clipboardMonitorLabel') }}</span>
+          <span class="setting-desc">{{ t('clipboardMonitorDesc') }}</span>
+        </div>
+        <label class="toggle">
+          <input
+            v-model="settings.clipboardMonitorEnabled"
+            type="checkbox"
+            @change="save"
+          />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
     </div>
 
     <!-- Notifications section -->
@@ -199,6 +216,226 @@
       </div>
     </div>
 
+    <!-- Network section -->
+    <div class="settings-section">
+      <h3 class="section-title">{{ t('networkSection') }}</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('proxyMode') }}</span>
+          <span class="setting-desc">{{ t('proxyModeDesc') }}</span>
+        </div>
+        <select v-model="settings.proxyMode" class="setting-select" @change="save">
+          <option value="none">{{ t('proxyNone') }}</option>
+          <option value="http">{{ t('proxyHttp') }}</option>
+          <option value="socks5">{{ t('proxySocks5') }}</option>
+          <option value="tor">{{ t('proxyTor') }}</option>
+        </select>
+      </div>
+
+      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('proxyHost') }}</span>
+          <span class="setting-desc">{{ t('proxyHostDesc') }}</span>
+        </div>
+        <input
+          v-model="settings.proxyHost"
+          class="setting-input setting-input-wide"
+          placeholder="proxy.example.com"
+          @change="save"
+        />
+      </div>
+
+      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('proxyPort') }}</span>
+          <span class="setting-desc">{{ t('proxyPortDesc') }}</span>
+        </div>
+        <input
+          v-model.number="settings.proxyPort"
+          type="number"
+          min="1"
+          max="65535"
+          class="setting-input"
+          @change="save"
+        />
+      </div>
+
+      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('proxyUsername') }}</span>
+          <span class="setting-desc">{{ t('proxyUsernameDesc') }}</span>
+        </div>
+        <input
+          v-model="settings.proxyUsername"
+          class="setting-input setting-input-wide"
+          placeholder="username (optional)"
+          @change="save"
+        />
+      </div>
+
+      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('proxyPassword') }}</span>
+          <span class="setting-desc">{{ t('proxyPasswordDesc') }}</span>
+        </div>
+        <input
+          v-model="settings.proxyPassword"
+          type="password"
+          class="setting-input setting-input-wide"
+          placeholder="password (optional)"
+          @change="save"
+        />
+      </div>
+
+      <div v-if="settings.proxyMode === 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('torNote') }}</span>
+          <span class="setting-desc">{{ t('torNoteDesc') }}</span>
+        </div>
+        <div></div>
+      </div>
+
+      <div v-if="settings.proxyMode === 'tor'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('startTor') }}</span>
+          <span class="setting-desc">{{ t('startTorDesc') }}</span>
+        </div>
+        <label class="toggle">
+          <input
+            v-model="settings.startTor"
+            type="checkbox"
+            @change="save"
+          />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div v-if="settings.proxyMode !== 'none'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('testConnection') }}</span>
+          <span class="setting-desc">{{ t('testConnectionDesc') }}</span>
+        </div>
+        <button class="browse-btn" @click="testConnection">{{ t('test') }}</button>
+      </div>
+    </div>
+
+    <!-- ── Reconnect ─────────────────────────────────────── -->
+    <div class="settings-section">
+      <h3 class="section-title">{{ t('reconnectSection') }}</h3>
+
+      <div class="setting-row">
+        <div class="setting-label-wrap">
+          <span class="setting-label">{{ t('reconnectOnRateLimit') }}</span>
+          <span class="setting-desc">{{ t('reconnectOnRateLimitDesc') }}</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.useReconnectOnRateLimit" @change="save" />
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+
+      <template v-if="settings.useReconnectOnRateLimit">
+        <div class="setting-row">
+          <div class="setting-label-wrap">
+            <span class="setting-label">{{ t('reconnectMethod') }}</span>
+            <span class="setting-desc">{{ t('reconnectMethodDesc') }}</span>
+          </div>
+          <select class="setting-select" v-model="settings.reconnectMethod" @change="save">
+            <option value="none">{{ t('reconnectNone') }}</option>
+            <option value="router_script">{{ t('reconnectRouterScript') }}</option>
+            <option value="curl_command">{{ t('reconnectCurlCommand') }}</option>
+          </select>
+        </div>
+
+        <div class="setting-row" v-if="settings.reconnectMethod !== 'none'">
+          <div class="setting-label-wrap">
+            <span class="setting-label">{{ t('reconnectRouterIp') }}</span>
+            <span class="setting-desc">{{ t('reconnectRouterIpDesc') }}</span>
+          </div>
+          <input
+            class="setting-input"
+            type="text"
+            v-model="settings.routerIp"
+            placeholder="192.168.1.1"
+            @change="save"
+          />
+        </div>
+
+        <div class="setting-row" v-if="settings.reconnectMethod !== 'none'">
+          <div class="setting-label-wrap">
+            <span class="setting-label">{{ t('reconnectCommand') }}</span>
+            <span class="setting-desc">{{ t('reconnectCommandDesc') }}</span>
+          </div>
+          <input
+            class="setting-input"
+            type="text"
+            v-model="settings.reconnectCommand"
+            :placeholder="settings.reconnectMethod === 'router_script'
+              ? 'curl -s http://{router_ip}/reboot'
+              : 'curl -X POST http://{router_ip}/api/reconnect'"
+            @change="save"
+          />
+        </div>
+      </template>
+    </div>
+
+    <!-- Automation section -->
+    <div class="settings-section">
+      <h3 class="section-title">{{ t('automationSection') }}</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('postDownloadAction') }}</span>
+          <span class="setting-desc">{{ t('postDownloadActionDesc') }}</span>
+        </div>
+        <select v-model="settings.postDownloadAction" class="setting-select" @change="save">
+          <option value="none">{{ t('postDownloadActionNone') }}</option>
+          <option value="shutdown">{{ t('postDownloadActionShutdown') }}</option>
+          <option value="sleep">{{ t('postDownloadActionSleep') }}</option>
+          <option value="custom_command">{{ t('postDownloadActionCommand') }}</option>
+          <option value="webhook">{{ t('postDownloadActionWebhook') }}</option>
+        </select>
+      </div>
+
+      <div v-if="settings.postDownloadAction && settings.postDownloadAction !== 'none'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('postDownloadTrigger') }}</span>
+        </div>
+        <select v-model="settings.postDownloadActionTrigger" class="setting-select" @change="save">
+          <option value="queue_empty">{{ t('postDownloadTriggerQueueEmpty') }}</option>
+          <option value="per_item">{{ t('postDownloadTriggerPerItem') }}</option>
+        </select>
+      </div>
+
+      <div v-if="settings.postDownloadAction === 'custom_command'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('postDownloadCommand') }}</span>
+          <span class="setting-desc">{{ t('postDownloadCommandDesc') }}</span>
+        </div>
+        <input
+          v-model="settings.postDownloadCommand"
+          class="setting-input setting-input-wide"
+          placeholder="notify-send 'Done'"
+          @change="save"
+        />
+      </div>
+
+      <div v-if="settings.postDownloadAction === 'webhook'" class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{{ t('postDownloadWebhookUrl') }}</span>
+          <span class="setting-desc">{{ t('postDownloadWebhookUrlDesc') }}</span>
+        </div>
+        <input
+          v-model="settings.postDownloadWebhookUrl"
+          class="setting-input setting-input-wide"
+          placeholder="https://hooks.example.com/..."
+          @change="save"
+        />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -224,7 +461,22 @@ const settings = reactive<AppSettingsSnapshot>({
   fontFamily: 'Inter',
   uiZoom: 1,
   accentColor: undefined,
+  clipboardMonitorEnabled: false,
   nopechaApiKey: undefined,
+  proxyMode: 'none',
+  proxyHost: '',
+  proxyPort: 0,
+  proxyUsername: undefined,
+  proxyPassword: undefined,
+  startTor: false,
+  useReconnectOnRateLimit: false,
+  reconnectMethod: 'none',
+  reconnectCommand: '',
+  routerIp: '',
+  postDownloadAction: 'none',
+  postDownloadActionTrigger: 'queue_empty',
+  postDownloadCommand: '',
+  postDownloadWebhookUrl: '',
 })
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
@@ -303,6 +555,18 @@ function resetAccentColor(): void {
   settings.accentColor = undefined
   applyUiPreferences(settings)
   void save()
+}
+
+async function testConnection(): Promise<void> {
+  try {
+    const result = await window.api.config.testProxy()
+    setSaveFeedback(`IP atual: ${result.ip}`)
+  } catch (error) {
+    setSaveFeedback(
+      error instanceof Error ? error.message : String(error),
+      true,
+    )
+  }
 }
 </script>
 
