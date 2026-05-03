@@ -19,6 +19,7 @@ export const defaultPublicSettings: PersistedSettings = {
   clipboardMonitorEnabled: false,
   accentColor: undefined,
   duplicateAction: 'ask',
+  visibleColumns: ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash'],
 }
 
 export interface LegacyRootSettings extends AppSettingsSnapshot {

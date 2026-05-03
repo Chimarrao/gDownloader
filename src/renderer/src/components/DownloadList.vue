@@ -85,6 +85,29 @@
           >
             Novo pacote
           </button>
+          <div class="columns-menu-wrap">
+            <button class="toolbar-btn" title="Mostrar/esconder colunas" @click="showColumnsMenu = !showColumnsMenu">
+              Colunas
+            </button>
+            <div v-if="showColumnsMenu" class="columns-menu">
+              <label
+                v-for="column in columnOrder"
+                :key="column"
+                class="column-option"
+                draggable="true"
+                @dragstart="draggedColumn = column"
+                @dragover.prevent
+                @drop="dropColumn(column)"
+              >
+                <input
+                  type="checkbox"
+                  :checked="visibleColumns.includes(column)"
+                  @change="toggleColumn(column)"
+                />
+                <span>{{ columnLabel(column) }}</span>
+              </label>
+            </div>
+          </div>
           <label class="toolbar-sort">
             <span>Ordenar</span>
             <select v-model="sortMode" class="toolbar-select">
@@ -120,6 +143,7 @@
         >
           <!-- Left: provider icon -->
           <div
+            v-if="hasColumn('host')"
             class="provider-icon"
             v-html="getIcon(item.moduleId).svg"
             :title="moduleLabel(item.moduleId)"
@@ -130,6 +154,7 @@
             <!-- Row 1: filename + status + actions -->
             <div class="item-header">
               <div class="item-title-wrap">
+                <template v-if="hasColumn('name')">
                 <span
                   class="type-icon"
                   :class="getFileIcon(item.title || item.url, undefined, item.isFolder).className"
@@ -137,9 +162,10 @@
                   role="img"
                 ></span>
                 <span class="item-title" :title="item.title">{{ item.title || item.url }}</span>
+                </template>
               </div>
               <div class="item-actions">
-                <span class="status-badge" :class="`badge-${item.status}`">
+                <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
                   <span class="badge-dot" :class="`dot-${item.status}`"></span>
                   {{ statusTextValue(item) }}
                 </span>
@@ -258,7 +284,7 @@
             </div>
 
             <!-- Row 2: progress bar -->
-            <div class="progress-track">
+            <div v-if="hasColumn('progress')" class="progress-track">
               <div
                 class="progress-fill"
                 :class="{ 'progress-shimmer': item.status === 'downloading' || item.status === 'verifying' }"
@@ -273,9 +299,11 @@
             <div class="item-meta">
               <span class="meta-percent">{{ item.percent }}%</span>
 
-              <template v-if="item.status === 'downloading'">
+              <template v-if="item.status === 'downloading' && hasColumn('speed')">
                 <span class="meta-sep">·</span>
                 <span class="meta-speed">{{ formatSpeed(effectiveSpeedValue(item)) }}</span>
+              </template>
+              <template v-if="item.status === 'downloading' && hasColumn('eta')">
                 <span class="meta-sep">·</span>
                 <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} restante</span>
               </template>
@@ -312,7 +340,7 @@
                 </span>
               </template>
 
-              <template v-if="item.size > 0">
+              <template v-if="item.size > 0 && hasColumn('size')">
                 <span class="meta-sep">·</span>
                 <span class="meta-size">
                   {{ formatBytes(Math.floor((item.percent / 100) * item.size)) }}
@@ -350,7 +378,7 @@
                 </span>
               </template>
 
-              <template v-if="packages.length > 0">
+              <template v-if="packages.length > 0 && hasColumn('package')">
                 <span class="meta-sep">·</span>
                 <label class="package-picker">
                   <span
@@ -372,6 +400,18 @@
                     </option>
                   </select>
                 </label>
+              </template>
+              <template v-if="hasColumn('added')">
+                <span class="meta-sep">·</span>
+                <span class="meta-size">Adicionado {{ formatDateTime(item.addedAt) }}</span>
+              </template>
+              <template v-if="item.completedAt && hasColumn('completed')">
+                <span class="meta-sep">·</span>
+                <span class="meta-size">Concluído {{ formatDateTime(item.completedAt) }}</span>
+              </template>
+              <template v-if="item.expectedHash && hasColumn('hash')">
+                <span class="meta-sep">·</span>
+                <span class="meta-size">{{ item.expectedHash.algorithm.toUpperCase() }}</span>
               </template>
             </div>
 
@@ -556,6 +596,11 @@ const items = ref<DownloadItem[]>([])
 const packages = ref<DownloadPackage[]>([])
 const selectedPackageId = ref<'all' | 'unassigned' | string>('all')
 const draggedDownloadId = ref<string | null>(null)
+const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
+const columnOrder = ref<string[]>([...defaultColumns])
+const visibleColumns = ref<string[]>([...defaultColumns])
+const showColumnsMenu = ref(false)
+const draggedColumn = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const activeCaptchaId = ref<string | null>(null)
@@ -640,6 +685,63 @@ async function assignDraggedToPackage(packageId: string): Promise<void> {
   await assignPackage(item, packageId)
 }
 
+function hasColumn(column: string): boolean {
+  return visibleColumns.value.includes(column)
+}
+
+function columnLabel(column: string): string {
+  return {
+    status: 'Status',
+    name: 'Nome',
+    size: 'Tamanho',
+    progress: 'Progresso',
+    speed: 'Speed',
+    eta: 'ETA',
+    host: 'Host',
+    package: 'Pacote',
+    added: 'Adicionado',
+    completed: 'Concluído',
+    hash: 'Hash',
+  }[column] ?? column
+}
+
+async function persistVisibleColumns(): Promise<void> {
+  const settings = await window.api.settings.load().catch(() => null)
+  if (!settings) return
+  await window.api.settings.save({
+    ...settings,
+    visibleColumns: columnOrder.value.filter((column) => visibleColumns.value.includes(column)),
+  }).catch(() => null)
+}
+
+function toggleColumn(column: string): void {
+  if (visibleColumns.value.includes(column)) {
+    visibleColumns.value = visibleColumns.value.filter((entry) => entry !== column)
+  } else {
+    visibleColumns.value = [...visibleColumns.value, column]
+  }
+  void persistVisibleColumns()
+}
+
+function dropColumn(target: string): void {
+  if (!draggedColumn.value || draggedColumn.value === target) return
+  const next = columnOrder.value.filter((column) => column !== draggedColumn.value)
+  const targetIndex = next.indexOf(target)
+  next.splice(targetIndex, 0, draggedColumn.value)
+  columnOrder.value = next
+  draggedColumn.value = null
+  void persistVisibleColumns()
+}
+
+function formatDateTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 const virtualizationEnabled = computed(() =>
   orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
 )
@@ -696,6 +798,15 @@ onMounted(async () => {
   }, {})
 
   packages.value = await window.api.packages.list().catch(() => [])
+  const settings = await window.api.settings.load().catch(() => null)
+  if (Array.isArray(settings?.visibleColumns) && settings.visibleColumns.length > 0) {
+    const known = new Set(defaultColumns)
+    visibleColumns.value = settings.visibleColumns.filter((column) => known.has(column))
+    columnOrder.value = [
+      ...settings.visibleColumns.filter((column) => known.has(column)),
+      ...defaultColumns.filter((column) => !settings.visibleColumns?.includes(column)),
+    ]
+  }
 
   // Load existing downloads from backend
   await hydrate()
@@ -1410,6 +1521,42 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .package-status-dot.active { background: #3b82f6; }
 .package-status-dot.failed { background: #ef4444; }
 .package-status-dot.idle { background: #9ca3af; }
+
+.columns-menu-wrap {
+  position: relative;
+}
+
+.columns-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+}
+
+.column-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: grab;
+}
+
+.column-option:hover {
+  background: color-mix(in srgb, var(--accent-color) 9%, transparent);
+}
 
 @media (max-width: 760px) {
   .download-list {

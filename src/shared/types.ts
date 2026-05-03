@@ -156,6 +156,7 @@ export interface PersistedSettings {
   autoExtract?: boolean
   passwordList?: string[]
   duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
+  visibleColumns?: string[]
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

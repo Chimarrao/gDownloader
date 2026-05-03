@@ -527,12 +527,6 @@ Paused/Completed/Error/Captcha/RateLimited), 'Host' (multi), 'Pacote'
 (multi). Ordenação clicável por coluna: data, nome, tamanho, progresso,
 speed, ETA. Estado persistido em settings.lastFilters."
 
-33.17 — Coluna customizável (mostrar/esconder)
-PROMPT CODEX:
-"Botão 'Colunas' abre menu com checkboxes pra cada coluna disponível:
-Status, Nome, Tamanho, Progresso, Speed, ETA, Host, Pacote, Adicionado,
-Concluído, Hash. Salvar em settings.visibleColumns. Drag pra reordenar."
-
 33.19 — Confirmações inteligentes (não spammar)
 PROMPT CODEX:
 "Wrapper useConfirm composable. Cada confirm tem checkbox 'não perguntar
