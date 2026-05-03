@@ -561,13 +561,6 @@ backend/logs/app.log via IPC main 'logs:tail' (streaming últimas N linhas
 mirrors), busca textual. Botão 'Exportar último log pra clipboard'
 útil pra reportar bugs."
 
-33.23 — Painel de pacotes lateral com árvore
-PROMPT CODEX:
-"Substitui parte da topbar por sidebar esquerda com lista de pacotes
-(item 11) em árvore expansível. Click em pacote filtra DownloadList.
-'Todos' no topo. Drag-and-drop entre pacotes funciona da árvore. Ícones de
-status agregado (verde se tudo ok, vermelho se algum falhou)."
-
 
 ==========================================================
 40. DECODIFICADOR DE PLAYLISTS HLS/M3U8/DASH (streams de vídeo)

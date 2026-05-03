@@ -13,6 +13,50 @@
       <p class="empty-sub">Use o Capturador de Links para começar</p>
     </div>
 
+    <aside v-if="items.length > 0" class="package-sidebar" aria-label="Pacotes">
+      <button
+        class="package-node"
+        :class="{ active: selectedPackageId === 'all' }"
+        @click="selectedPackageId = 'all'"
+        @dragover.prevent
+        @drop="assignDraggedToPackage('')"
+      >
+        <span class="package-status-dot ok"></span>
+        <span class="package-node-label">Todos</span>
+        <span class="package-node-count">{{ items.length }}</span>
+      </button>
+      <button
+        class="package-node"
+        :class="{ active: selectedPackageId === 'unassigned' }"
+        @click="selectedPackageId = 'unassigned'"
+        @dragover.prevent
+        @drop="assignDraggedToPackage('')"
+      >
+        <span class="package-status-dot" :class="packageAggregateClass('')"></span>
+        <span class="package-node-label">Sem pacote</span>
+        <span class="package-node-count">{{ packageStats('').total }}</span>
+      </button>
+      <div class="package-tree">
+        <button
+          v-for="pkg in packages"
+          :key="pkg.id"
+          class="package-node"
+          :class="{ active: selectedPackageId === pkg.id }"
+          @click="selectedPackageId = pkg.id"
+          @dragover.prevent
+          @drop="assignDraggedToPackage(pkg.id)"
+        >
+          <span
+            class="package-color-dot"
+            :style="{ backgroundColor: pkg.color }"
+          ></span>
+          <span class="package-node-label">{{ pkg.name }}</span>
+          <span class="package-status-dot" :class="packageAggregateClass(pkg.id)"></span>
+          <span class="package-node-count">{{ packageStats(pkg.id).total }}</span>
+        </button>
+      </div>
+    </aside>
+
     <!-- Download items -->
       <div
         v-if="items.length > 0 || (skeletonCount ?? 0) > 0"
@@ -32,7 +76,7 @@
       </div>
 
       <div v-if="items.length > 0" class="list-toolbar">
-        <span class="list-count">{{ items.length }} item(ns) na sessão</span>
+        <span class="list-count">{{ orderedItems.length }} item(ns) na sessão</span>
         <div class="toolbar-actions">
           <button
             class="toolbar-btn"
@@ -70,6 +114,9 @@
           :key="item.id"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned }]"
+          draggable="true"
+          @dragstart="draggedDownloadId = item.id"
+          @dragend="draggedDownloadId = null"
         >
           <!-- Left: provider icon -->
           <div
@@ -507,6 +554,8 @@ const emit = defineEmits<{
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
 const packages = ref<DownloadPackage[]>([])
+const selectedPackageId = ref<'all' | 'unassigned' | string>('all')
+const draggedDownloadId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const activeCaptchaId = ref<string | null>(null)
@@ -533,20 +582,63 @@ const sortOptions = DOWNLOAD_SORT_OPTIONS
 const flashingIds = ref<Set<string>>(new Set())
 
 // ── Computed ───────────────────────────────────────────────
+const packageFilteredItems = computed(() => {
+  if (selectedPackageId.value === 'all') return items.value
+  if (selectedPackageId.value === 'unassigned') {
+    return items.value.filter((item) => !item.packageId)
+  }
+  return items.value.filter((item) => item.packageId === selectedPackageId.value)
+})
+
 const orderedItems = computed(() =>
-  [...items.value].sort((left, right) => {
+  [...packageFilteredItems.value].sort((left, right) => {
     // Pinned items float to the top
     const pinnedDiff = (right.pinned ? 1 : 0) - (left.pinned ? 1 : 0)
     if (pinnedDiff !== 0) return pinnedDiff
     return compareDownloads(left, right, sortMode.value, nowTick.value)
   })
 )
+const packageStatsMap = computed(() => {
+  const stats = new Map<string, { total: number; active: number; failed: number; complete: number }>()
+  const ensure = (id: string) => {
+    if (!stats.has(id)) stats.set(id, { total: 0, active: 0, failed: 0, complete: 0 })
+    return stats.get(id)!
+  }
+  for (const item of items.value) {
+    const id = item.packageId ?? ''
+    const stat = ensure(id)
+    stat.total += 1
+    if (item.status === 'error' || item.status === 'corrupted' || item.status === 'disk_full') stat.failed += 1
+    else if (item.status === 'complete') stat.complete += 1
+    else if (!isTerminal(item.status)) stat.active += 1
+  }
+  return stats
+})
 const finishedCount = computed(() =>
   items.value.filter((item) => isTerminal(item.status)).length
 )
 const activeCaptchaItem = computed(() =>
   items.value.find((item) => item.id === activeCaptchaId.value && item.status === DownloadStatusEnum.WaitingCaptcha) ?? null
 )
+
+function packageStats(packageId: string): { total: number; active: number; failed: number; complete: number } {
+  return packageStatsMap.value.get(packageId) ?? { total: 0, active: 0, failed: 0, complete: 0 }
+}
+
+function packageAggregateClass(packageId: string): string {
+  const stats = packageStats(packageId)
+  if (stats.failed > 0) return 'failed'
+  if (stats.active > 0) return 'active'
+  if (stats.total > 0 && stats.complete === stats.total) return 'ok'
+  return 'idle'
+}
+
+async function assignDraggedToPackage(packageId: string): Promise<void> {
+  if (!draggedDownloadId.value) return
+  const item = items.value.find((entry) => entry.id === draggedDownloadId.value)
+  if (!item) return
+  await assignPackage(item, packageId)
+}
 
 const virtualizationEnabled = computed(() =>
   orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
@@ -1237,7 +1329,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 /* ── Container ──────────────────────────────────────────────── */
 .download-list {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex: 1;
   width: 100%;
   min-width: 0;
@@ -1245,6 +1337,106 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 0;
   align-self: stretch;
   overflow: hidden;
+}
+
+.package-sidebar {
+  width: 220px;
+  min-width: 190px;
+  max-width: 260px;
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 12px 2px 0;
+  border-right: 1px solid var(--border-color);
+  margin-right: 12px;
+  overflow-y: auto;
+}
+
+.package-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.package-node {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.package-node:hover,
+.package-node.active {
+  border-color: color-mix(in srgb, var(--accent-color) 22%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+  color: var(--text-primary);
+}
+
+.package-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.package-node-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.package-color-dot,
+.package-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.package-status-dot.ok { background: #22c55e; }
+.package-status-dot.active { background: #3b82f6; }
+.package-status-dot.failed { background: #ef4444; }
+.package-status-dot.idle { background: #9ca3af; }
+
+@media (max-width: 760px) {
+  .download-list {
+    flex-direction: column;
+  }
+
+  .package-sidebar {
+    width: 100%;
+    max-width: none;
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--border-color);
+    margin-right: 0;
+    margin-bottom: 10px;
+    padding: 0 0 8px;
+  }
+
+  .package-tree {
+    flex-direction: row;
+  }
+
+  .package-node {
+    min-width: 150px;
+  }
 }
 
 /* ── Empty state ────────────────────────────────────────────── */
