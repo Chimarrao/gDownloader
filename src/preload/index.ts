@@ -429,6 +429,18 @@ const api = {
   system: {
     notify: (title: string, body?: string): Promise<boolean> => ipcRenderer.invoke('system:notify', title, body),
   },
+  logs: {
+    tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> => ipcRenderer.invoke('logs:tail', maxLines),
+    watch: (cb: (payload: { path: string; lines: string[] }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { path: string; lines: string[] }) => cb(payload)
+      ipcRenderer.on('logs:update', handler)
+      ipcRenderer.send('logs:watch-start')
+      return () => {
+        ipcRenderer.removeListener('logs:update', handler)
+        ipcRenderer.send('logs:watch-stop')
+      }
+    },
+  },
   archive: {
     extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
     autoExtract: (archivePath: string, passwords: string[]): Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }> =>

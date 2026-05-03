@@ -34,6 +34,10 @@
         <i class="pi pi-user"></i>
         <span>{{ t('account') }}</span>
       </button>
+      <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'">
+        <i class="pi pi-list"></i>
+        <span>Logs</span>
+      </button>
     </nav>
 
     <main class="app-main">
@@ -62,6 +66,10 @@
       <section v-show="activeTab === 'account'" class="panel">
         <AccountSettings />
       </section>
+
+      <section v-show="activeTab === 'logs'" class="panel">
+        <LogsView />
+      </section>
     </main>
   </div>
 </template>
@@ -73,12 +81,13 @@ import DownloadList from './components/DownloadList.vue'
 import LinkGrabber from './components/LinkGrabber.vue'
 import AppSettings from './components/AppSettings.vue'
 import AccountSettings from './components/AccountSettings.vue'
+import LogsView from './components/LogsView.vue'
 import SpeedWidget from './components/SpeedWidget.vue'
 import { setLocale, useI18n } from './i18n'
 import { applyUiPreferences, useTheme, type ThemeId } from './themes'
 import { pushRingBuffer } from './utils/ring-buffer'
 
-type AppTab = 'downloads' | 'grabber' | 'settings' | 'account'
+type AppTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
 
 interface DownloadCompletePayload {
   id: string

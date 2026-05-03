@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, shell, net, session, Tray } from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { spawn } from 'child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, watch } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { AppSettingsSnapshot } from '../shared/types'
 import { createAppStorage, type PersistedHistoryItem } from './app-storage'
@@ -27,6 +27,35 @@ function getDatabasePath(): string {
     return join(process.cwd(), 'backend', 'database', 'gdownloader.db')
   }
   return join(app.getPath('userData'), 'backend', 'database', 'gdownloader.db')
+}
+
+function getBackendLogPath(): string {
+  const dbPath = getDatabasePath()
+  const dbDir = dirname(dbPath)
+  const logDir = basename(dbDir).toLowerCase() === 'database'
+    ? join(dirname(dbDir), 'logs')
+    : join(dbDir, 'logs')
+
+  try {
+    const candidates = readdirSync(logDir)
+      .filter((name) => name === 'app.log' || name.startsWith('app.log.'))
+      .map((name) => join(logDir, name))
+      .filter((path) => existsSync(path))
+      .sort((left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs)
+    if (candidates.length > 0) return candidates[0]
+  } catch {
+    // fallback abaixo
+  }
+
+  return join(logDir, 'app.log')
+}
+
+function tailLogFile(maxLines = 500): { path: string; lines: string[] } {
+  const path = getBackendLogPath()
+  if (!existsSync(path)) return { path, lines: [] }
+  const raw = readFileSync(path, 'utf8')
+  const lines = raw.split(/\r?\n/).filter(Boolean)
+  return { path, lines: lines.slice(-maxLines) }
 }
 
 async function fetchBackendConfig<T>(path: string, init?: RequestInit): Promise<T> {
@@ -557,6 +586,7 @@ function configureClipboardMonitor(enabled: boolean): void {
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
+const logWatchers = new Map<number, ReturnType<typeof watch>>()
 
 function createTray(win: BrowserWindow): void {
   const iconPath = join(__dirname, '../../resources/icon.png')
@@ -695,6 +725,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('clipboard:writeText', (_e, text: string) => {
     clipboard.writeText(text)
     return true
+  })
+  ipcMain.handle('logs:tail', (_e, maxLines?: number) => {
+    return tailLogFile(Math.max(50, Math.min(Number(maxLines ?? 500), 2000)))
+  })
+  ipcMain.on('logs:watch-start', (event) => {
+    const senderId = event.sender.id
+    logWatchers.get(senderId)?.close()
+    const logPath = getBackendLogPath()
+    try {
+      mkdirSync(dirname(logPath), { recursive: true })
+      const watcher = watch(dirname(logPath), { persistent: false }, () => {
+        event.sender.send('logs:update', tailLogFile(500))
+      })
+      logWatchers.set(senderId, watcher)
+      event.sender.once('destroyed', () => {
+        logWatchers.get(senderId)?.close()
+        logWatchers.delete(senderId)
+      })
+    } catch {
+      // polling pelo renderer ainda pode chamar logs:tail.
+    }
+  })
+  ipcMain.on('logs:watch-stop', (event) => {
+    const senderId = event.sender.id
+    logWatchers.get(senderId)?.close()
+    logWatchers.delete(senderId)
   })
   ipcMain.handle('system:notify', (_e, title: string, body?: string) => {
     if (!Notification.isSupported()) return false

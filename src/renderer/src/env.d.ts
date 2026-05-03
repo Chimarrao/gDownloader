@@ -137,6 +137,10 @@ interface RendererApi {
   system: {
     notify: (title: string, body?: string) => Promise<boolean>
   }
+  logs: {
+    tail: (maxLines?: number) => Promise<{ path: string; lines: string[] }>
+    watch: (cb: (payload: { path: string; lines: string[] }) => void) => () => void
+  }
   archive: {
     extract: (archivePath: string) => Promise<string>
     autoExtract: (

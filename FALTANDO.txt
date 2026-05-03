@@ -553,14 +553,6 @@ botões de remover/cancelar/configurar e usa o app só pra acompanhar fila.
 Útil quando exposto via item 16 (web UI remota) num computador
 compartilhado. Senha simples pra desbloquear (hash bcrypt em settings)."
 
-33.22 — Logs in-app com filtro
-PROMPT CODEX:
-"Nova view LogsView.vue acessível por menu (ou Help > Logs). Lê arquivo
-backend/logs/app.log via IPC main 'logs:tail' (streaming últimas N linhas
-+ watch). Filtros: nível (info/warn/error), módulo (downloads, providers,
-mirrors), busca textual. Botão 'Exportar último log pra clipboard'
-útil pra reportar bugs."
-
 
 ==========================================================
 40. DECODIFICADOR DE PLAYLISTS HLS/M3U8/DASH (streams de vídeo)
