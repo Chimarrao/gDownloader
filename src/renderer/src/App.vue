@@ -16,17 +16,32 @@
         </div>
         <strong>{{ t('appName') }}</strong>
       </div>
-      <SpeedWidget
-        :speed-history="speedHistory"
-        :current-speed="currentSpeed"
-        :per-host-speed="perHostSpeed"
-      />
+      <div class="topbar-actions">
+        <SpeedWidget
+          :speed-history="speedHistory"
+          :current-speed="currentSpeed"
+          :per-host-speed="perHostSpeed"
+        />
+        <div class="help-menu-wrap" data-tour="help-tour">
+          <button class="help-btn" title="Ajuda" @click="helpMenuOpen = !helpMenuOpen">
+            <i class="pi pi-question-circle"></i>
+            <span>Ajuda</span>
+          </button>
+          <div v-if="helpMenuOpen" class="help-menu">
+            <button @click="startOnboarding">
+              <i class="pi pi-map"></i>
+              <span>Refazer tour</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </header>
 
     <nav class="tab-bar">
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'downloads' }"
+        data-tour="downloads-tab"
         @click="activeTab = 'downloads'"
       >
         <i class="pi pi-download"></i>
@@ -36,6 +51,7 @@
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'grabber' }"
+        data-tour="grabber-tab"
         @click="activeTab = 'grabber'"
       >
         <i class="pi pi-link"></i>
@@ -44,6 +60,7 @@
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'settings' }"
+        data-tour="settings-tab"
         @click="activeTab = 'settings'"
       >
         <i class="pi pi-cog"></i>
@@ -64,7 +81,7 @@
     </nav>
 
     <main class="app-main">
-      <section v-show="activeTab === 'downloads'" class="panel downloads-panel">
+      <section v-show="activeTab === 'downloads'" class="panel downloads-panel" data-tour="download-queue">
         <DownloadList
           :skeleton-count="skeletonCount"
           @count-change="
@@ -98,6 +115,12 @@
         <LogsView />
       </section>
     </main>
+    <OnboardingTour
+      v-if="showOnboarding"
+      :active-tab="activeTab"
+      @navigate="activeTab = $event"
+      @complete="completeOnboarding"
+    />
   </div>
 </template>
 
@@ -109,6 +132,7 @@ import LinkGrabber from './components/LinkGrabber.vue'
 import AppSettings from './components/AppSettings.vue'
 import AccountSettings from './components/AccountSettings.vue'
 import LogsView from './components/LogsView.vue'
+import OnboardingTour from './components/OnboardingTour.vue'
 import SpeedWidget from './components/SpeedWidget.vue'
 import { setLocale, useI18n } from './i18n'
 import { applyUiPreferences, useTheme, type ThemeId } from './themes'
@@ -131,9 +155,16 @@ const speedHistory = ref<number[]>(new Array(60).fill(0))
 const currentSpeed = ref(0)
 const perHostSpeed = ref<Record<string, number>>({})
 const clipboardIncomingUrl = ref('')
+const showOnboarding = ref(false)
+const helpMenuOpen = ref(false)
+let currentSettings: Awaited<ReturnType<typeof window.api.settings.load>> | null = null
 let speedTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
 let appMounted = true
+
+const statsTickHandler = (event: Event): void => {
+  onStatsTick(event as CustomEvent)
+}
 
 function onGlobalSpeed(bps: number): void {
   currentSpeed.value = bps
@@ -161,7 +192,7 @@ onUnmounted(() => {
   appMounted = false
   if (speedTicker) clearInterval(speedTicker)
   disposeClipboardDetected?.()
-  window.removeEventListener('stats-tick', onStatsTick as EventListener)
+  window.removeEventListener('stats-tick', statsTickHandler)
   disposeTheme()
 })
 const { t } = useI18n()
@@ -180,10 +211,11 @@ onMounted(async () => {
     clipboardIncomingUrl.value = payload.url
     activeTab.value = 'grabber'
   })
-  window.addEventListener('stats-tick', onStatsTick as EventListener)
+  window.addEventListener('stats-tick', statsTickHandler)
 
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
+  currentSettings = settings
   if (settings.locale) {
     setLocale(settings.locale)
   }
@@ -191,7 +223,24 @@ onMounted(async () => {
     setTheme(settings.theme as ThemeId)
   }
   applyUiPreferences(settings)
+  if (!settings.onboardingCompleted) {
+    showOnboarding.value = true
+  }
 })
+
+function startOnboarding(): void {
+  helpMenuOpen.value = false
+  showOnboarding.value = true
+}
+
+async function completeOnboarding(): Promise<void> {
+  showOnboarding.value = false
+  const settings = currentSettings ?? await window.api.settings.load().catch(() => null)
+  if (!settings) return
+  currentSettings = await window.api.settings
+    .save({ ...settings, onboardingCompleted: true })
+    .catch(() => settings)
+}
 
 function onStatsTick(event: CustomEvent): void {
   const detail = event.detail as {
@@ -253,6 +302,71 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-secondary);
+}
+
+.topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.help-menu-wrap {
+  position: relative;
+}
+
+.help-btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.help-btn:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  color: var(--accent-color);
+}
+
+.help-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  min-width: 176px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+}
+
+.help-menu button {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.help-menu button:hover {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
 }
 
 .brand {

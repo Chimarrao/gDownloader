@@ -33,6 +33,7 @@ export const defaultPublicSettings: PersistedSettings = {
   ],
   interceptDomainBlocklist: [],
   interceptAskBeforeAdd: false,
+  onboardingCompleted: false,
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -125,7 +126,9 @@ function sanitizeForDisk(
     return {}
   }
 
-  const { nopechaApiKey: _nopechaApiKey, accounts: _accounts, ...rest } = input
+  const rest = { ...input }
+  delete rest.nopechaApiKey
+  delete rest.accounts
 
   return rest
 }
@@ -244,6 +247,7 @@ function mergeLegacyPublicSettings(
   return merged
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createAppStorage(options: CreateAppStorageOptions) {
   const secureState: AppStorageState = {
     nopechaApiKey: '',

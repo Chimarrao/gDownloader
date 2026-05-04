@@ -32,7 +32,7 @@
       <span class="container-hint">{{ t('linkGrabberContainerHint') }}</span>
     </div>
 
-    <div class="url-field">
+    <div class="url-field" data-tour="link-input">
       <label class="field-label">{{ t('linkGrabberInputLabel') }}</label>
       <div class="textarea-wrapper">
         <i class="pi pi-link textarea-icon"></i>
@@ -53,7 +53,7 @@ import { computed, ref } from 'vue'
 
 import { useI18n } from '../i18n'
 
-const props = defineProps<{
+defineProps<{
   modelValue: string
 }>()
 

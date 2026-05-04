@@ -12,7 +12,7 @@
     <div class="settings-section">
       <h3 class="section-title">{{ t('downloadsSection') }}</h3>
 
-      <div class="setting-row">
+      <div class="setting-row" data-tour="download-folder">
         <div class="setting-info">
           <span class="setting-label">{{ t('outputFolder') }}</span>
           <span class="setting-desc">{{ t('outputFolderDesc') }}</span>
@@ -86,7 +86,7 @@
         </select>
       </div>
 
-      <div class="setting-row setting-row-stack">
+      <div class="setting-row setting-row-stack" data-tour="browser-capture">
         <div class="setting-info">
           <span class="setting-label">Interceptação local</span>
           <span class="setting-desc">Proxy em 127.0.0.1:9667 para capturar downloads de apps no mesmo computador</span>
@@ -221,7 +221,7 @@
     <div class="settings-section">
       <h3 class="section-title">{{ t('integrationsSection') }}</h3>
 
-      <div class="setting-row">
+      <div class="setting-row" data-tour="captcha-solver">
         <div class="setting-info">
           <span class="setting-label">{{ t('nopechaApiKeyLabel') }}</span>
           <span class="setting-desc">{{ t('nopechaApiKeyDesc') }}</span>
@@ -684,6 +684,7 @@ const settings = reactive<AppSettingsSnapshot>({
   ],
   interceptDomainBlocklist: [],
   interceptAskBeforeAdd: false,
+  onboardingCompleted: false,
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',

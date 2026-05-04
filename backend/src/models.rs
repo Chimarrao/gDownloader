@@ -278,6 +278,8 @@ pub struct PublicSettings {
     pub intercept_domain_blocklist: Vec<String>,
     #[serde(default)]
     pub intercept_ask_before_add: bool,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for PublicSettings {
@@ -343,6 +345,7 @@ impl Default for PublicSettings {
             ],
             intercept_domain_blocklist: Vec::new(),
             intercept_ask_before_add: false,
+            onboarding_completed: false,
         }
     }
 }

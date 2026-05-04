@@ -176,6 +176,7 @@ export interface PersistedSettings {
   interceptMimeAllowlist?: string[]
   interceptDomainBlocklist?: string[]
   interceptAskBeforeAdd?: boolean
+  onboardingCompleted?: boolean
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {
