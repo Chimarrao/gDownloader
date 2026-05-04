@@ -190,19 +190,6 @@ AppSettings.vue seção Hosts."
 
 
 ==========================================================
-28. PASSWORD MANAGER DE ARCHIVES (lembrar e sugerir)
-==========================================================
-Senhas de RAR repetem. jD aprende e reutiliza.
-
-PROMPT CODEX:
-"Quando uma senha de archive funcionar (item 10), gravar em tabela
-archive_passwords (password, success_count, last_used_at, source=manual|
-auto). Próxima extração tenta primeiro as top 20 por success_count. UI:
-gerenciador em settings com importar/exportar lista, esquecer senha, ver
-hits."
-
-
-==========================================================
 29. INTEGRAÇÃO COM ANTIVIRUS (opcional, configurável)
 ==========================================================
 Após download, validar com clamscan ou Defender CLI antes de marcar Completed.

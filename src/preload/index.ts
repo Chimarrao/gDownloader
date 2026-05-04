@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppSettingsSnapshot,
+  ArchivePassword,
   CreateDownloadPackagePayload,
   DownloadEvent,
   DuplicateDownload,
@@ -492,6 +493,21 @@ const api = {
     extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
     autoExtract: (archivePath: string, passwords: string[]): Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }> =>
       ipcRenderer.invoke('archive:auto-extract', archivePath, passwords),
+  },
+  archivePasswords: {
+    list: async (): Promise<ArchivePassword[]> => {
+      const rows = await ipcRenderer.invoke('archive-passwords:list') as Array<Record<string, unknown>>
+      return rows.map((row) => ({
+        password: String(row.password ?? ''),
+        successCount: Number(row.successCount ?? row.success_count ?? 0),
+        lastUsedAt: row.lastUsedAt || row.last_used_at
+          ? Number(row.lastUsedAt ?? row.last_used_at) * 1000
+          : undefined,
+        source: String(row.source ?? 'manual'),
+      }))
+    },
+    import: (passwords: string[]): Promise<void> => ipcRenderer.invoke('archive-passwords:import', passwords),
+    forget: (password: string): Promise<void> => ipcRenderer.invoke('archive-passwords:forget', password),
   },
   packages: {
     list: async () => {

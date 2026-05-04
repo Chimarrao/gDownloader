@@ -76,6 +76,15 @@ pub struct DownloadEvent {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivePassword {
+    pub password: String,
+    pub success_count: u64,
+    pub last_used_at: Option<u64>,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {

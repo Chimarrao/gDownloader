@@ -213,6 +213,13 @@ export interface DownloadEvent {
   createdAt: number
 }
 
+export interface ArchivePassword {
+  password: string
+  successCount: number
+  lastUsedAt?: number
+  source: string
+}
+
 export interface CachedFileInfoSnapshot extends FileInfo {
   providerId?: string
   cachedAt?: number

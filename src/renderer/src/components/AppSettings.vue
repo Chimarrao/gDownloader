@@ -542,12 +542,52 @@
         />
       </div>
     </div>
+
+    <div class="settings-section">
+      <h3 class="section-title">Senhas de archives</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Lista aprendida</span>
+          <span class="setting-desc">A extração tenta primeiro as 20 senhas com mais acertos</span>
+        </div>
+        <button class="browse-btn" @click="loadArchivePasswords">Atualizar</button>
+      </div>
+
+      <div class="archive-password-list">
+        <div v-if="archivePasswords.length === 0" class="archive-password-empty">
+          Nenhuma senha aprendida ainda.
+        </div>
+        <div v-for="entry in archivePasswords" :key="entry.password" class="archive-password-row">
+          <code>{{ entry.password }}</code>
+          <span>{{ entry.successCount }} hit(s)</span>
+          <span>{{ entry.source }}</span>
+          <button class="browse-btn" @click="forgetArchivePassword(entry.password)">Esquecer</button>
+        </div>
+      </div>
+
+      <div class="setting-row setting-row-stack">
+        <div class="setting-info">
+          <span class="setting-label">Importar / exportar</span>
+          <span class="setting-desc">Uma senha por linha. Exportar copia a lista para a área de transferência</span>
+        </div>
+        <textarea
+          v-model="archivePasswordImport"
+          class="setting-textarea"
+          placeholder="senha1&#10;senha2"
+        ></textarea>
+        <div class="remote-actions">
+          <button class="browse-btn" @click="importArchivePasswords">Importar lista</button>
+          <button class="browse-btn" @click="exportArchivePasswords">Exportar</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import type { AppSettingsSnapshot } from '../../../shared/types'
+import type { AppSettingsSnapshot, ArchivePassword } from '../../../shared/types'
 import { applyUiPreferences, useTheme, type ThemeId } from '../themes'
 import { setLocale, useI18n } from '../i18n'
 
@@ -595,6 +635,8 @@ let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
 const remoteInfo = ref<Awaited<ReturnType<typeof window.api.remoteAccess.info>> | null>(null)
+const archivePasswords = ref<ArchivePassword[]>([])
+const archivePasswordImport = ref('')
 
 function setSaveFeedback(message: string, error = false): void {
   saveFeedback.value = message
@@ -620,6 +662,7 @@ onMounted(async () => {
     }
     applyUiPreferences(saved)
     await refreshRemoteInfo()
+    await loadArchivePasswords()
   }
 })
 
@@ -705,6 +748,32 @@ async function copyRemoteUrl(): Promise<void> {
   await window.api.clipboard.writeText(value)
   setSaveFeedback('Link remoto copiado')
 }
+
+async function loadArchivePasswords(): Promise<void> {
+  archivePasswords.value = await window.api.archivePasswords.list().catch(() => [])
+}
+
+async function importArchivePasswords(): Promise<void> {
+  const passwords = archivePasswordImport.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (passwords.length === 0) return
+  await window.api.archivePasswords.import(passwords)
+  archivePasswordImport.value = ''
+  await loadArchivePasswords()
+  setSaveFeedback('Senhas importadas')
+}
+
+async function exportArchivePasswords(): Promise<void> {
+  await window.api.clipboard.writeText(archivePasswords.value.map((entry) => entry.password).join('\n'))
+  setSaveFeedback('Lista copiada')
+}
+
+async function forgetArchivePassword(password: string): Promise<void> {
+  await window.api.archivePasswords.forget(password)
+  await loadArchivePasswords()
+}
 </script>
 
 <style scoped>
@@ -788,6 +857,54 @@ async function copyRemoteUrl(): Promise<void> {
   border: 1px solid var(--border-color);
   background: #fff;
   padding: 6px;
+}
+
+.setting-row-stack {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.setting-textarea {
+  min-height: 92px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 10px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.archive-password-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.archive-password-empty,
+.archive-password-row {
+  padding: 9px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.archive-password-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.archive-password-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
 }
 
 .settings-header {

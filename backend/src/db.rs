@@ -2,8 +2,9 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{
-    CachedFileInfo, Download, DownloadEvent, DownloadStatus, DuplicateDownload, DuplicateGroup,
-    FileChildInfo, HistoryItem, LegacyConfigMigration, PublicSettings, SecureSettings,
+    ArchivePassword, CachedFileInfo, Download, DownloadEvent, DownloadStatus, DuplicateDownload,
+    DuplicateGroup, FileChildInfo, HistoryItem, LegacyConfigMigration, PublicSettings,
+    SecureSettings,
 };
 
 struct Migration {
@@ -67,6 +68,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "create_download_events_table",
         apply: migration_create_download_events_table,
+    },
+    Migration {
+        version: 12,
+        name: "create_archive_passwords_table",
+        apply: migration_create_archive_passwords_table,
     },
 ];
 
@@ -400,6 +406,20 @@ fn migration_create_download_events_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_create_archive_passwords_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS archive_passwords (
+             password      TEXT PRIMARY KEY,
+             success_count INTEGER NOT NULL DEFAULT 0,
+             last_used_at  INTEGER,
+             source        TEXT NOT NULL DEFAULT 'manual'
+         );
+         CREATE INDEX IF NOT EXISTS idx_archive_passwords_success
+             ON archive_passwords(success_count DESC, last_used_at DESC);",
+    )?;
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -567,6 +587,67 @@ pub fn list_download_events(conn: &Connection, download_id: &str, limit: usize) 
         .filter_map(|row| row.ok())
         .collect();
     Ok(rows)
+}
+
+pub fn list_archive_passwords(conn: &Connection, limit: usize) -> Result<Vec<ArchivePassword>> {
+    let mut stmt = conn.prepare(
+        "SELECT password, success_count, last_used_at, source
+         FROM archive_passwords
+         ORDER BY success_count DESC, COALESCE(last_used_at, 0) DESC, password ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit.min(500) as i64], |row| {
+            Ok(ArchivePassword {
+                password: row.get(0)?,
+                success_count: row.get::<_, i64>(1)? as u64,
+                last_used_at: row.get::<_, Option<i64>>(2)?.map(|value| value as u64),
+                source: row.get(3)?,
+            })
+        })?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(rows)
+}
+
+pub fn add_archive_password(conn: &Connection, password: &str, source: &str) -> Result<()> {
+    let normalized = password.trim();
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO archive_passwords (password, success_count, last_used_at, source)
+         VALUES (?1, 0, NULL, ?2)
+         ON CONFLICT(password) DO UPDATE SET
+             source = CASE
+                 WHEN archive_passwords.source = 'auto' THEN archive_passwords.source
+                 ELSE excluded.source
+             END",
+        params![normalized, source],
+    )?;
+    Ok(())
+}
+
+pub fn record_archive_password_success(conn: &Connection, password: &str, source: &str) -> Result<()> {
+    let normalized = password.trim();
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO archive_passwords (password, success_count, last_used_at, source)
+         VALUES (?1, 1, ?2, ?3)
+         ON CONFLICT(password) DO UPDATE SET
+             success_count = archive_passwords.success_count + 1,
+             last_used_at = excluded.last_used_at,
+             source = excluded.source",
+        params![normalized, now_secs(), source],
+    )?;
+    Ok(())
+}
+
+pub fn delete_archive_password(conn: &Connection, password: &str) -> Result<()> {
+    conn.execute("DELETE FROM archive_passwords WHERE password = ?1", params![password])?;
+    Ok(())
 }
 
 pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {

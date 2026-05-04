@@ -782,7 +782,30 @@ app.whenReady().then(async () => {
     if (!allPartsReady(archivePath)) {
       return { success: false, error: 'parts_missing' }
     }
-    return autoExtract(archivePath, passwords)
+    const learned = await fetchBackendConfig<Array<{ password: string }>>('/archive-passwords').catch(() => [])
+    const mergedPasswords = [...new Set([
+      ...learned.slice(0, 20).map((item) => item.password).filter(Boolean),
+      ...(Array.isArray(passwords) ? passwords : []),
+    ])]
+    const result = await autoExtract(archivePath, mergedPasswords)
+    if (result.success && result.passwordUsed) {
+      await postBackend('/archive-passwords/success', {
+        password: result.passwordUsed,
+        source: 'auto',
+      }).catch((error) => {
+        logMain('archive-passwords', 'Falha ao registrar senha de archive', error)
+      })
+    }
+    return result
+  })
+  ipcMain.handle('archive-passwords:list', async () => {
+    return fetchBackendConfig('/archive-passwords')
+  })
+  ipcMain.handle('archive-passwords:import', async (_e, passwords: string[]) => {
+    await postBackend('/archive-passwords/import', { passwords, source: 'manual' })
+  })
+  ipcMain.handle('archive-passwords:forget', async (_e, password: string) => {
+    await postBackend('/archive-passwords/delete', { password })
   })
 
   // Proxy HTTP via sessão persist:terabox — usa cookies reais do browser, bypass fingerprint

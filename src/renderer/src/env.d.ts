@@ -2,6 +2,7 @@
 
 import type {
   AppSettingsSnapshot,
+  ArchivePassword,
   CachedFileInfoSnapshot,
   CreateDownloadPackagePayload,
   DownloadEvent,
@@ -166,6 +167,11 @@ interface RendererApi {
       archivePath: string,
       passwords: string[]
     ) => Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }>
+  }
+  archivePasswords: {
+    list: () => Promise<ArchivePassword[]>
+    import: (passwords: string[]) => Promise<void>
+    forget: (password: string) => Promise<void>
   }
   packages: {
     list: () => Promise<DownloadPackage[]>
