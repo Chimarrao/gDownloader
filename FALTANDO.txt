@@ -414,15 +414,6 @@ limite de velocidade individual, Mostrar detalhes, Recheck (torrent),
 Remover, Remover + arquivos. Suporte a multi-seleção com Shift/Ctrl click —
 ações em massa quando >1 selecionado."
 
-33.3 — Linha de detalhe expansível
-PROMPT CODEX:
-"Cada row do DownloadList expande on-click numa área inferior com: tabs
-'Geral' (todos os campos do Download), 'Logs' (últimas N linhas do backend
-filtradas por download_id), 'Mirrors' (atalho pro modal já existente),
-'Peers' (se torrent), 'Histórico' (eventos: pause em X, retomado em Y,
-captcha resolvido, etc — exige nova tabela download_events). Animação de
-slide com max-height transition."
-
 33.4 — Painel lateral com fila futura e prévia
 PROMPT CODEX:
 "Adicionar painel direito colapsável (drag handle) mostrando: 'Próximos na

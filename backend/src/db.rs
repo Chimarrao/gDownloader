@@ -2,8 +2,8 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{
-    CachedFileInfo, Download, DownloadStatus, DuplicateDownload, DuplicateGroup, FileChildInfo,
-    HistoryItem, LegacyConfigMigration, PublicSettings, SecureSettings,
+    CachedFileInfo, Download, DownloadEvent, DownloadStatus, DuplicateDownload, DuplicateGroup,
+    FileChildInfo, HistoryItem, LegacyConfigMigration, PublicSettings, SecureSettings,
 };
 
 struct Migration {
@@ -62,6 +62,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         name: "add_history_hash_columns",
         apply: migration_add_history_hash_columns,
+    },
+    Migration {
+        version: 11,
+        name: "create_download_events_table",
+        apply: migration_create_download_events_table,
     },
 ];
 
@@ -380,6 +385,21 @@ fn migration_add_history_hash_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_create_download_events_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS download_events (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             download_id TEXT NOT NULL,
+             kind        TEXT NOT NULL DEFAULT '',
+             message     TEXT NOT NULL DEFAULT '',
+             created_at  INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_download_events_download_created
+             ON download_events(download_id, created_at DESC);",
+    )?;
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -510,6 +530,43 @@ pub fn delete_finished(conn: &Connection) -> Result<()> {
         [],
     )?;
     Ok(())
+}
+
+pub fn insert_download_event(
+    conn: &Connection,
+    download_id: &str,
+    kind: &str,
+    message: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO download_events (download_id, kind, message, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![download_id, kind, message, now_secs()],
+    )?;
+    Ok(())
+}
+
+pub fn list_download_events(conn: &Connection, download_id: &str, limit: usize) -> Result<Vec<DownloadEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, download_id, kind, message, created_at
+         FROM download_events
+         WHERE download_id = ?1
+         ORDER BY created_at DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![download_id, limit.min(200) as i64], |row| {
+            Ok(DownloadEvent {
+                id: row.get(0)?,
+                download_id: row.get(1)?,
+                kind: row.get(2)?,
+                message: row.get(3)?,
+                created_at: row.get::<_, i64>(4)? as u64,
+            })
+        })?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(rows)
 }
 
 pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {

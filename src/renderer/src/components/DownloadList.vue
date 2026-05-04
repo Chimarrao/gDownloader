@@ -181,6 +181,7 @@
           draggable="true"
           @dragstart="draggedDownloadId = item.id"
           @dragend="draggedDownloadId = null"
+          @click="toggleDetailsFromCard(item, $event)"
         >
           <!-- Left: provider icon -->
           <div
@@ -561,6 +562,56 @@
               </div>
             </div>
 
+            <div v-if="isDetailExpanded(item.id)" class="download-detail-panel" @click.stop>
+              <div class="detail-tabs">
+                <button
+                  v-for="tab in detailTabOptions(item)"
+                  :key="tab.id"
+                  class="detail-tab"
+                  :class="{ active: activeDetailTab(item.id) === tab.id }"
+                  @click="setDetailTab(item, tab.id)"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+
+              <div v-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
+                <div><span>ID</span><strong>{{ item.id }}</strong></div>
+                <div><span>Host</span><strong>{{ moduleLabel(item.moduleId) }}</strong></div>
+                <div><span>Status</span><strong>{{ statusTextValue(item) }}</strong></div>
+                <div><span>Tamanho</span><strong>{{ formatBytes(item.size) }}</strong></div>
+                <div><span>Speed</span><strong>{{ formatSpeed(effectiveSpeedValue(item)) }}</strong></div>
+                <div><span>ETA</span><strong>{{ effectiveEtaValue(item) > 0 ? formatEta(effectiveEtaValue(item)) : '-' }}</strong></div>
+                <div><span>Adicionado</span><strong>{{ formatDateTime(item.addedAt) }}</strong></div>
+                <div><span>Destino</span><strong>{{ item.outputPath || '-' }}</strong></div>
+                <div class="detail-wide"><span>URL</span><strong>{{ item.url }}</strong></div>
+              </div>
+
+              <div v-else-if="activeDetailTab(item.id) === 'logs'" class="detail-log-list">
+                <p v-if="!(detailLogs[item.id]?.length)">Nenhum log recente encontrado para este download.</p>
+                <code v-for="line in detailLogs[item.id]" :key="line">{{ line }}</code>
+              </div>
+
+              <div v-else-if="activeDetailTab(item.id) === 'mirrors'" class="detail-action-pane">
+                <span>Buscar espelhos usando o nome atual do arquivo.</span>
+                <button class="toolbar-btn" @click="searchMirrorsFor(item)">Buscar mirrors</button>
+              </div>
+
+              <div v-else-if="activeDetailTab(item.id) === 'peers'" class="detail-action-pane">
+                <span v-if="item.moduleId === 'torrent'">Peers serão listados aqui quando o provider torrent estiver ativo.</span>
+                <span v-else>Este download não é torrent.</span>
+              </div>
+
+              <div v-else class="detail-events">
+                <p v-if="!(detailEvents[item.id]?.length)">Nenhum evento persistido ainda.</p>
+                <div v-for="event in detailEvents[item.id]" :key="event.id" class="detail-event">
+                  <span>{{ formatDateTime(event.createdAt) }}</span>
+                  <strong>{{ event.kind }}</strong>
+                  <em>{{ event.message }}</em>
+                </div>
+              </div>
+            </div>
+
             <div class="row-rich-tooltip" role="tooltip">
               <strong>{{ item.title || item.url }}</strong>
               <span v-for="line in rowTooltipLines(item)" :key="line">{{ line }}</span>
@@ -617,7 +668,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
-import type { DownloadChild, DownloadItem, DownloadPackage } from '../../../shared/types'
+import type { DownloadChild, DownloadEvent, DownloadItem, DownloadPackage } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
 import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
@@ -674,6 +725,10 @@ const filterHosts = ref<string[]>([])
 const filterPackages = ref<string[]>([])
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
+const expandedDetails = ref<Record<string, boolean>>({})
+const detailTabs = ref<Record<string, 'general' | 'logs' | 'mirrors' | 'peers' | 'history'>>({})
+const detailLogs = ref<Record<string, string[]>>({})
+const detailEvents = ref<Record<string, DownloadEvent[]>>({})
 const activeCaptchaId = ref<string | null>(null)
 const captchaWindowBusy = ref(false)
 const captchaModalRef = ref<HTMLElement | null>(null)
@@ -1494,6 +1549,71 @@ function toggleFolder(id: string): void {
     ...expandedFolders.value,
     [id]: !expandedFolders.value[id]
   }
+}
+
+function toggleDetailsFromCard(item: DownloadItem, event: MouseEvent): void {
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button,input,select,a,label,.download-detail-panel,.folder-children,.captcha-row')) {
+    return
+  }
+  toggleDetails(item)
+}
+
+function toggleDetails(item: DownloadItem): void {
+  expandedDetails.value = {
+    ...expandedDetails.value,
+    [item.id]: !expandedDetails.value[item.id],
+  }
+  if (expandedDetails.value[item.id]) {
+    detailTabs.value = { ...detailTabs.value, [item.id]: detailTabs.value[item.id] ?? 'general' }
+    void loadDetailData(item)
+  }
+}
+
+function isDetailExpanded(id: string): boolean {
+  return !!expandedDetails.value[id]
+}
+
+function activeDetailTab(id: string): 'general' | 'logs' | 'mirrors' | 'peers' | 'history' {
+  return detailTabs.value[id] ?? 'general'
+}
+
+function detailTabOptions(item: DownloadItem): Array<{ id: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'; label: string }> {
+  const tabs: Array<{ id: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'; label: string }> = [
+    { id: 'general', label: 'Geral' },
+    { id: 'logs', label: 'Logs' },
+    { id: 'mirrors', label: 'Mirrors' },
+  ]
+  if (item.moduleId === 'torrent') tabs.push({ id: 'peers', label: 'Peers' })
+  tabs.push({ id: 'history', label: 'Histórico' })
+  return tabs
+}
+
+function setDetailTab(item: DownloadItem, tab: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'): void {
+  detailTabs.value = { ...detailTabs.value, [item.id]: tab }
+  void loadDetailData(item)
+}
+
+async function loadDetailData(item: DownloadItem): Promise<void> {
+  const tab = activeDetailTab(item.id)
+  if (tab === 'logs' && !detailLogs.value[item.id]) {
+    const log = await window.api.logs.tail(500).catch(() => ({ path: '', lines: [] }))
+    const needles = [item.id, item.title, item.url].filter(Boolean).map((value) => value.toLowerCase())
+    detailLogs.value = {
+      ...detailLogs.value,
+      [item.id]: log.lines.filter((line) => needles.some((needle) => line.toLowerCase().includes(needle))).slice(-80),
+    }
+  }
+  if (tab === 'history' && !detailEvents.value[item.id]) {
+    const events = await window.api.downloads.events(item.id).catch(() => [])
+    detailEvents.value = { ...detailEvents.value, [item.id]: events }
+  }
+}
+
+async function searchMirrorsFor(item: DownloadItem): Promise<void> {
+  const filename = item.title || item.url
+  await window.api.mirrors.search(filename).catch(() => null)
+  await window.api.system.notify('Busca de mirrors iniciada', filename).catch(() => null)
 }
 
 function effectiveSpeedValue(item: DownloadItem): number {
@@ -2560,6 +2680,151 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: color-mix(in srgb, var(--bg-card) 82%, rgba(255, 193, 7, 0.07));
   border-radius: 8px;
   padding: 4px 6px;
+}
+
+.download-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 22%, var(--border-color));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-card));
+  animation: detailSlide 0.18s ease-out;
+}
+
+@keyframes detailSlide {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 420px;
+  }
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.detail-tab {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.detail-tab.active {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+
+.detail-grid div,
+.detail-action-pane,
+.detail-event {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.detail-grid span,
+.detail-action-pane span,
+.detail-event span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.detail-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.detail-wide {
+  grid-column: 1 / -1;
+}
+
+.detail-log-list,
+.detail-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.detail-log-list p,
+.detail-events p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.detail-log-list code {
+  display: block;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detail-action-pane {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.detail-event {
+  display: grid;
+  grid-template-columns: 120px 90px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.detail-event span {
+  margin: 0;
+}
+
+.detail-event strong {
+  color: var(--accent-color);
+  font-size: 11px;
+}
+
+.detail-event em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-style: normal;
 }
 
 /* ── Captcha modal ──────────────────────────────────────────── */

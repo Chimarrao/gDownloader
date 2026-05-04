@@ -174,6 +174,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/downloads",     post(routes::downloads::add_download))
         .route("/downloads",     get(routes::downloads::list_downloads))
         .route("/downloads/duplicates", get(routes::downloads::list_duplicate_downloads))
+        .route("/downloads/:id/events", get(routes::downloads::list_download_events))
         .route("/downloads/finished", delete(routes::downloads::clear_finished_downloads))
         .route("/downloads/:id/pause", post(routes::downloads::pause_download))
         .route("/downloads/:id/resume", post(routes::downloads::resume_download))

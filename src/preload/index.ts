@@ -3,6 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppSettingsSnapshot,
   CreateDownloadPackagePayload,
+  DownloadEvent,
   DuplicateDownload,
   DuplicateGroup,
 } from '../shared/types'
@@ -377,6 +378,19 @@ const api = {
       const resp = await fetchBackend('/downloads/duplicates')
       if (!resp.ok) return []
       return resp.json()
+    },
+
+    events: async (id: string): Promise<DownloadEvent[]> => {
+      const resp = await fetchBackend(`/downloads/${id}/events`)
+      if (!resp.ok) return []
+      const rows = await resp.json() as Array<Record<string, unknown>>
+      return rows.map((row) => ({
+        id: Number(row.id),
+        downloadId: String(row.download_id ?? row.downloadId ?? ''),
+        kind: String(row.kind ?? ''),
+        message: String(row.message ?? ''),
+        createdAt: Number(row.created_at ?? row.createdAt ?? 0) * 1000,
+      }))
     },
 
     // Subscreve a eventos de progresso via WebSocket

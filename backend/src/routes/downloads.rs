@@ -12,8 +12,8 @@ use uuid::Uuid;
 use crate::{
     hash_verify,
     models::{
-        AddDownloadRequest, ApiError, Download, DownloadStatus, DuplicateDownload, DuplicateGroup,
-        ExpectedHash, FileChildInfo, HashAlgorithm, WsEvent,
+        AddDownloadRequest, ApiError, Download, DownloadEvent, DownloadStatus, DuplicateDownload,
+        DuplicateGroup, ExpectedHash, FileChildInfo, HashAlgorithm, WsEvent,
     },
     providers,
     ws::AppState,
@@ -136,6 +136,12 @@ fn duplicate_http_error(duplicate: DuplicateDownload) -> (StatusCode, Json<ApiEr
             duplicate,
         )),
     )
+}
+
+fn record_download_event(state: &AppState, download_id: &str, kind: &str, message: &str) {
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::insert_download_event(&db, download_id, kind, message);
+    }
 }
 
 // Adiciona um novo download à fila e inicia o processo em background
@@ -382,6 +388,7 @@ pub async fn add_download_internal(
     // Persiste no SQLite
     if let Ok(db) = state.db.lock() {
         let _ = crate::db::upsert(&db, &download);
+        let _ = crate::db::insert_download_event(&db, &download.id, "created", "Adicionado à fila");
     }
 
     info!(
@@ -430,6 +437,25 @@ pub async fn list_duplicate_downloads(
     Ok(Json(groups))
 }
 
+pub async fn list_download_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<DownloadEvent>>, (StatusCode, Json<ApiError>)> {
+    let db = state.db.lock().map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("Falha ao abrir o banco local")),
+        )
+    })?;
+    let events = crate::db::list_download_events(&db, &id, 80).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Falha ao buscar histórico do download: {error}"))),
+        )
+    })?;
+    Ok(Json(events))
+}
+
 // Cancela e remove um download da fila
 // DELETE /downloads/:id
 pub async fn cancel_download(
@@ -470,6 +496,7 @@ pub async fn cancel_download(
     }
 
     persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "cancelled", "Cancelado pelo usuário");
 
     state.broadcast(WsEvent::Status {
         id: id.clone(),
@@ -512,6 +539,7 @@ pub async fn remove_download(
 
     if removed {
         if let Ok(db) = state.db.lock() {
+            let _ = crate::db::insert_download_event(&db, &id, "removed", "Removido da lista");
             let _ = crate::db::delete(&db, &id);
         }
         return Ok(StatusCode::NO_CONTENT);
@@ -559,6 +587,7 @@ pub async fn remove_download_with_files(
     }
 
     if let Ok(db) = state.db.lock() {
+        let _ = crate::db::insert_download_event(&db, &id, "removed_files", "Removido com arquivos físicos");
         let _ = crate::db::delete(&db, &id);
     }
 
@@ -627,6 +656,7 @@ pub async fn pause_download(
     }
 
     persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "paused", "Pausado pelo usuário");
     state.broadcast(WsEvent::Status {
         id: id.clone(),
         status: DownloadStatus::Paused,
@@ -699,6 +729,7 @@ pub async fn force_download(
     };
 
     persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "forced", "Forçado para iniciar agora");
     state.broadcast(WsEvent::Status {
         id: id.clone(),
         status: DownloadStatus::Pending,
@@ -1017,6 +1048,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 }
                 state.active_tasks.lock().await.remove(&id);
                 persist_download_snapshot(&state, &id).await;
+                record_download_event(&state, &id, "completed", "Download concluído");
                 info!(
                     target: "gdownloader_backend::downloads",
                     "download concluído id={} provider={} dest={}",
@@ -1382,6 +1414,7 @@ async fn verify_completed_download(
                     }
                 }
                 persist_download_snapshot(state, id).await;
+                record_download_event(state, id, "corrupted", "Hash inválido na verificação");
                 state.broadcast(WsEvent::StatusChanged {
                     id: id.to_string(),
                     status: DownloadStatus::Corrupted,
@@ -1570,6 +1603,12 @@ async fn restart_download_internal(
         status: DownloadStatus::Pending,
     });
     persist_download_snapshot(&state, &id).await;
+    record_download_event(
+        &state,
+        &id,
+        if delete_existing { "restarted" } else { "resumed" },
+        if delete_existing { "Reiniciado do zero" } else { "Retomado/reagendado pelo usuário" },
+    );
 
     schedule_pending_downloads(state).await;
 
@@ -1612,6 +1651,7 @@ async fn update_error(state: &AppState, id: &str, message: &str) {
         }
     }
     persist_download_snapshot(state, id).await;
+    record_download_event(state, id, "error", message);
     state.broadcast(WsEvent::Error {
         id: id.to_string(),
         message: message.to_string(),

@@ -4,6 +4,7 @@ import type {
   AppSettingsSnapshot,
   CachedFileInfoSnapshot,
   CreateDownloadPackagePayload,
+  DownloadEvent,
   DuplicateGroup,
   DownloadPackage,
   DownloadHistoryItem,
@@ -137,6 +138,7 @@ interface RendererApi {
     clearFinished: () => Promise<void>
     togglePin: (id: string) => Promise<void>
     duplicates: () => Promise<DuplicateGroup[]>
+    events: (id: string) => Promise<DownloadEvent[]>
     list: () => Promise<DownloadItem[]>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }

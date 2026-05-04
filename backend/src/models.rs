@@ -67,6 +67,15 @@ pub struct Download {
     pub package_id: Option<String>, // ID do pacote ao qual este download pertence
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadEvent {
+    pub id: i64,
+    pub download_id: String,
+    pub kind: String,
+    pub message: String,
+    pub created_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {

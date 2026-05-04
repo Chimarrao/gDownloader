@@ -205,6 +205,14 @@ export interface DuplicateGroup {
   items: DuplicateDownload[]
 }
 
+export interface DownloadEvent {
+  id: number
+  downloadId: string
+  kind: string
+  message: string
+  createdAt: number
+}
+
 export interface CachedFileInfoSnapshot extends FileInfo {
   providerId?: string
   cachedAt?: number
