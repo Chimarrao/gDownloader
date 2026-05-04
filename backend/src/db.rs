@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 
 use crate::models::{
     ArchivePassword, CachedFileInfo, Download, DownloadEvent, DownloadStatus, DuplicateDownload,
@@ -74,6 +74,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "create_archive_passwords_table",
         apply: migration_create_archive_passwords_table,
     },
+    Migration {
+        version: 13,
+        name: "create_history_fts",
+        apply: migration_create_history_fts,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -92,6 +97,7 @@ pub fn init(db_path: &str) -> Result<Connection> {
          );",
     )?;
     apply_migrations(&mut conn)?;
+    reindex_history_fts(&conn)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     Ok(conn)
 }
@@ -420,11 +426,101 @@ fn migration_create_archive_passwords_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_create_history_fts(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "download_history",
+        "host",
+        "ALTER TABLE download_history ADD COLUMN host TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS download_history_ai;
+         DROP TRIGGER IF EXISTS download_history_ad;
+         DROP TRIGGER IF EXISTS download_history_au;
+         DROP TABLE IF EXISTS history_fts;
+         CREATE INDEX IF NOT EXISTS idx_download_history_host
+             ON download_history(host);
+         CREATE VIRTUAL TABLE IF NOT EXISTS history_fts
+             USING fts5(filename, url, host);
+         CREATE TRIGGER IF NOT EXISTS download_history_ai AFTER INSERT ON download_history BEGIN
+             INSERT INTO history_fts(rowid, filename, url, host)
+             VALUES (new.rowid, new.title, new.url, new.host);
+         END;
+         CREATE TRIGGER IF NOT EXISTS download_history_ad AFTER DELETE ON download_history BEGIN
+             DELETE FROM history_fts WHERE rowid = old.rowid;
+         END;
+         CREATE TRIGGER IF NOT EXISTS download_history_au AFTER UPDATE ON download_history BEGIN
+             DELETE FROM history_fts WHERE rowid = old.rowid;
+             INSERT INTO history_fts(rowid, filename, url, host)
+             VALUES (new.rowid, new.title, new.url, new.host);
+         END;",
+    )?;
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn history_host(url: &str) -> String {
+    let without_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let authority = without_scheme.split('/').next().unwrap_or_default();
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    host_port
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("www.")
+        .to_lowercase()
+}
+
+fn fts_match_query(raw: &str) -> Option<String> {
+    let terms = raw
+        .split_whitespace()
+        .filter_map(|term| {
+            let cleaned = term
+                .chars()
+                .filter(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_' | '@'))
+                .collect::<String>();
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(format!("\"{}\"*", cleaned.replace('"', "\"\"")))
+            }
+        })
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
+}
+
+fn reindex_history_fts(conn: &Connection) -> Result<()> {
+    {
+        let mut stmt = conn.prepare("SELECT id, url FROM download_history WHERE host = ''")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        for (id, url) in rows {
+            conn.execute(
+                "UPDATE download_history SET host = ?1 WHERE id = ?2",
+                params![history_host(&url), id],
+            )?;
+        }
+    }
+    conn.execute("DELETE FROM history_fts", [])?;
+    conn.execute(
+        "INSERT INTO history_fts(rowid, filename, url, host)
+         SELECT rowid, title, url, host FROM download_history",
+        [],
+    )?;
+    Ok(())
 }
 
 fn status_str(s: &DownloadStatus) -> &'static str {
@@ -820,24 +916,99 @@ pub fn save_secure_settings(conn: &Connection, settings: &SecureSettings) -> Res
 }
 
 pub fn load_history(conn: &Connection) -> Result<Vec<HistoryItem>> {
+    search_history(conn, &HistorySearch {
+        page: 0,
+        page_size: 500,
+        ..HistorySearch::default()
+    })
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct HistorySearch {
+    pub q: Option<String>,
+    pub host: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+pub fn search_history(conn: &Connection, filters: &HistorySearch) -> Result<Vec<HistoryItem>> {
+    let mut sql = String::from(
+        "SELECT h.id, h.url, h.title, h.host, h.thumbnail, h.date, h.format_id, h.output_path, h.sha256_hash
+         FROM download_history h",
+    );
+    let mut where_parts = Vec::new();
+    let mut values = Vec::<Value>::new();
+
+    if let Some(query) = filters.q.as_deref().and_then(fts_match_query) {
+        sql.push_str(" JOIN history_fts ON history_fts.rowid = h.rowid");
+        where_parts.push("history_fts MATCH ?".to_string());
+        values.push(Value::Text(query));
+    }
+
+    if let Some(host) = filters.host.as_deref().map(str::trim).filter(|host| !host.is_empty()) {
+        where_parts.push("h.host = ?".to_string());
+        values.push(Value::Text(host.to_lowercase()));
+    }
+
+    if let Some(from) = filters.from.as_deref().map(str::trim).filter(|from| !from.is_empty()) {
+        where_parts.push("h.date >= ?".to_string());
+        values.push(Value::Text(from.to_string()));
+    }
+
+    if let Some(to) = filters.to.as_deref().map(str::trim).filter(|to| !to.is_empty()) {
+        where_parts.push("h.date <= ?".to_string());
+        let end_of_day = if to.len() == 10 {
+            format!("{to}T23:59:59.999Z")
+        } else {
+            to.to_string()
+        };
+        values.push(Value::Text(end_of_day));
+    }
+
+    if !where_parts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_parts.join(" AND "));
+    }
+
+    let page_size = filters.page_size.clamp(1, 200);
+    let offset = filters.page.saturating_mul(page_size);
+    sql.push_str(" ORDER BY h.date DESC, h.updated_at DESC LIMIT ? OFFSET ?");
+    values.push(Value::Integer(page_size as i64));
+    values.push(Value::Integer(offset as i64));
+
     let mut stmt = conn.prepare(
-        "SELECT id, url, title, thumbnail, date, format_id, output_path, sha256_hash
-         FROM download_history
-         ORDER BY date DESC, updated_at DESC",
+        &sql,
     )?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params_from_iter(values), |row| {
             Ok(HistoryItem {
                 id: row.get(0)?,
                 url: row.get(1)?,
                 title: row.get(2)?,
-                thumbnail: row.get(3)?,
-                date: row.get(4)?,
-                format_id: row.get(5)?,
-                output_path: row.get(6)?,
-                sha256_hash: row.get(7)?,
+                host: row.get(3)?,
+                thumbnail: row.get(4)?,
+                date: row.get(5)?,
+                format_id: row.get(6)?,
+                output_path: row.get(7)?,
+                sha256_hash: row.get(8)?,
             })
         })?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(rows)
+}
+
+pub fn list_history_hosts(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT host
+         FROM download_history
+         WHERE host != ''
+         ORDER BY host ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
         .filter_map(|row| row.ok())
         .collect();
     Ok(rows)
@@ -850,15 +1021,21 @@ pub fn replace_history(conn: &Connection, items: &[HistoryItem]) -> Result<()> {
     {
         let mut stmt = tx.prepare(
             "INSERT INTO download_history
-                 (id, url, title, thumbnail, date, format_id, output_path, sha256_hash, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (id, url, title, host, thumbnail, date, format_id, output_path, sha256_hash, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
 
         for item in items {
+            let host = if item.host.trim().is_empty() {
+                history_host(&item.url)
+            } else {
+                item.host.clone()
+            };
             stmt.execute(params![
                 item.id,
                 item.url,
                 item.title,
+                host,
                 item.thumbnail,
                 item.date,
                 item.format_id,
@@ -870,6 +1047,47 @@ pub fn replace_history(conn: &Connection, items: &[HistoryItem]) -> Result<()> {
     }
 
     tx.commit()?;
+    Ok(())
+}
+
+pub fn upsert_history_item(conn: &Connection, item: &HistoryItem) -> Result<()> {
+    let host = if item.host.trim().is_empty() {
+        history_host(&item.url)
+    } else {
+        item.host.clone()
+    };
+    conn.execute(
+        "INSERT INTO download_history
+             (id, url, title, host, thumbnail, date, format_id, output_path, sha256_hash, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(id) DO UPDATE SET
+             url = excluded.url,
+             title = excluded.title,
+             host = excluded.host,
+             thumbnail = excluded.thumbnail,
+             date = excluded.date,
+             format_id = excluded.format_id,
+             output_path = excluded.output_path,
+             sha256_hash = excluded.sha256_hash,
+             updated_at = excluded.updated_at",
+        params![
+            item.id,
+            item.url,
+            item.title,
+            host,
+            item.thumbnail,
+            item.date,
+            item.format_id,
+            item.output_path,
+            item.sha256_hash,
+            now_secs(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_history_item(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM download_history WHERE id = ?1", params![id])?;
     Ok(())
 }
 
@@ -1244,6 +1462,8 @@ mod tests {
             started_at: Some(222),
             completed_at: None,
             last_progress_at: Some(333),
+            pinned: false,
+            package_id: None,
         }
     }
 

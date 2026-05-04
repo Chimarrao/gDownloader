@@ -184,6 +184,7 @@ async fn direct_http_resumes_single_stream_from_sqlite_offset() {
             tx,
             DownloadContext {
                 db_path: Some(db_path.to_string_lossy().to_string()),
+                ..DownloadContext::default()
             },
         )
         .await

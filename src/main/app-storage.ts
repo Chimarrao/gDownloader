@@ -25,7 +25,19 @@ export const defaultPublicSettings: PersistedSettings = {
     password: 'gd-1234',
     port: 9786,
   },
-  visibleColumns: ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash'],
+  visibleColumns: [
+    'status',
+    'name',
+    'size',
+    'progress',
+    'speed',
+    'eta',
+    'host',
+    'package',
+    'added',
+    'completed',
+    'hash',
+  ],
   lastFilters: { statuses: [], hosts: [], packages: [] },
 }
 
@@ -56,11 +68,21 @@ export interface PersistedHistoryItem {
   id: string
   url: string
   title: string
+  host?: string
   thumbnail: string
   date: string
   formatId: string
   outputPath?: string
   sha256Hash?: string
+}
+
+export interface HistorySearchFilters {
+  q?: string
+  host?: string
+  from?: string
+  to?: string
+  page?: number
+  pageSize?: number
 }
 
 interface LegacyMigrationRecord {
@@ -82,21 +104,21 @@ interface AppStorageState {
   bruploadAccount: BruploadStoredAccount | null
 }
 
-function sanitizeForDisk(input: Partial<LegacyRootSettings> | null | undefined): Partial<PersistedSettings> {
+function sanitizeForDisk(
+  input: Partial<LegacyRootSettings> | null | undefined,
+): Partial<PersistedSettings> {
   if (!input) {
     return {}
   }
 
-  const {
-    nopechaApiKey: _nopechaApiKey,
-    accounts: _accounts,
-    ...rest
-  } = input
+  const { nopechaApiKey: _nopechaApiKey, accounts: _accounts, ...rest } = input
 
   return rest
 }
 
-function normalizeTeraboxAccount(account: TeraboxStoredAccount | null | undefined): TeraboxStoredAccount | null {
+function normalizeTeraboxAccount(
+  account: TeraboxStoredAccount | null | undefined,
+): TeraboxStoredAccount | null {
   if (!account) {
     return null
   }
@@ -119,7 +141,9 @@ function normalizeTeraboxAccount(account: TeraboxStoredAccount | null | undefine
   }
 }
 
-function normalizeBruploadAccount(account: BruploadStoredAccount | null | undefined): BruploadStoredAccount | null {
+function normalizeBruploadAccount(
+  account: BruploadStoredAccount | null | undefined,
+): BruploadStoredAccount | null {
   if (!account) {
     return null
   }
@@ -184,7 +208,10 @@ function mergeLegacyPublicSettings(
     ...defaultPublicSettings,
     ...current,
   }
-  const mergedRecord = merged as Record<keyof PersistedSettings, PersistedSettings[keyof PersistedSettings]>
+  const mergedRecord = merged as Record<
+    keyof PersistedSettings,
+    PersistedSettings[keyof PersistedSettings]
+  >
 
   for (const [rawKey, rawValue] of Object.entries(legacy)) {
     if (typeof rawValue === 'undefined') {
@@ -258,12 +285,39 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     await options.postBackend('/config/secure', currentSecureSettingsPayload())
   }
 
-  async function loadHistoryFromBackend(): Promise<PersistedHistoryItem[]> {
-    return options.fetchBackendConfig<PersistedHistoryItem[]>('/history')
+  function historyQuery(filters?: HistorySearchFilters): string {
+    const params = new URLSearchParams()
+    if (filters?.q?.trim()) params.set('q', filters.q.trim())
+    if (filters?.host?.trim()) params.set('host', filters.host.trim())
+    if (filters?.from?.trim()) params.set('from', filters.from.trim())
+    if (filters?.to?.trim()) params.set('to', filters.to.trim())
+    if (typeof filters?.page === 'number') params.set('page', String(Math.max(0, filters.page)))
+    if (typeof filters?.pageSize === 'number')
+      params.set('pageSize', String(Math.max(1, filters.pageSize)))
+    const query = params.toString()
+    return query ? `/history?${query}` : '/history'
+  }
+
+  async function loadHistoryFromBackend(
+    filters?: HistorySearchFilters,
+  ): Promise<PersistedHistoryItem[]> {
+    return options.fetchBackendConfig<PersistedHistoryItem[]>(historyQuery(filters))
+  }
+
+  async function loadHistoryHostsFromBackend(): Promise<string[]> {
+    return options.fetchBackendConfig<string[]>('/history/hosts')
   }
 
   async function saveHistoryToBackend(items: PersistedHistoryItem[]): Promise<void> {
     await options.postBackend('/history', items)
+  }
+
+  async function appendHistoryItemToBackend(item: PersistedHistoryItem): Promise<void> {
+    await options.postBackend('/history/item', item)
+  }
+
+  async function removeHistoryItemInBackend(id: string): Promise<void> {
+    await options.deleteBackend(`/history/${encodeURIComponent(id)}`)
   }
 
   async function clearHistoryInBackend(): Promise<void> {
@@ -280,8 +334,7 @@ export function createAppStorage(options: CreateAppStorageOptions) {
 
   async function migrateLegacySettingsIfNeeded(): Promise<void> {
     const appliedVersions = new Set(
-      (await loadLegacyMigrationHistory().catch(() => []))
-        .map((item) => item.version),
+      (await loadLegacyMigrationHistory().catch(() => [])).map((item) => item.version),
     )
 
     if (!appliedVersions.has(1)) {
@@ -364,7 +417,9 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     getNopechaApiKey,
     getPublicSettings,
     getTeraboxAccount,
+    appendHistoryItemToBackend,
     loadHistoryFromBackend,
+    loadHistoryHostsFromBackend,
     loadPublicSettings,
     loadSecureSettings,
     migrateLegacySettingsIfNeeded,
@@ -372,6 +427,7 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     persistPublicSettings,
     persistSecureSettings,
     persistTeraboxAccount,
+    removeHistoryItemInBackend,
     saveHistoryToBackend,
     clearHistoryInBackend,
     setNopechaApiKey,

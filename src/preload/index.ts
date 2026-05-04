@@ -152,7 +152,11 @@ function routeDownloadEvent(event: Record<string, unknown>): void {
 }
 
 async function ensureDownloadsSocket(): Promise<void> {
-  if (downloadsSocket && (downloadsSocket.readyState === WebSocket.OPEN || downloadsSocket.readyState === WebSocket.CONNECTING)) {
+  if (
+    downloadsSocket &&
+    (downloadsSocket.readyState === WebSocket.OPEN ||
+      downloadsSocket.readyState === WebSocket.CONNECTING)
+  ) {
     return
   }
   if (downloadsSocketPromise) {
@@ -277,7 +281,7 @@ const api = {
       destDir: string,
       selectedChildren?: string[],
       expectedHash?: { algorithm: string; value: string },
-      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download'
+      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download',
     ) => {
       const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
@@ -304,7 +308,16 @@ const api = {
             '3',
           )
           if (choice === '1') {
-            return api.downloads.add(url, _moduleId, _title, _size, destDir, selectedChildren, expectedHash, 'always_download')
+            return api.downloads.add(
+              url,
+              _moduleId,
+              _title,
+              _size,
+              destDir,
+              selectedChildren,
+              expectedHash,
+              'always_download',
+            )
           }
           if (choice === '2') {
             if (duplicate.path) {
@@ -313,7 +326,16 @@ const api = {
             throw new Error('Download ignorado: arquivo existente aberto')
           }
           if (choice === '3' || choice === null) {
-            return api.downloads.add(url, _moduleId, _title, _size, destDir, selectedChildren, expectedHash, 'rename')
+            return api.downloads.add(
+              url,
+              _moduleId,
+              _title,
+              _size,
+              destDir,
+              selectedChildren,
+              expectedHash,
+              'rename',
+            )
           }
         }
         throw new Error(body.error ?? 'Erro ao adicionar download')
@@ -380,7 +402,9 @@ const api = {
     },
 
     removeWithFiles: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/remove-with-files`, { method: 'DELETE' })
+      await fetchBackend(`/downloads/${id}/remove-with-files`, {
+        method: 'DELETE',
+      })
     },
 
     clearFinished: async () => {
@@ -400,7 +424,7 @@ const api = {
     events: async (id: string): Promise<DownloadEvent[]> => {
       const resp = await fetchBackend(`/downloads/${id}/events`)
       if (!resp.ok) return []
-      const rows = await resp.json() as Array<Record<string, unknown>>
+      const rows = (await resp.json()) as Array<Record<string, unknown>>
       return rows.map((row) => ({
         id: Number(row.id),
         downloadId: String(row.download_id ?? row.downloadId ?? ''),
@@ -425,7 +449,8 @@ const api = {
   // --- Settings ---
   settings: {
     load: (): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:load'),
-    save: (s: AppSettingsSnapshot): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:save', s),
+    save: (s: AppSettingsSnapshot): Promise<AppSettingsSnapshot> =>
+      ipcRenderer.invoke('settings:save', s),
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
@@ -451,16 +476,21 @@ const api = {
   },
 
   auth: {
-    isLoggedIn: (moduleId: string): Promise<boolean> => ipcRenderer.invoke('auth:isLoggedIn', moduleId),
+    isLoggedIn: (moduleId: string): Promise<boolean> =>
+      ipcRenderer.invoke('auth:isLoggedIn', moduleId),
     login: (moduleId: string, params: Record<string, string>): Promise<void> =>
       ipcRenderer.invoke('auth:login', moduleId, params),
     logout: (moduleId: string): Promise<void> => ipcRenderer.invoke('auth:logout', moduleId),
-    accountInfo: (moduleId: string): Promise<unknown> => ipcRenderer.invoke('auth:accountInfo', moduleId),
+    accountInfo: (moduleId: string): Promise<unknown> =>
+      ipcRenderer.invoke('auth:accountInfo', moduleId),
   },
 
   // --- Histórico ---
-  loadHistory: () => ipcRenderer.invoke('history:load'),
+  loadHistory: (filters?: unknown) => ipcRenderer.invoke('history:load', filters),
   saveHistory: (items: unknown) => ipcRenderer.invoke('history:save', items),
+  appendHistory: (item: unknown) => ipcRenderer.invoke('history:append', item),
+  historyHosts: () => ipcRenderer.invoke('history:hosts'),
+  removeHistoryItem: (id: string) => ipcRenderer.invoke('history:remove', id),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
 
   // --- Shell ---
@@ -469,18 +499,24 @@ const api = {
   clipboard: {
     writeText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:writeText', text),
     onLinkDetected: (cb: (payload: ClipboardLinkPayload) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload) => cb(payload)
+      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload) =>
+        cb(payload)
       ipcRenderer.on('clipboard:link-detected', handler)
       return () => ipcRenderer.removeListener('clipboard:link-detected', handler)
     },
   },
   system: {
-    notify: (title: string, body?: string): Promise<boolean> => ipcRenderer.invoke('system:notify', title, body),
+    notify: (title: string, body?: string): Promise<boolean> =>
+      ipcRenderer.invoke('system:notify', title, body),
   },
   logs: {
-    tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> => ipcRenderer.invoke('logs:tail', maxLines),
+    tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> =>
+      ipcRenderer.invoke('logs:tail', maxLines),
     watch: (cb: (payload: { path: string; lines: string[] }) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: { path: string; lines: string[] }) => cb(payload)
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { path: string; lines: string[] },
+      ) => cb(payload)
       ipcRenderer.on('logs:update', handler)
       ipcRenderer.send('logs:watch-start')
       return () => {
@@ -490,24 +526,37 @@ const api = {
     },
   },
   archive: {
-    extract: (archivePath: string): Promise<string> => ipcRenderer.invoke('archive:extract', archivePath),
-    autoExtract: (archivePath: string, passwords: string[]): Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }> =>
-      ipcRenderer.invoke('archive:auto-extract', archivePath, passwords),
+    extract: (archivePath: string): Promise<string> =>
+      ipcRenderer.invoke('archive:extract', archivePath),
+    autoExtract: (
+      archivePath: string,
+      passwords: string[],
+    ): Promise<{
+      success: boolean
+      outputDir?: string
+      error?: string
+      passwordUsed?: string
+    }> => ipcRenderer.invoke('archive:auto-extract', archivePath, passwords),
   },
   archivePasswords: {
     list: async (): Promise<ArchivePassword[]> => {
-      const rows = await ipcRenderer.invoke('archive-passwords:list') as Array<Record<string, unknown>>
+      const rows = (await ipcRenderer.invoke('archive-passwords:list')) as Array<
+        Record<string, unknown>
+      >
       return rows.map((row) => ({
         password: String(row.password ?? ''),
         successCount: Number(row.successCount ?? row.success_count ?? 0),
-        lastUsedAt: row.lastUsedAt || row.last_used_at
-          ? Number(row.lastUsedAt ?? row.last_used_at) * 1000
-          : undefined,
+        lastUsedAt:
+          row.lastUsedAt || row.last_used_at
+            ? Number(row.lastUsedAt ?? row.last_used_at) * 1000
+            : undefined,
         source: String(row.source ?? 'manual'),
       }))
     },
-    import: (passwords: string[]): Promise<void> => ipcRenderer.invoke('archive-passwords:import', passwords),
-    forget: (password: string): Promise<void> => ipcRenderer.invoke('archive-passwords:forget', password),
+    import: (passwords: string[]): Promise<void> =>
+      ipcRenderer.invoke('archive-passwords:import', passwords),
+    forget: (password: string): Promise<void> =>
+      ipcRenderer.invoke('archive-passwords:forget', password),
   },
   packages: {
     list: async () => {
@@ -528,17 +577,26 @@ const api = {
       return resp.json()
     },
     remove: async (id: string) => {
-      await fetchBackend(`/packages/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      await fetchBackend(`/packages/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      })
     },
     assign: async (packageId: string, downloadId: string) => {
-      await fetchBackend(`/packages/${encodeURIComponent(packageId)}/assign/${encodeURIComponent(downloadId)}`, { method: 'POST' })
+      await fetchBackend(
+        `/packages/${encodeURIComponent(packageId)}/assign/${encodeURIComponent(downloadId)}`,
+        { method: 'POST' },
+      )
     },
     unassign: async (downloadId: string) => {
-      await fetchBackend(`/packages/unassign/${encodeURIComponent(downloadId)}`, { method: 'DELETE' })
+      await fetchBackend(`/packages/unassign/${encodeURIComponent(downloadId)}`, {
+        method: 'DELETE',
+      })
     },
   },
   links: {
-    importContainer: async (file: File): Promise<Array<{ url: string; filename: string; size: number }>> => {
+    importContainer: async (
+      file: File,
+    ): Promise<Array<{ url: string; filename: string; size: number }>> => {
       const form = new FormData()
       form.append('file', file, file.name)
       const resp = await fetchBackend('/links/import-container', {
@@ -549,19 +607,31 @@ const api = {
         const body = await resp.json().catch(() => ({ error: 'Falha ao importar container' }))
         throw new Error(String(body.error ?? 'Falha ao importar container'))
       }
-      const data = await resp.json() as { links?: Array<{ url: string; filename: string; size: number }> }
+      const data = (await resp.json()) as {
+        links?: Array<{ url: string; filename: string; size: number }>
+      }
       return data.links ?? []
     },
   },
   terabox: {
-    netRequest: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<unknown> =>
-      ipcRenderer.invoke('terabox:net-request', params),
+    netRequest: (params: {
+      url: string
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+    }): Promise<unknown> => ipcRenderer.invoke('terabox:net-request', params),
   },
   captcha: {
-    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }): Promise<string | null> =>
-      ipcRenderer.invoke('captcha:nopecha-solve', params),
-    openWindow: (params: { provider?: string; pageUrl: string; sourceUrl?: string }): Promise<string | null> =>
-      ipcRenderer.invoke('captcha:open-window', params),
+    nopechaSolve: (params: {
+      type: string
+      sitekey: string
+      pageurl: string
+    }): Promise<string | null> => ipcRenderer.invoke('captcha:nopecha-solve', params),
+    openWindow: (params: {
+      provider?: string
+      pageUrl: string
+      sourceUrl?: string
+    }): Promise<string | null> => ipcRenderer.invoke('captcha:open-window', params),
     submit: (id: string, token: string): Promise<void> =>
       fetchBackend(`/captcha/submit`, {
         method: 'POST',
@@ -662,7 +732,10 @@ const api = {
         })
 
         if (!response.ok || !response.body) {
-          emit({ type: 'error', payload: 'Falha ao iniciar stream de mirrors' })
+          emit({
+            type: 'error',
+            payload: 'Falha ao iniciar stream de mirrors',
+          })
           return
         }
 
@@ -762,10 +835,13 @@ const api = {
 ipcRenderer.on('tray:pause-all', () => window.dispatchEvent(new Event('tray-pause-all')))
 ipcRenderer.on('tray:resume-all', () => window.dispatchEvent(new Event('tray-resume-all')))
 ipcRenderer.on('tray:set-speed-limit', (_e, limit: number) =>
-  window.dispatchEvent(new CustomEvent('tray-set-speed-limit', { detail: limit })))
+  window.dispatchEvent(new CustomEvent('tray-set-speed-limit', { detail: limit })),
+)
 
 function normalizeModuleId(provider: unknown): string {
-  const raw = String(provider ?? '').trim().toLowerCase()
+  const raw = String(provider ?? '')
+    .trim()
+    .toLowerCase()
   switch (raw) {
     case 'google drive':
     case 'googledrive':

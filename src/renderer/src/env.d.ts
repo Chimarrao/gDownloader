@@ -10,6 +10,7 @@ import type {
   DownloadPackage,
   DownloadHistoryItem,
   DownloadItem,
+  HistorySearchFilters,
   FileInfo,
 } from '../../shared/types'
 
@@ -126,7 +127,7 @@ interface RendererApi {
       destDir: string,
       selectedChildren?: string[],
       expectedHash?: { algorithm: string; value: string },
-      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download'
+      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download',
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
     pause: (id: string) => Promise<void>
@@ -145,14 +146,19 @@ interface RendererApi {
     list: () => Promise<DownloadItem[]>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }
-  loadHistory: () => Promise<DownloadHistoryItem[]>
+  loadHistory: (filters?: HistorySearchFilters) => Promise<DownloadHistoryItem[]>
   saveHistory: (items: DownloadHistoryItem[]) => Promise<void>
+  appendHistory: (item: DownloadHistoryItem) => Promise<void>
+  historyHosts: () => Promise<string[]>
+  removeHistoryItem: (id: string) => Promise<void>
   clearHistory: () => Promise<void>
   openPath: (path: string) => Promise<void>
   showInFolder: (path: string) => Promise<void>
   clipboard: {
     writeText: (text: string) => Promise<boolean>
-    onLinkDetected: (cb: (payload: { url: string; provider: string; providerName?: string }) => void) => () => void
+    onLinkDetected: (
+      cb: (payload: { url: string; provider: string; providerName?: string }) => void,
+    ) => () => void
   }
   system: {
     notify: (title: string, body?: string) => Promise<boolean>
@@ -165,8 +171,13 @@ interface RendererApi {
     extract: (archivePath: string) => Promise<string>
     autoExtract: (
       archivePath: string,
-      passwords: string[]
-    ) => Promise<{ success: boolean; outputDir?: string; error?: string; passwordUsed?: string }>
+      passwords: string[],
+    ) => Promise<{
+      success: boolean
+      outputDir?: string
+      error?: string
+      passwordUsed?: string
+    }>
   }
   archivePasswords: {
     list: () => Promise<ArchivePassword[]>
@@ -184,8 +195,16 @@ interface RendererApi {
     importContainer: (file: File) => Promise<Array<{ url: string; filename: string; size: number }>>
   }
   captcha: {
-    nopechaSolve: (params: { type: string; sitekey: string; pageurl: string }) => Promise<string | null>
-    openWindow: (params: { provider?: string; pageUrl: string; sourceUrl?: string }) => Promise<string | null>
+    nopechaSolve: (params: {
+      type: string
+      sitekey: string
+      pageurl: string
+    }) => Promise<string | null>
+    openWindow: (params: {
+      provider?: string
+      pageUrl: string
+      sourceUrl?: string
+    }) => Promise<string | null>
     submit: (id: string, token: string) => Promise<void>
   }
   mirrors: {
@@ -193,12 +212,23 @@ interface RendererApi {
     abort: () => void
     onEvent: (cb: (event: MirrorEvent) => void) => () => void
   }
-  getRealtimeStats: () => Promise<{ ticks: Array<{ timestamp: number; total_speed_bps: number; per_host_speed: Record<string, number> }> }>
+  getRealtimeStats: () => Promise<{
+    ticks: Array<{
+      timestamp: number
+      total_speed_bps: number
+      per_host_speed: Record<string, number>
+    }>
+  }>
   config: {
     testProxy: () => Promise<{ ip: string }>
   }
   terabox: {
-    netRequest: (params: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => Promise<unknown>
+    netRequest: (params: {
+      url: string
+      method?: string
+      headers?: Record<string, string>
+      body?: string
+    }) => Promise<unknown>
   }
   getBackendPort: () => Promise<number>
   tray: {

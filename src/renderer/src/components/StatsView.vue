@@ -63,22 +63,15 @@
         </h3>
 
         <div v-if="stats.total === 0" class="chart-empty">
-          <i class="pi pi-chart-bar" style="font-size: 24px; opacity: 0.3;"></i>
+          <i class="pi pi-chart-bar" style="font-size: 24px; opacity: 0.3"></i>
           <span>Sem dados ainda</span>
         </div>
 
         <div v-else class="bar-chart">
-          <div
-            v-for="day in stats.dailySeries"
-            :key="day.label"
-            class="bar-row"
-          >
+          <div v-for="day in stats.dailySeries" :key="day.label" class="bar-row">
             <span class="bar-label">{{ day.label }}</span>
             <div class="bar-track">
-              <div
-                class="bar-fill"
-                :style="{ width: day.pct + '%' }"
-              ></div>
+              <div class="bar-fill" :style="{ width: day.pct + '%' }"></div>
             </div>
             <span class="bar-count">{{ day.count }}</span>
           </div>
@@ -93,23 +86,19 @@
         </h3>
 
         <div v-if="stats.topFormats.length === 0" class="chart-empty">
-          <i class="pi pi-list" style="font-size: 24px; opacity: 0.3;"></i>
+          <i class="pi pi-list" style="font-size: 24px; opacity: 0.3"></i>
           <span>Sem dados ainda</span>
         </div>
 
         <div v-else class="bar-chart">
-          <div
-            v-for="(fmt, idx) in stats.topFormats"
-            :key="fmt.label"
-            class="bar-row"
-          >
+          <div v-for="(fmt, idx) in stats.topFormats" :key="fmt.label" class="bar-row">
             <span class="bar-label bar-label-fmt" :title="fmt.label">{{ fmt.label }}</span>
             <div class="bar-track">
               <div
                 class="bar-fill bar-fill-alt"
                 :style="{
                   width: fmt.pct + '%',
-                  opacity: 1 - idx * 0.1
+                  opacity: 1 - idx * 0.1,
                 }"
               ></div>
             </div>
@@ -222,7 +211,7 @@ function onStatsTick(e: Event): void {
 
 onMounted(async () => {
   try {
-    history.value = await window.api.loadHistory()
+    history.value = await window.api.loadHistory({ pageSize: 500 })
   } catch {
     history.value = []
   }
@@ -266,7 +255,10 @@ const stats = computed(() => {
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
-    const label = d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+    const label = d.toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+    })
     const dayStr = d.toISOString().slice(0, 10)
     const count = items.filter((it) => it.date.startsWith(dayStr)).length
     if (count > maxDay) maxDay = count
@@ -289,7 +281,7 @@ const stats = computed(() => {
   const topFormats: FormatStat[] = sorted.map(([label, count]) => ({
     label,
     count,
-    pct: Math.round((count / maxFmt) * 100)
+    pct: Math.round((count / maxFmt) * 100),
   }))
 
   const last7Days = dailySeries.reduce((s, d) => s + d.count, 0)
@@ -386,7 +378,9 @@ const stats = computed(() => {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
-  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  transition:
+    box-shadow 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .stat-card:hover {

@@ -3,8 +3,9 @@
     <!-- Toolbar -->
     <div class="history-toolbar">
       <span class="history-count">
-        <i class="pi pi-history" style="font-size: 12px;"></i>
-        {{ history.length }} item{{ history.length !== 1 ? 's' : '' }} no histórico
+        <i class="pi pi-history" style="font-size: 12px"></i>
+        {{ visibleHistory.length }} item{{ visibleHistory.length !== 1 ? 's' : '' }}
+        nesta página
       </span>
       <div class="toolbar-actions">
         <div class="search-wrapper">
@@ -12,10 +13,18 @@
           <input
             v-model="search"
             class="search-input"
-            placeholder="Buscar..."
+            placeholder="Buscar no histórico..."
             type="text"
           />
         </div>
+        <select v-model="hostFilter" class="filter-select">
+          <option value="">Todos os hosts</option>
+          <option v-for="host in hostOptions" :key="host" :value="host">
+            {{ host }}
+          </option>
+        </select>
+        <input v-model="dateFrom" class="date-input" type="date" title="Data inicial" />
+        <input v-model="dateTo" class="date-input" type="date" title="Data final" />
         <button
           v-if="history.length > 0"
           class="clear-btn"
@@ -25,31 +34,60 @@
           <i class="pi pi-clone"></i>
           Duplicatas
         </button>
-        <button
-          v-if="history.length > 0"
-          class="clear-btn"
-          @click="handleClear"
-        >
+        <button v-if="visibleHistory.length > 0" class="export-btn" @click="exportHistory('csv')">
+          <i class="pi pi-file-excel"></i>
+          CSV
+        </button>
+        <button v-if="visibleHistory.length > 0" class="export-btn" @click="exportHistory('json')">
+          <i class="pi pi-code"></i>
+          JSON
+        </button>
+        <button v-if="history.length > 0" class="clear-btn" @click="handleClear">
           <i class="pi pi-trash"></i>
           Limpar
         </button>
       </div>
     </div>
+    <div v-if="exportFeedback" class="export-feedback">
+      {{ exportFeedback }}
+    </div>
 
     <!-- Empty state -->
-    <div v-if="filtered.length === 0" class="empty-state">
+    <div v-if="visibleHistory.length === 0" class="empty-state">
       <div class="empty-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" width="44" height="44">
-          <circle cx="24" cy="24" r="21" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
-          <path d="M24 12 A12 12 0 0 1 36 24 A12 12 0 0 1 12 24 A12 12 0 0 1 24 12 Z" stroke="currentColor" stroke-width="1.5" fill="none" opacity="0.5"/>
-          <path d="M24 18 L24 24 L28 26" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 48 48"
+          fill="none"
+          width="44"
+          height="44"
+        >
+          <circle cx="24" cy="24" r="21" stroke="currentColor" stroke-width="1.5" opacity="0.3" />
+          <path
+            d="M24 12 A12 12 0 0 1 36 24 A12 12 0 0 1 12 24 A12 12 0 0 1 24 12 Z"
+            stroke="currentColor"
+            stroke-width="1.5"
+            fill="none"
+            opacity="0.5"
+          />
+          <path
+            d="M24 18 L24 24 L28 26"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
       </div>
       <p class="empty-title">
         {{ history.length === 0 ? 'Histórico vazio' : 'Nenhum resultado' }}
       </p>
       <p class="empty-sub">
-        {{ history.length === 0 ? 'Downloads concluídos aparecerão aqui' : `Nenhum resultado para "${search}"` }}
+        {{
+          history.length === 0
+            ? 'Downloads concluídos aparecerão aqui'
+            : 'Ajuste os filtros para ver outros resultados'
+        }}
       </p>
       <div class="empty-actions">
         <button class="empty-primary" @click="$emit('redownload', '')">
@@ -65,21 +103,12 @@
 
     <!-- List -->
     <div v-else class="history-list">
-      <div
-        v-for="item in filtered"
-        :key="item.id"
-        class="history-card"
-      >
+      <div v-for="item in visibleHistory" :key="item.id" class="history-card">
         <!-- Thumbnail / placeholder -->
         <div class="thumb-wrapper">
-          <img
-            v-if="item.thumbnail"
-            :src="item.thumbnail"
-            class="thumb-img"
-            alt=""
-          />
+          <img v-if="item.thumbnail" :src="item.thumbnail" class="thumb-img" alt="" />
           <div v-else class="thumb-placeholder">
-            <i class="pi pi-file" style="font-size: 18px; opacity: 0.4;"></i>
+            <i class="pi pi-file" style="font-size: 18px; opacity: 0.4"></i>
           </div>
         </div>
 
@@ -90,10 +119,11 @@
           </div>
           <div class="card-meta">
             <span class="card-date">{{ formatDate(item.date) }}</span>
+            <span v-if="item.host" class="card-format">{{ item.host }}</span>
             <span v-if="item.formatId" class="card-format">{{ item.formatId.toUpperCase() }}</span>
           </div>
           <div v-if="item.outputPath" class="card-path" :title="item.outputPath">
-            <i class="pi pi-folder" style="font-size: 10px;"></i>
+            <i class="pi pi-folder" style="font-size: 10px"></i>
             {{ item.outputPath }}
           </div>
         </div>
@@ -133,23 +163,43 @@
         </div>
       </div>
     </div>
+    <div v-if="history.length > 0" class="history-pagination">
+      <button class="page-btn" :disabled="page === 0 || loading" @click="goToPage(page - 1)">
+        <i class="pi pi-chevron-left"></i>
+        Anterior
+      </button>
+      <span>Página {{ page + 1 }}</span>
+      <button class="page-btn" :disabled="!hasNextPage || loading" @click="goToPage(page + 1)">
+        Próxima
+        <i class="pi pi-chevron-right"></i>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import Tooltip from 'primevue/tooltip'
 import type { DownloadHistoryItem } from '../../../shared/types'
 
 const vTooltip = Tooltip
 
-const emit = defineEmits<{
+defineEmits<{
   (e: 'redownload', url: string): void
 }>()
 
 const history = ref<DownloadHistoryItem[]>([])
 const search = ref('')
+const hostFilter = ref('')
+const dateFrom = ref('')
+const dateTo = ref('')
+const hostOptions = ref<string[]>([])
 const duplicatesOnly = ref(false)
+const loading = ref(false)
+const page = ref(0)
+const pageSize = 80
+const exportFeedback = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const duplicateHashes = computed(() => {
   const counts = new Map<string, number>()
@@ -160,24 +210,59 @@ const duplicateHashes = computed(() => {
   return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([hash]) => hash))
 })
 
-const filtered = computed(() => {
+const visibleHistory = computed(() => {
   const base = duplicatesOnly.value
     ? history.value.filter((item) => item.sha256Hash && duplicateHashes.value.has(item.sha256Hash))
     : history.value
-  if (!search.value.trim()) return base
-  const q = search.value.toLowerCase()
-  return base.filter(
-    (h) => h.title.toLowerCase().includes(q) || h.url.toLowerCase().includes(q)
-  )
+  return base
 })
 
+const hasNextPage = computed(() => history.value.length >= pageSize)
+
 onMounted(async () => {
+  await loadHosts()
+  await loadHistoryPage()
+})
+
+watch([hostFilter, dateFrom, dateTo], () => {
+  page.value = 0
+  void loadHistoryPage()
+})
+
+watch(search, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    page.value = 0
+    void loadHistoryPage()
+  }, 250)
+})
+
+async function loadHosts(): Promise<void> {
+  hostOptions.value = await window.api.historyHosts().catch(() => [])
+}
+
+async function loadHistoryPage(): Promise<void> {
+  loading.value = true
   try {
-    history.value = (await window.api.loadHistory()).reverse()
+    history.value = await window.api.loadHistory({
+      q: search.value,
+      host: hostFilter.value,
+      from: dateFrom.value,
+      to: dateTo.value,
+      page: page.value,
+      pageSize,
+    })
   } catch {
     history.value = []
+  } finally {
+    loading.value = false
   }
-})
+}
+
+function goToPage(nextPage: number): void {
+  page.value = Math.max(0, nextPage)
+  void loadHistoryPage()
+}
 
 function formatDate(iso: string): string {
   try {
@@ -186,7 +271,7 @@ function formatDate(iso: string): string {
       month: '2-digit',
       year: 'numeric',
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     })
   } catch {
     return iso
@@ -201,19 +286,56 @@ function showInFolder(filePath: string): void {
   window.api.showInFolder(filePath)
 }
 
-function removeItem(id: string): void {
+async function removeItem(id: string): Promise<void> {
   history.value = history.value.filter((h) => h.id !== id)
-  window.api.saveHistory([...history.value].reverse())
+  await window.api.removeHistoryItem(id).catch(() => null)
+  void loadHosts()
 }
 
 async function handleClear(): Promise<void> {
   history.value = []
   await window.api.clearHistory()
+  await loadHosts()
 }
 
 function addToHistory(item: DownloadHistoryItem): void {
   history.value.unshift(item)
-  window.api.saveHistory([...history.value].reverse())
+  window.api.appendHistory(item).catch(() => null)
+  void loadHosts()
+}
+
+function exportHistory(format: 'csv' | 'json'): void {
+  const items = visibleHistory.value
+  const content = format === 'json' ? JSON.stringify(items, null, 2) : toCsv(items)
+  const ok = window.api.clipboard.writeText(content)
+  exportFeedback.value =
+    format === 'json'
+      ? 'JSON copiado para a área de transferência'
+      : 'CSV copiado para a área de transferência'
+  void ok.finally(() => {
+    setTimeout(() => {
+      exportFeedback.value = ''
+    }, 2500)
+  })
+}
+
+function toCsv(items: DownloadHistoryItem[]): string {
+  const headers = ['id', 'title', 'url', 'host', 'date', 'formatId', 'outputPath', 'sha256Hash']
+  const rows = items.map((item) => [
+    item.id,
+    item.title,
+    item.url,
+    item.host ?? '',
+    item.date,
+    item.formatId,
+    item.outputPath ?? '',
+    item.sha256Hash ?? '',
+  ])
+  return [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\n')
+}
+
+function csvCell(value: string): string {
+  return `"${String(value).replace(/"/g, '""')}"`
 }
 
 defineExpose({ addToHistory })
@@ -248,6 +370,7 @@ defineExpose({ addToHistory })
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* Search */
@@ -275,7 +398,9 @@ defineExpose({ addToHistory })
   color: var(--text-primary);
   font-size: 12px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .search-input::placeholder {
@@ -285,6 +410,49 @@ defineExpose({ addToHistory })
 .search-input:focus {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 2px rgba(124, 111, 255, 0.15);
+}
+
+.filter-select,
+.date-input {
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.filter-select {
+  max-width: 160px;
+}
+
+.export-btn,
+.page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 32%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  color: var(--accent-color);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.page-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.export-feedback {
+  align-self: flex-end;
+  font-size: 11px;
+  color: #22c55e;
 }
 
 /* Clear button */
@@ -380,6 +548,16 @@ defineExpose({ addToHistory })
   gap: 8px;
 }
 
+.history-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding-top: 4px;
+}
+
 /* ── Card ───────────────────────────────────────────────────── */
 .history-card {
   display: flex;
@@ -389,7 +567,9 @@ defineExpose({ addToHistory })
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .history-card:hover {

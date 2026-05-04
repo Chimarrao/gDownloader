@@ -180,11 +180,21 @@ export interface DownloadHistoryItem {
   id: string
   url: string
   title: string
+  host?: string
   thumbnail: string
   date: string
   formatId: string
   outputPath?: string
   sha256Hash?: string
+}
+
+export interface HistorySearchFilters {
+  q?: string
+  host?: string
+  from?: string
+  to?: string
+  page?: number
+  pageSize?: number
 }
 
 export interface DuplicateDownload {

@@ -1,10 +1,27 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, Notification, shell, net, session, Tray } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  shell,
+  net,
+  session,
+  Tray,
+} from 'electron'
 import { basename, dirname, extname, join } from 'path'
 import { spawn } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, watch } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { AppSettingsSnapshot } from '../shared/types'
-import { createAppStorage, type PersistedHistoryItem } from './app-storage'
+import {
+  createAppStorage,
+  type HistorySearchFilters,
+  type PersistedHistoryItem,
+} from './app-storage'
 import { createBruploadService, type BruploadStoredAccount } from './brupload-service'
 import { createAkiraboxService } from './akirabox-service'
 import { createBackendRuntime } from './backend-runtime'
@@ -33,9 +50,10 @@ function getDatabasePath(): string {
 function getBackendLogPath(): string {
   const dbPath = getDatabasePath()
   const dbDir = dirname(dbPath)
-  const logDir = basename(dbDir).toLowerCase() === 'database'
-    ? join(dirname(dbDir), 'logs')
-    : join(dbDir, 'logs')
+  const logDir =
+    basename(dbDir).toLowerCase() === 'database'
+      ? join(dirname(dbDir), 'logs')
+      : join(dbDir, 'logs')
 
   try {
     const candidates = readdirSync(logDir)
@@ -83,7 +101,9 @@ async function postBackend(path: string, payload?: unknown): Promise<void> {
   })
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
+    const body = await response
+      .json()
+      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
     throw new Error(body.error ?? `Falha ao acessar ${path}: ${response.status}`)
   }
 }
@@ -97,7 +117,9 @@ async function deleteBackend(path: string): Promise<void> {
     method: 'DELETE',
   })
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
+    const body = await response
+      .json()
+      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
     throw new Error(body.error ?? `Falha ao acessar ${path}: ${response.status}`)
   }
 }
@@ -145,16 +167,33 @@ async function loadPublicSettings(): Promise<void> {
   }
 }
 
-async function loadHistoryFromBackend(): Promise<PersistedHistoryItem[]> {
+async function loadHistoryFromBackend(
+  filters?: HistorySearchFilters,
+): Promise<PersistedHistoryItem[]> {
   if (!rustPort) {
     return []
   }
 
-  return storage.loadHistoryFromBackend().catch(() => [])
+  return storage.loadHistoryFromBackend(filters).catch(() => [])
 }
 
 async function saveHistoryToBackend(items: PersistedHistoryItem[]): Promise<void> {
   await storage.saveHistoryToBackend(items)
+}
+
+async function appendHistoryItemToBackend(item: PersistedHistoryItem): Promise<void> {
+  await storage.appendHistoryItemToBackend(item)
+}
+
+async function loadHistoryHostsFromBackend(): Promise<string[]> {
+  if (!rustPort) {
+    return []
+  }
+  return storage.loadHistoryHostsFromBackend().catch(() => [])
+}
+
+async function removeHistoryItemInBackend(id: string): Promise<void> {
+  await storage.removeHistoryItemInBackend(id)
 }
 
 async function clearHistoryInBackend(): Promise<void> {
@@ -208,7 +247,7 @@ async function solveCaptchaWithNopecha(params: {
   })
 
   try {
-    const submitRes = await fetch('https://api.nopecha.com/', {
+    const submitRes = (await fetch('https://api.nopecha.com/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -217,7 +256,9 @@ async function solveCaptchaWithNopecha(params: {
         url: params.pageurl,
         key: apiKey,
       }),
-    }).then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+    })
+      .then((r) => r.json())
+      .catch(() => null)) as Record<string, unknown> | null
 
     if (!submitRes?.data) {
       logMain('nopecha', 'API não retornou task id', submitRes)
@@ -227,8 +268,9 @@ async function solveCaptchaWithNopecha(params: {
 
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 2000))
-      const res = await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
-        .then((r) => r.json()).catch(() => null) as Record<string, unknown> | null
+      const res = (await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
+        .then((r) => r.json())
+        .catch(() => null)) as Record<string, unknown> | null
       const data = res?.data
       if (Array.isArray(data) && data[0]) {
         logMain('nopecha', 'Captcha resolvido automaticamente', {
@@ -330,9 +372,27 @@ function getArchiveOutputDir(archivePath: string): string {
   const base = basename(archivePath)
   const dir = dirname(archivePath)
   const lower = base.toLowerCase()
-  const suffixes = ['.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.tgz', '.tbz2', '.txz', '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst']
+  const suffixes = [
+    '.tar.gz',
+    '.tar.bz2',
+    '.tar.xz',
+    '.tar.zst',
+    '.tgz',
+    '.tbz2',
+    '.txz',
+    '.zip',
+    '.rar',
+    '.7z',
+    '.tar',
+    '.gz',
+    '.bz2',
+    '.xz',
+    '.zst',
+  ]
   const matched = suffixes.find((suffix) => lower.endsWith(suffix))
-  const name = matched ? base.slice(0, base.length - matched.length) : base.slice(0, base.length - extname(base).length)
+  const name = matched
+    ? base.slice(0, base.length - matched.length)
+    : base.slice(0, base.length - extname(base).length)
   return join(dir, name || `${base}-extraido`)
 }
 
@@ -349,14 +409,20 @@ async function extractRarEmbedded(archivePath: string, outputDir: string): Promi
       filepath: string
       targetPath: string
       wasmBinary: ArrayBuffer
-    }) => Promise<{ extract: (options?: Record<string, never>) => { files: Iterable<unknown> } }>
+    }) => Promise<{
+      extract: (options?: Record<string, never>) => {
+        files: Iterable<unknown>
+      }
+    }>
   }
 
-  const wasmBinary = toArrayBuffer(readFileSync(require.resolve('node-unrar-js/dist/js/unrar.wasm')))
+  const wasmBinary = toArrayBuffer(
+    readFileSync(require.resolve('node-unrar-js/dist/js/unrar.wasm')),
+  )
   const extractor = await unrar.createExtractorFromFile({
     filepath: archivePath,
     targetPath: outputDir,
-    wasmBinary
+    wasmBinary,
   })
   const extracted = extractor.extract()
   for (const _entry of extracted.files) {
@@ -373,7 +439,7 @@ async function extractWith7zWasm(archivePath: string, outputDir: string): Promis
   const sevenZip = await SevenZip({
     wasmBinary,
     print: (line: string) => logs.push(line),
-    printErr: (line: string) => errors.push(line)
+    printErr: (line: string) => errors.push(line),
   })
 
   const mountRoot = '/nodefs'
@@ -421,7 +487,7 @@ async function extractArchive(archivePath: string): Promise<string> {
       await runCommand('powershell', [
         '-NoProfile',
         '-Command',
-        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${outputDir.replace(/'/g, "''")}' -Force`
+        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${outputDir.replace(/'/g, "''")}' -Force`,
       ])
       return outputDir
     }
@@ -460,7 +526,9 @@ async function extractArchive(archivePath: string): Promise<string> {
 
     const tool = await findFirstCommand(['7z', '7za', 'unar'])
     if (!tool) {
-      throw new Error('Não foi possível extrair este arquivo com os extratores embutidos e nenhuma ferramenta externa foi encontrada')
+      throw new Error(
+        'Não foi possível extrair este arquivo com os extratores embutidos e nenhuma ferramenta externa foi encontrada',
+      )
     }
 
     if (tool === 'unar') {
@@ -488,7 +556,11 @@ async function teraboxNetRequest(params: {
 }): Promise<unknown> {
   const tbSession = session.fromPartition('persist:terabox')
   return new Promise<unknown>((resolve, reject) => {
-    const request = net.request({ url: params.url, method: params.method ?? 'GET', session: tbSession })
+    const request = net.request({
+      url: params.url,
+      method: params.method ?? 'GET',
+      session: tbSession,
+    })
     request.setHeader('User-Agent', HOSTER_BROWSER_USER_AGENT)
     request.setHeader('Accept', 'application/json, */*')
     request.setHeader('Accept-Language', 'pt-BR,pt;q=0.9,en-US;q=0.8')
@@ -499,8 +571,11 @@ async function teraboxNetRequest(params: {
     request.on('response', (response) => {
       response.on('data', (chunk) => chunks.push(chunk as Buffer))
       response.on('end', () => {
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))) }
-        catch { resolve({ _raw: Buffer.concat(chunks).toString('utf8') }) }
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+        } catch {
+          resolve({ _raw: Buffer.concat(chunks).toString('utf8') })
+        }
       })
       response.on('error', reject)
     })
@@ -536,11 +611,16 @@ function extractClipboardUrls(text: string): string[] {
 async function detectClipboardUrl(url: string): Promise<{ id?: string; name?: string } | null> {
   if (!rustPort) return null
   try {
-    const response = await fetch(`http://127.0.0.1:${rustPort}/detect?url=${encodeURIComponent(url)}`)
+    const response = await fetch(
+      `http://127.0.0.1:${rustPort}/detect?url=${encodeURIComponent(url)}`,
+    )
     if (!response.ok) return null
     return response.json() as Promise<{ id?: string; name?: string } | null>
   } catch (error) {
-    logMain('clipboard', 'Falha ao consultar provider para clipboard', { url, error })
+    logMain('clipboard', 'Falha ao consultar provider para clipboard', {
+      url,
+      error,
+    })
     return null
   }
 }
@@ -631,44 +711,66 @@ function createTray(win: BrowserWindow): void {
   })
 }
 
-function updateTrayMenu(win: BrowserWindow, trayInstance: Tray, activeCount: number, speed: string): void {
+function updateTrayMenu(
+  win: BrowserWindow,
+  trayInstance: Tray,
+  activeCount: number,
+  speed: string,
+): void {
   const contextMenu = Menu.buildFromTemplate([
     {
       label: `gDownloader — ${activeCount} baixando · ${speed}`,
-      enabled: false
+      enabled: false,
     },
     { type: 'separator' },
     {
       label: 'Mostrar app',
-      click: () => { win.show(); win.focus() }
+      click: () => {
+        win.show()
+        win.focus()
+      },
     },
     {
       label: 'Pausar tudo',
       click: () => {
         win.webContents.send('tray:pause-all')
-      }
+      },
     },
     {
       label: 'Retomar tudo',
       click: () => {
         win.webContents.send('tray:resume-all')
-      }
+      },
     },
     { type: 'separator' },
     {
       label: 'Limite de velocidade',
       submenu: [
-        { label: 'Sem limite', click: () => win.webContents.send('tray:set-speed-limit', 0) },
-        { label: '500 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 500) },
-        { label: '200 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 200) },
-        { label: '50 KB/s', click: () => win.webContents.send('tray:set-speed-limit', 50) },
-      ]
+        {
+          label: 'Sem limite',
+          click: () => win.webContents.send('tray:set-speed-limit', 0),
+        },
+        {
+          label: '500 KB/s',
+          click: () => win.webContents.send('tray:set-speed-limit', 500),
+        },
+        {
+          label: '200 KB/s',
+          click: () => win.webContents.send('tray:set-speed-limit', 200),
+        },
+        {
+          label: '50 KB/s',
+          click: () => win.webContents.send('tray:set-speed-limit', 50),
+        },
+      ],
     },
     { type: 'separator' },
     {
       label: 'Sair',
-      click: () => { app.quit() }
-    }
+      click: () => {
+        app.quit()
+      },
+    },
   ])
   trayInstance.setContextMenu(contextMenu)
 }
@@ -683,8 +785,8 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
-    }
+      sandbox: false,
+    },
   })
 
   win.on('ready-to-show', () => win.show())
@@ -782,11 +884,18 @@ app.whenReady().then(async () => {
     if (!allPartsReady(archivePath)) {
       return { success: false, error: 'parts_missing' }
     }
-    const learned = await fetchBackendConfig<Array<{ password: string }>>('/archive-passwords').catch(() => [])
-    const mergedPasswords = [...new Set([
-      ...learned.slice(0, 20).map((item) => item.password).filter(Boolean),
-      ...(Array.isArray(passwords) ? passwords : []),
-    ])]
+    const learned = await fetchBackendConfig<Array<{ password: string }>>(
+      '/archive-passwords',
+    ).catch(() => [])
+    const mergedPasswords = [
+      ...new Set([
+        ...learned
+          .slice(0, 20)
+          .map((item) => item.password)
+          .filter(Boolean),
+        ...(Array.isArray(passwords) ? passwords : []),
+      ]),
+    ]
     const result = await autoExtract(archivePath, mergedPasswords)
     if (result.success && result.passwordUsed) {
       await postBackend('/archive-passwords/success', {
@@ -802,25 +911,34 @@ app.whenReady().then(async () => {
     return fetchBackendConfig('/archive-passwords')
   })
   ipcMain.handle('archive-passwords:import', async (_e, passwords: string[]) => {
-    await postBackend('/archive-passwords/import', { passwords, source: 'manual' })
+    await postBackend('/archive-passwords/import', {
+      passwords,
+      source: 'manual',
+    })
   })
   ipcMain.handle('archive-passwords:forget', async (_e, password: string) => {
     await postBackend('/archive-passwords/delete', { password })
   })
 
   // Proxy HTTP via sessão persist:terabox — usa cookies reais do browser, bypass fingerprint
-  ipcMain.handle('terabox:net-request', async (_e, reqParams: {
-    url: string
-    method?: string
-    headers?: Record<string, string>
-    body?: string
-  }) => {
-    return teraboxNetRequest(reqParams)
-  })
+  ipcMain.handle(
+    'terabox:net-request',
+    async (
+      _e,
+      reqParams: {
+        url: string
+        method?: string
+        headers?: Record<string, string>
+        body?: string
+      },
+    ) => {
+      return teraboxNetRequest(reqParams)
+    },
+  )
   ipcMain.handle('dialog:chooseDirectory', async () => {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     const result = await dialog.showOpenDialog(window, {
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openDirectory', 'createDirectory'],
     })
     if (result.canceled || result.filePaths.length === 0) return ''
     return result.filePaths[0]
@@ -834,11 +952,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('settings:save', async (_e, s: unknown) => {
     const currentDisk = storage.getPublicSettings()
-    const next = ((s as Partial<AppSettingsSnapshot>) ?? {})
-    const {
-      nopechaApiKey,
-      ...publicPatch
-    } = next
+    const next = (s as Partial<AppSettingsSnapshot>) ?? {}
+    const { nopechaApiKey, ...publicPatch } = next
 
     const nextDisk = {
       ...currentDisk,
@@ -912,48 +1027,76 @@ app.whenReady().then(async () => {
   })
 
   // IPC: histórico de downloads
-  ipcMain.handle('history:load', async () => {
-    return loadHistoryFromBackend()
+  ipcMain.handle('history:load', async (_e, filters?: HistorySearchFilters) => {
+    return loadHistoryFromBackend(filters)
   })
   ipcMain.handle('history:save', async (_e, items: unknown) => {
     await saveHistoryToBackend(Array.isArray(items) ? (items as PersistedHistoryItem[]) : [])
+  })
+  ipcMain.handle('history:append', async (_e, item: PersistedHistoryItem) => {
+    await appendHistoryItemToBackend(item)
+  })
+  ipcMain.handle('history:hosts', async () => {
+    return loadHistoryHostsFromBackend()
+  })
+  ipcMain.handle('history:remove', async (_e, id: string) => {
+    await removeHistoryItemInBackend(id)
   })
   ipcMain.handle('history:clear', async () => {
     await clearHistoryInBackend()
   })
 
   // NoPecha: auto-resolve captchas
-  ipcMain.handle('captcha:nopecha-solve', async (_e, params: {
-    type: string
-    sitekey: string
-    pageurl: string
-  }) => {
-    return solveCaptchaWithNopecha(params)
-  })
+  ipcMain.handle(
+    'captcha:nopecha-solve',
+    async (
+      _e,
+      params: {
+        type: string
+        sitekey: string
+        pageurl: string
+      },
+    ) => {
+      return solveCaptchaWithNopecha(params)
+    },
+  )
 
-  ipcMain.handle('captcha:open-window', async (_e, params: {
-    provider?: string
-    pageUrl: string
-    sourceUrl?: string
-  }) => {
-    return captchaWindowService.solve(params)
-  })
+  ipcMain.handle(
+    'captcha:open-window',
+    async (
+      _e,
+      params: {
+        provider?: string
+        pageUrl: string
+        sourceUrl?: string
+      },
+    ) => {
+      return captchaWindowService.solve(params)
+    },
+  )
 
   // IPC: tray stats update
-  ipcMain.on('tray:update-stats', (_event, { activeCount, speed }: { activeCount: number; speed: string }) => {
-    const activeTray = tray
-    const activeWin = mainWindow
-    if (activeTray && activeWin) {
-      activeTray.setToolTip(`gDownloader — ${activeCount} baixando · ${speed}`)
-      updateTrayMenu(activeWin, activeTray, activeCount, speed)
-    }
-  })
+  ipcMain.on(
+    'tray:update-stats',
+    (_event, { activeCount, speed }: { activeCount: number; speed: string }) => {
+      const activeTray = tray
+      const activeWin = mainWindow
+      if (activeTray && activeWin) {
+        activeTray.setToolTip(`gDownloader — ${activeCount} baixando · ${speed}`)
+        updateTrayMenu(activeWin, activeTray, activeCount, speed)
+      }
+    },
+  )
 
   // Inicia o proxy local do Terabox (usa sessão browser com cookies reais)
   await new Promise<void>((resolve) => {
     const http = require('http') as typeof import('http')
     const server = http.createServer(async (req, res) => {
-      if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+      if (req.method !== 'POST') {
+        res.writeHead(405)
+        res.end()
+        return
+      }
       const chunks: Buffer[] = []
       req.on('data', (c: Buffer) => chunks.push(c))
       req.on('end', async () => {
@@ -970,15 +1113,15 @@ app.whenReady().then(async () => {
             ? await teraboxService.handleAction(body)
             : body.action?.startsWith('brupload_')
               ? await bruploadService.handleAction(body)
-            : body.action?.startsWith('akirabox_')
-              ? await akiraboxService.handleAction(body)
-            : body.action?.startsWith('katfile_')
-              ? await katfileService.handleAction(body)
-            : await teraboxNetRequest({
-                url: body.url ?? '',
-                method: body.method,
-                headers: body.headers,
-              })
+              : body.action?.startsWith('akirabox_')
+                ? await akiraboxService.handleAction(body)
+                : body.action?.startsWith('katfile_')
+                  ? await katfileService.handleAction(body)
+                  : await teraboxNetRequest({
+                      url: body.url ?? '',
+                      method: body.method,
+                      headers: body.headers,
+                    })
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(result))
         } catch (e) {

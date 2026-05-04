@@ -153,6 +153,8 @@ mod tests {
             started_at: None,
             completed_at: None,
             last_progress_at: None,
+            pinned: false,
+            package_id: None,
         }
     }
 

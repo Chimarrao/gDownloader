@@ -346,6 +346,8 @@ pub struct HistoryItem {
     pub id: String,
     pub url: String,
     pub title: String,
+    #[serde(default)]
+    pub host: String,
     pub thumbnail: String,
     pub date: String,
     pub format_id: String,

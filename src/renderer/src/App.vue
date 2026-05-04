@@ -4,8 +4,14 @@
       <div class="brand">
         <div class="brand-mark">
           <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
-            <path d="M12 3 L12 15 M7 11 L12 16 L17 11" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M4 19 H20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path
+              d="M12 3 L12 15 M7 11 L12 16 L17 11"
+              stroke="currentColor"
+              stroke-width="2.1"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path d="M4 19 H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           </svg>
         </div>
         <strong>{{ t('appName') }}</strong>
@@ -18,20 +24,36 @@
     </header>
 
     <nav class="tab-bar">
-      <button class="tab-btn" :class="{ active: activeTab === 'downloads' }" @click="activeTab = 'downloads'">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'downloads' }"
+        @click="activeTab = 'downloads'"
+      >
         <i class="pi pi-download"></i>
         <span>{{ t('downloads') }}</span>
         <span v-if="downloadCount > 0" class="tab-badge">{{ downloadCount }}</span>
       </button>
-      <button class="tab-btn" :class="{ active: activeTab === 'grabber' }" @click="activeTab = 'grabber'">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'grabber' }"
+        @click="activeTab = 'grabber'"
+      >
         <i class="pi pi-link"></i>
         <span>{{ t('linkGrabber') }}</span>
       </button>
-      <button class="tab-btn" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'settings' }"
+        @click="activeTab = 'settings'"
+      >
         <i class="pi pi-cog"></i>
         <span>{{ t('settings') }}</span>
       </button>
-      <button class="tab-btn" :class="{ active: activeTab === 'account' }" @click="activeTab = 'account'">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'account' }"
+        @click="activeTab = 'account'"
+      >
         <i class="pi pi-user"></i>
         <span>{{ t('account') }}</span>
       </button>
@@ -45,7 +67,10 @@
       <section v-show="activeTab === 'downloads'" class="panel downloads-panel">
         <DownloadList
           :skeleton-count="skeletonCount"
-          @count-change="downloadCount = $event; updateTrayStats()"
+          @count-change="
+            downloadCount = $event
+            updateTrayStats()
+          "
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
           @skeleton-done="skeletonCount = 0"
@@ -166,11 +191,13 @@ onMounted(async () => {
     setTheme(settings.theme as ThemeId)
   }
   applyUiPreferences(settings)
-
 })
 
 function onStatsTick(event: CustomEvent): void {
-  const detail = event.detail as { total_speed_bps?: number; per_host_speed?: Record<string, number> }
+  const detail = event.detail as {
+    total_speed_bps?: number
+    per_host_speed?: Record<string, number>
+  }
   if (detail.per_host_speed) perHostSpeed.value = detail.per_host_speed
   if (typeof detail.total_speed_bps === 'number') currentSpeed.value = detail.total_speed_bps
 }
@@ -190,7 +217,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
     await window.api.system.notify('Download concluído', title).catch(() => false)
   }
 
-  const history = await window.api.loadHistory().catch(() => [])
+  const history = await window.api.loadHistory({ pageSize: 500 }).catch(() => [])
   const existing = history.find((item: DownloadHistoryItem) => item.id === payload.id)
   if (existing) return
 
@@ -205,7 +232,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
     sha256Hash: payload.sha256Hash,
   }
 
-  await window.api.saveHistory([...(history as DownloadHistoryItem[]), item]).catch(() => null)
+  await window.api.appendHistory(item).catch(() => null)
 }
 </script>
 
@@ -266,7 +293,9 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   color: var(--text-muted);
   cursor: pointer;
   font-size: 13px;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .tab-btn:hover {
