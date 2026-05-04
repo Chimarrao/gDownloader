@@ -996,6 +996,28 @@ app.whenReady().then(async () => {
     return response.json()
   })
 
+  ipcMain.handle('intercept:status', async () => {
+    return fetchBackendConfig('/intercept/status')
+  })
+  ipcMain.handle('intercept:install-ca', async () => {
+    const info = await fetchBackendConfig<{ caCertPath?: string }>('/intercept/status')
+    if (!info.caCertPath) return false
+    await shell.openPath(info.caCertPath)
+    return true
+  })
+  ipcMain.handle('intercept:open-proxy-settings', async () => {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.Network-Settings.extension')
+      return true
+    }
+    if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:network-proxy')
+      return true
+    }
+    await shell.openExternal('x-scheme-handler/settings')
+    return true
+  })
+
   // IPC: auth
   ipcMain.handle('auth:isLoggedIn', (_e, moduleId: string) => {
     const normalized = moduleId.toLowerCase()

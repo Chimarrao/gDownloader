@@ -72,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let state = create_state(&db_path)?;
+    gdownloader_backend::proxy_intercept::spawn_intercept_proxy_manager(state.clone());
     let cnl_state = state.clone();
     tokio::spawn(async move {
         match tokio::net::TcpListener::bind("127.0.0.1:9666").await {

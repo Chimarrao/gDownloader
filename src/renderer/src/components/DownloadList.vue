@@ -1,5 +1,5 @@
 <template>
-  <div class="download-list">
+  <div class="download-list" :class="[`density-${uiDensity}`, { 'queue-panel-collapsed': queuePanelCollapsed }]">
     <!-- Empty state -->
     <div v-if="items.length === 0 && (skeletonCount ?? 0) === 0" class="empty-state">
       <div class="empty-icon">
@@ -98,6 +98,20 @@
             @click="createPackage"
           >
             Novo pacote
+          </button>
+          <div class="density-toggle" title="Densidade da lista">
+            <button
+              v-for="density in densityOptions"
+              :key="density.value"
+              class="density-btn"
+              :class="{ active: uiDensity === density.value }"
+              @click="setDensity(density.value)"
+            >
+              <i :class="density.icon"></i>
+            </button>
+          </div>
+          <button class="toolbar-btn" title="Alternar painel da fila (Q)" @click="toggleQueuePanel">
+            Fila futura
           </button>
           <div class="columns-menu-wrap">
             <button class="toolbar-btn" title="Mostrar/esconder colunas" @click="showColumnsMenu = !showColumnsMenu">
@@ -522,6 +536,52 @@
       </div>
     </div>
 
+    <aside v-if="items.length > 0" class="queue-preview-panel">
+      <button class="queue-panel-handle" title="Recolher painel" @click="toggleQueuePanel">
+        <i class="pi" :class="queuePanelCollapsed ? 'pi-chevron-left' : 'pi-chevron-right'"></i>
+      </button>
+      <template v-if="!queuePanelCollapsed">
+        <div class="queue-panel-section">
+          <div class="queue-panel-header">
+            <strong>Próximos na fila</strong>
+            <button class="mini-action" :disabled="nextQueueItems.length === 0" @click="forceNextQueued">
+              Forçar próximo
+            </button>
+          </div>
+          <div v-if="nextQueueItems.length === 0" class="queue-empty">Nenhum item aguardando.</div>
+          <button
+            v-for="item in nextQueueItems"
+            :key="`queued-${item.id}`"
+            class="queue-mini-row"
+            draggable="true"
+            @dragstart="draggedPreviewId = item.id"
+            @dragover.prevent
+            @drop="dropQueuedBefore(item)"
+            @click="selectDownload(item)"
+          >
+            <span>{{ item.title || item.url }}</span>
+            <em>{{ moduleLabel(item.moduleId) }}</em>
+          </button>
+        </div>
+
+        <div class="queue-panel-section">
+          <div class="queue-panel-header">
+            <strong>Em rate-limit</strong>
+          </div>
+          <div v-if="rateLimitedItems.length === 0" class="queue-empty">Nenhum host bloqueado.</div>
+          <button
+            v-for="item in rateLimitedItems"
+            :key="`limited-${item.id}`"
+            class="queue-mini-row limited"
+            @click="selectDownload(item)"
+          >
+            <span>{{ item.title || item.url }}</span>
+            <em>{{ rateLimitCountdown(item) }}</em>
+          </button>
+        </div>
+      </template>
+    </aside>
+
     <div
       v-if="contextMenu.visible && contextMenuItem"
       class="download-context-menu"
@@ -681,6 +741,9 @@ const draggedColumn = ref<string | null>(null)
 const filterStatuses = ref<string[]>([])
 const filterHosts = ref<string[]>([])
 const filterPackages = ref<string[]>([])
+const uiDensity = ref<'comfortable' | 'compact' | 'dense'>('comfortable')
+const queuePanelCollapsed = ref(false)
+const draggedPreviewId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
@@ -710,6 +773,11 @@ const nowTick = ref(Date.now())
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 const sortOptions = DOWNLOAD_SORT_OPTIONS
+const densityOptions = [
+  { value: 'comfortable' as const, icon: 'pi pi-bars' },
+  { value: 'compact' as const, icon: 'pi pi-list' },
+  { value: 'dense' as const, icon: 'pi pi-align-justify' },
+]
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
 
@@ -783,6 +851,17 @@ const contextSelection = computed(() => {
 })
 const contextCanTerminal = computed(() =>
   contextSelection.value.some((item) => isTerminal(item.status))
+)
+const nextQueueItems = computed(() =>
+  orderedItems.value
+    .filter((item) => item.status === DownloadStatusEnum.Pending || isWaitingRetryNow(item))
+    .slice(0, 8)
+)
+const rateLimitedItems = computed(() =>
+  items.value
+    .filter((item) => item.status === DownloadStatusEnum.RateLimited)
+    .sort((left, right) => (left.retryAt ?? 0) - (right.retryAt ?? 0))
+    .slice(0, 8)
 )
 
 function packageStats(packageId: string): { total: number; active: number; failed: number; complete: number } {
@@ -1028,6 +1107,38 @@ function clearListFilters(): void {
   void persistFilters()
 }
 
+async function setDensity(value: 'comfortable' | 'compact' | 'dense'): Promise<void> {
+  uiDensity.value = value
+  const settings = await window.api.settings.load().catch(() => null)
+  if (!settings) return
+  await window.api.settings.save({ ...settings, uiDensity: value }).catch(() => null)
+}
+
+function toggleQueuePanel(): void {
+  queuePanelCollapsed.value = !queuePanelCollapsed.value
+}
+
+async function forceNextQueued(): Promise<void> {
+  const next = nextQueueItems.value[0]
+  if (!next) return
+  await force(next.id)
+}
+
+async function dropQueuedBefore(target: DownloadItem): Promise<void> {
+  if (!draggedPreviewId.value || draggedPreviewId.value === target.id) return
+  const dragged = items.value.find((item) => item.id === draggedPreviewId.value)
+  if (!dragged) return
+  await window.api.downloads.setPriority(dragged.id, (target.priority ?? 0) + 1).catch(() => null)
+  dragged.priority = (target.priority ?? 0) + 1
+  draggedPreviewId.value = null
+  await hydrate()
+}
+
+function rateLimitCountdown(item: DownloadItem): string {
+  if (!item.retryAt || item.retryAt <= nowTick.value) return 'pronto para tentar'
+  return formatEta(Math.ceil((item.retryAt - nowTick.value) / 1000))
+}
+
 const virtualizationEnabled = computed(() =>
   orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
 )
@@ -1064,6 +1175,7 @@ onMounted(async () => {
   isMounted = true
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('blur', closeContextMenu)
+  window.addEventListener('keydown', onQueuePanelHotkey)
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
     for (const item of items.value) {
@@ -1103,6 +1215,7 @@ onMounted(async () => {
   filterStatuses.value = settings?.lastFilters?.statuses ?? []
   filterHosts.value = settings?.lastFilters?.hosts ?? []
   filterPackages.value = settings?.lastFilters?.packages ?? []
+  uiDensity.value = settings?.uiDensity ?? 'comfortable'
 
   // Load existing downloads from backend
   await hydrate()
@@ -1357,8 +1470,17 @@ onUnmounted(() => {
   }
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('blur', closeContextMenu)
+  window.removeEventListener('keydown', onQueuePanelHotkey)
   for (const unsub of unsubs) unsub()
 })
+
+function onQueuePanelHotkey(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null
+  if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+  if (event.key.toLowerCase() === 'q') {
+    queuePanelCollapsed.value = !queuePanelCollapsed.value
+  }
+}
 
 watch(activeCaptchaItem, (item) => {
   if (!item) {
@@ -1926,6 +2048,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 <style scoped>
 /* ── Container ──────────────────────────────────────────────── */
 .download-list {
+  --row-height: 56px;
   display: flex;
   flex-direction: row;
   flex: 1;
@@ -1935,6 +2058,14 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 0;
   align-self: stretch;
   overflow: hidden;
+}
+
+.download-list.density-compact {
+  --row-height: 40px;
+}
+
+.download-list.density-dense {
+  --row-height: 28px;
 }
 
 .package-sidebar {
@@ -2071,6 +2202,17 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   .package-node {
     min-width: 150px;
   }
+
+  .queue-preview-panel {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    padding-top: 10px;
+  }
 }
 
 /* ── Empty state ────────────────────────────────────────────── */
@@ -2202,6 +2344,134 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   cursor: pointer;
 }
 
+.density-toggle {
+  display: inline-flex;
+  height: 34px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-card);
+}
+
+.density-btn {
+  width: 34px;
+  border: 0;
+  border-right: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.density-btn:last-child {
+  border-right: 0;
+}
+
+.density-btn.active {
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.queue-preview-panel {
+  position: relative;
+  width: 260px;
+  min-width: 220px;
+  flex: 0 0 260px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+}
+
+.queue-panel-collapsed .queue-preview-panel {
+  width: 24px;
+  min-width: 24px;
+  flex-basis: 24px;
+  padding-left: 8px;
+}
+
+.queue-panel-handle {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  width: 24px;
+  height: 42px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.queue-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.queue-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mini-action {
+  border: 1px solid color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  color: var(--accent-color);
+  font-size: 11px;
+  padding: 5px 7px;
+  cursor: pointer;
+}
+
+.mini-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.queue-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.queue-mini-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 46px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: grab;
+}
+
+.queue-mini-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.queue-mini-row em {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.queue-mini-row.limited {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 .toolbar-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -2222,6 +2492,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-items: flex-start;
   gap: 12px;
   padding: 14px;
+  min-height: var(--row-height);
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 12px;
@@ -2233,6 +2504,16 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-self: stretch;
   content-visibility: auto;
   contain: layout style;
+}
+
+.density-compact .download-card {
+  padding: 10px 12px;
+  gap: 10px;
+}
+
+.density-dense .download-card {
+  padding: 7px 10px;
+  gap: 8px;
 }
 
 .download-card::before {

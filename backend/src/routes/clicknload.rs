@@ -89,6 +89,7 @@ async fn handle_clicknload(kind: &'static str, state: AppState, form: ClickNLoad
             expected_hash: None,
             priority: None,
             duplicate_action: None,
+            request_headers: None,
         };
 
         match add_download_internal(state.clone(), req).await {

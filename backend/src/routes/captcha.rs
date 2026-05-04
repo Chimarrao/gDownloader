@@ -155,6 +155,7 @@ mod tests {
             last_progress_at: None,
             pinned: false,
             package_id: None,
+            request_headers: None,
         }
     }
 

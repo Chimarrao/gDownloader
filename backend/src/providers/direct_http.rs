@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE};
 use reqwest::StatusCode;
 use std::collections::HashMap;
 use std::path::Path;
@@ -106,15 +106,36 @@ impl DirectHttpProvider {
             .unwrap_or_else(|| "download".to_string())
     }
 
-    async fn probe(client: &reqwest::Client, url: &str) -> Result<DirectHttpMetadata> {
+    fn captured_headers(raw: &HashMap<String, String>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in raw {
+            let lower = name.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "host" | "connection" | "content-length" | "range" | "accept-encoding"
+            ) {
+                continue;
+            }
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(lower.as_bytes()),
+                HeaderValue::from_str(value),
+            ) {
+                headers.insert(name, value);
+            }
+        }
+        headers
+    }
+
+    async fn probe(client: &reqwest::Client, url: &str, headers: &HeaderMap) -> Result<DirectHttpMetadata> {
         let clean_url = Self::clean_url(url);
-        let response = client.head(&clean_url).send().await?;
+        let response = client.head(&clean_url).headers(headers.clone()).send().await?;
         let response = if response.status() == StatusCode::METHOD_NOT_ALLOWED
             || response.status() == StatusCode::NOT_IMPLEMENTED
             || response.status() == StatusCode::FORBIDDEN
         {
             client
                 .get(&clean_url)
+                .headers(headers.clone())
                 .header(RANGE, "bytes=0-0")
                 .send()
                 .await?
@@ -235,6 +256,7 @@ impl DirectHttpProvider {
         speed_limit_bps: Option<u64>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
         store: ResumeStore,
+        headers: HeaderMap,
     ) -> Result<u64> {
         let part = PartRange {
             index: 0,
@@ -254,7 +276,7 @@ impl DirectHttpProvider {
             .unwrap_or(if store.db_path.is_none() { existing_bytes } else { 0 });
         let mut resume_from = saved_offset.min(existing_bytes);
 
-        let mut request = client.get(&metadata.url);
+        let mut request = client.get(&metadata.url).headers(headers.clone());
         if resume_from > 0 && metadata.accepts_ranges {
             request = request.header(RANGE, format!("bytes={resume_from}-"));
         } else {
@@ -266,7 +288,12 @@ impl DirectHttpProvider {
         let response = if resume_from > 0 && !resumed {
             let _ = tokio::fs::remove_file(dest_path).await;
             resume_from = 0;
-            client.get(&metadata.url).send().await?.error_for_status()?
+            client
+                .get(&metadata.url)
+                .headers(headers.clone())
+                .send()
+                .await?
+                .error_for_status()?
         } else {
             response.error_for_status()?
         };
@@ -328,10 +355,11 @@ impl DirectHttpProvider {
         parallel_parts: usize,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
         store: ResumeStore,
+        headers: HeaderMap,
     ) -> Result<u64> {
         let parts = Self::build_parts(metadata.size, parallel_parts);
         if parts.len() <= 1 {
-            return Self::download_single(client, metadata, dest_path, speed_limit_bps, progress_tx, store).await;
+            return Self::download_single(client, metadata, dest_path, speed_limit_bps, progress_tx, store, headers).await;
         }
 
         if let Some(parent) = Path::new(dest_path).parent() {
@@ -385,6 +413,7 @@ impl DirectHttpProvider {
             let part_path = format!("{dest_path}.part{}", part.index);
             let progress_tx = progress_tx.clone();
             let store = store.clone();
+            let headers = headers.clone();
             let total_downloaded = Arc::clone(&initial_downloaded);
             let total_bytes = metadata.size;
 
@@ -392,6 +421,7 @@ impl DirectHttpProvider {
                 let range_start = part.start.saturating_add(offset);
                 let response = client
                     .get(&url)
+                    .headers(headers)
                     .header(RANGE, format!("bytes={range_start}-{}", part.end))
                     .send()
                     .await?;
@@ -489,7 +519,7 @@ impl Provider for DirectHttpProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
         Box::pin(async move {
             let client = <Self as ProviderDefaults>::http_client()?;
-            let metadata = Self::probe(&client, url).await?;
+            let metadata = Self::probe(&client, url, &HeaderMap::new()).await?;
             Ok(FileInfo {
                 filename: metadata.filename,
                 size: metadata.size,
@@ -538,7 +568,8 @@ impl Provider for DirectHttpProvider {
                 context.proxy_username.as_deref(),
                 context.proxy_password.as_deref(),
             )?;
-            let metadata = Self::probe(&client, url).await?;
+            let headers = Self::captured_headers(&context.request_headers);
+            let metadata = Self::probe(&client, url, &headers).await?;
             let store = ResumeStore {
                 db_path: context.db_path,
                 download_key: Self::download_key(&metadata.url, dest_path),
@@ -556,6 +587,7 @@ impl Provider for DirectHttpProvider {
                     parallel_parts,
                     progress_tx,
                     store,
+                    headers,
                 )
                 .await
             } else {
@@ -566,6 +598,7 @@ impl Provider for DirectHttpProvider {
                     speed_limit_bps,
                     progress_tx,
                     store,
+                    headers,
                 )
                 .await
             }

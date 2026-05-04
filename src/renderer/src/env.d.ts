@@ -222,6 +222,24 @@ interface RendererApi {
   config: {
     testProxy: () => Promise<{ ip: string }>
   }
+  intercept: {
+    status: () => Promise<{
+      enabled: boolean
+      proxyAddr: string
+      caCertPath: string
+      history: Array<{
+        id: string
+        url: string
+        filename: string
+        mimeType: string
+        size: number
+        status: string
+        createdAt: number
+      }>
+    }>
+    installCa: () => Promise<boolean>
+    openProxySettings: () => Promise<boolean>
+  }
   terabox: {
     netRequest: (params: {
       url: string

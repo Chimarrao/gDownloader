@@ -219,6 +219,7 @@ pub async fn add_download_internal(
                 proxy_port: settings.proxy_port,
                 proxy_username: settings.proxy_username,
                 proxy_password: settings.proxy_password,
+                request_headers: req.request_headers.clone().unwrap_or_default(),
             }
         };
         provider.get_file_info_with_context(&req.url, context).await
@@ -389,6 +390,7 @@ pub async fn add_download_internal(
         last_progress_at: None,
         pinned: false,
         package_id: None,
+        request_headers: req.request_headers.clone(),
     };
 
     {
@@ -945,6 +947,12 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         let url_clone = url.clone();
         let dest_clone = dest_path.clone();
         let selected_children_clone = selected_children.clone();
+        let request_headers = {
+            let map = state.downloads.lock().await;
+            map.get(&id)
+                .and_then(|download| download.request_headers.clone())
+                .unwrap_or_default()
+        };
         let download_context = {
             let settings = state.db.lock().ok().and_then(|db| crate::db::load_public_settings(&db).ok()).unwrap_or_default();
             providers::DownloadContext {
@@ -954,6 +962,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 proxy_port: settings.proxy_port,
                 proxy_username: settings.proxy_username,
                 proxy_password: settings.proxy_password,
+                request_headers,
             }
         };
         let download_task = tokio::spawn(async move {

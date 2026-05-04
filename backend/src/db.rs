@@ -79,6 +79,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "create_history_fts",
         apply: migration_create_history_fts,
     },
+    Migration {
+        version: 14,
+        name: "create_intercept_history_table",
+        apply: migration_create_intercept_history_table,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -458,6 +463,23 @@ fn migration_create_history_fts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_create_intercept_history_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS intercept_history (
+             id         TEXT PRIMARY KEY,
+             url        TEXT NOT NULL DEFAULT '',
+             filename   TEXT NOT NULL DEFAULT '',
+             mime_type  TEXT NOT NULL DEFAULT '',
+             size       INTEGER NOT NULL DEFAULT 0,
+             status     TEXT NOT NULL DEFAULT 'queued',
+             created_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_intercept_history_created
+             ON intercept_history(created_at DESC);",
+    )?;
+    Ok(())
+}
+
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -803,6 +825,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 last_progress_at: row.get::<_, Option<i64>>(27)?.map(|value| value as u64),
                 pinned: row.get::<_, i64>(28)? != 0,
                 package_id: row.get(29).ok().flatten(),
+                request_headers: None,
                 speed_bps: 0,
                 eta_secs: 0,
             })
@@ -1094,6 +1117,47 @@ pub fn delete_history_item(conn: &Connection, id: &str) -> Result<()> {
 pub fn clear_history(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM download_history", [])?;
     Ok(())
+}
+
+pub fn insert_intercept_history(conn: &Connection, item: &crate::models::InterceptHistoryItem) -> Result<()> {
+    conn.execute(
+        "INSERT INTO intercept_history (id, url, filename, mime_type, size, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            item.id,
+            item.url,
+            item.filename,
+            item.mime_type,
+            item.size as i64,
+            item.status,
+            item.created_at as i64,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_intercept_history(conn: &Connection, limit: usize) -> Result<Vec<crate::models::InterceptHistoryItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, url, filename, mime_type, size, status, created_at
+         FROM intercept_history
+         ORDER BY created_at DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit.min(200) as i64], |row| {
+            Ok(crate::models::InterceptHistoryItem {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                filename: row.get(2)?,
+                mime_type: row.get(3)?,
+                size: row.get::<_, i64>(4)? as u64,
+                status: row.get(5)?,
+                created_at: row.get::<_, i64>(6)? as u64,
+            })
+        })?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(rows)
 }
 
 pub fn find_completed_duplicate_by_identity(
@@ -1464,6 +1528,7 @@ mod tests {
             last_progress_at: Some(333),
             pinned: false,
             package_id: None,
+            request_headers: None,
         }
     }
 

@@ -411,6 +411,7 @@ pub struct DownloadContext {
     pub proxy_port: u16,
     pub proxy_username: Option<String>,
     pub proxy_password: Option<String>,
+    pub request_headers: std::collections::HashMap<String, String>,
 }
 
 pub async fn apply_speed_limit(

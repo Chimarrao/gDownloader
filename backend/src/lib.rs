@@ -6,6 +6,7 @@ pub mod db;        // Persistência SQLite
 pub mod hash_verify;
 pub mod mirrors;   // Busca de mirrors (SSE streaming)
 pub mod models;    // Structs e enums de dados (Download, FileInfo, WsEvent, etc.)
+pub mod proxy_intercept;
 pub mod providers; // Lógica de cada provedor de download (Mega, MediaFire, etc.)
 pub mod reconnect; // Reconexão/rotação de IP para quebrar rate-limit
 pub mod routes;    // Handlers HTTP organizados por domínio
@@ -204,6 +205,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/packages/:id",  delete(routes::packages::delete_package))
         .route("/packages/:package_id/assign/:download_id", post(routes::packages::assign_download_to_package))
         .route("/packages/unassign/:download_id", delete(routes::packages::unassign_download_from_package))
+        .merge(proxy_intercept::routes())
         .with_state(state)
         .layer(cors)
 }

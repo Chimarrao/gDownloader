@@ -86,6 +86,52 @@
         </select>
       </div>
 
+      <div class="setting-row setting-row-stack">
+        <div class="setting-info">
+          <span class="setting-label">Interceptação local</span>
+          <span class="setting-desc">Proxy em 127.0.0.1:9667 para capturar downloads de apps no mesmo computador</span>
+        </div>
+        <div class="remote-actions">
+          <select v-model="settings.interceptMode" class="setting-select" @change="save">
+            <option value="off">Desativado</option>
+            <option value="proxy_only">Proxy local</option>
+          </select>
+          <input
+            v-model.number="settings.interceptMinSizeMb"
+            class="setting-input"
+            type="number"
+            min="0"
+            title="Tamanho mínimo em MB"
+            @change="save"
+          />
+          <button class="browse-btn" @click="installInterceptCa">Instalar CA</button>
+          <button class="browse-btn" @click="openProxySettings">Configurar proxy do sistema</button>
+        </div>
+        <div class="setting-grid">
+          <label>
+            <span>Mimes permitidos</span>
+            <textarea
+              v-model="interceptMimeText"
+              class="setting-textarea"
+              placeholder="application/zip&#10;video/"
+              @change="saveInterceptLists"
+            ></textarea>
+          </label>
+          <label>
+            <span>Domínios ignorados</span>
+            <textarea
+              v-model="interceptBlockText"
+              class="setting-textarea"
+              placeholder="bank.com&#10;accounts.google.com"
+              @change="saveInterceptLists"
+            ></textarea>
+          </label>
+        </div>
+        <p v-if="interceptInfo" class="settings-feedback">
+          Proxy: {{ interceptInfo.proxyAddr }} · CA: {{ interceptInfo.caCertPath || 'gerando no backend' }}
+        </p>
+      </div>
+
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">{{ t('language') }}</span>
@@ -624,6 +670,20 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadCommand: '',
   postDownloadWebhookUrl: '',
   duplicateAction: 'ask',
+  uiDensity: 'comfortable',
+  interceptMode: 'off',
+  interceptMinSizeMb: 1,
+  interceptMimeAllowlist: [
+    'application/zip',
+    'application/x-rar',
+    'application/x-7z-compressed',
+    'application/octet-stream',
+    'video/',
+    'audio/',
+    'application/pdf',
+  ],
+  interceptDomainBlocklist: [],
+  interceptAskBeforeAdd: false,
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -635,8 +695,11 @@ let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
 const remoteInfo = ref<Awaited<ReturnType<typeof window.api.remoteAccess.info>> | null>(null)
+const interceptInfo = ref<Awaited<ReturnType<typeof window.api.intercept.status>> | null>(null)
 const archivePasswords = ref<ArchivePassword[]>([])
 const archivePasswordImport = ref('')
+const interceptMimeText = ref('')
+const interceptBlockText = ref('')
 
 function setSaveFeedback(message: string, error = false): void {
   saveFeedback.value = message
@@ -654,6 +717,7 @@ onMounted(async () => {
   const saved = await window.api.settings.load().catch(() => null)
   if (saved) {
     Object.assign(settings, saved)
+    syncInterceptText()
     setLocale(saved.locale)
     if (themeOptions.some((option) => option.id === saved.theme)) {
       setTheme(saved.theme as ThemeId)
@@ -662,6 +726,7 @@ onMounted(async () => {
     }
     applyUiPreferences(saved)
     await refreshRemoteInfo()
+    await refreshInterceptInfo()
     await loadArchivePasswords()
   }
 })
@@ -670,7 +735,9 @@ async function save(): Promise<void> {
   try {
     const persisted = await window.api.settings.save({ ...settings })
     Object.assign(settings, persisted)
+    syncInterceptText()
     await refreshRemoteInfo()
+    await refreshInterceptInfo()
     setSaveFeedback(t('settingsSaved'))
   } catch (error) {
     setSaveFeedback(
@@ -678,6 +745,37 @@ async function save(): Promise<void> {
       true,
     )
   }
+}
+
+function syncInterceptText(): void {
+  interceptMimeText.value = (settings.interceptMimeAllowlist ?? []).join('\n')
+  interceptBlockText.value = (settings.interceptDomainBlocklist ?? []).join('\n')
+}
+
+function lines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+async function saveInterceptLists(): Promise<void> {
+  settings.interceptMimeAllowlist = lines(interceptMimeText.value)
+  settings.interceptDomainBlocklist = lines(interceptBlockText.value)
+  await save()
+}
+
+async function refreshInterceptInfo(): Promise<void> {
+  interceptInfo.value = await window.api.intercept.status().catch(() => null)
+}
+
+async function installInterceptCa(): Promise<void> {
+  await window.api.intercept.installCa().catch(() => false)
+  await refreshInterceptInfo()
+}
+
+async function openProxySettings(): Promise<void> {
+  await window.api.intercept.openProxySettings().catch(() => false)
 }
 
 async function chooseDirectory(): Promise<void> {
@@ -848,6 +946,20 @@ async function forgetArchivePassword(password: string): Promise<void> {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.setting-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.setting-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .remote-qr {

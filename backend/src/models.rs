@@ -2,6 +2,7 @@
 // Serde = biblioteca padrão do Rust para converter structs em JSON e vice-versa
 // Equivalente ao json_encode/json_decode do PHP, mas com tipagem estática
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 // --- Status de um download ---
 // #[derive(...)] instrui o compilador a gerar implementações automaticamente:
@@ -65,6 +66,8 @@ pub struct Download {
     pub pinned: bool,            // Se true, este download fica fixado no topo da lista
     #[serde(default)]
     pub package_id: Option<String>, // ID do pacote ao qual este download pertence
+    #[serde(default)]
+    pub request_headers: Option<HashMap<String, String>>, // Headers capturados pelo interceptador local
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +266,18 @@ pub struct PublicSettings {
     pub visible_columns: Vec<String>,
     #[serde(default)]
     pub last_filters: DownloadListFilters,
+    #[serde(default)]
+    pub ui_density: String, // "comfortable" | "compact" | "dense"
+    #[serde(default)]
+    pub intercept_mode: String, // "off" | "proxy_only"
+    #[serde(default)]
+    pub intercept_min_size_mb: u64,
+    #[serde(default)]
+    pub intercept_mime_allowlist: Vec<String>,
+    #[serde(default)]
+    pub intercept_domain_blocklist: Vec<String>,
+    #[serde(default)]
+    pub intercept_ask_before_add: bool,
 }
 
 impl Default for PublicSettings {
@@ -314,8 +329,52 @@ impl Default for PublicSettings {
                 "hash".to_string(),
             ],
             last_filters: DownloadListFilters::default(),
+            ui_density: "comfortable".to_string(),
+            intercept_mode: "off".to_string(),
+            intercept_min_size_mb: 1,
+            intercept_mime_allowlist: vec![
+                "application/zip".to_string(),
+                "application/x-rar".to_string(),
+                "application/x-7z-compressed".to_string(),
+                "application/octet-stream".to_string(),
+                "video/".to_string(),
+                "audio/".to_string(),
+                "application/pdf".to_string(),
+            ],
+            intercept_domain_blocklist: Vec::new(),
+            intercept_ask_before_add: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterceptRequest {
+    pub url: String,
+    #[serde(default = "default_intercept_method")]
+    pub method: String,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+    pub filename: Option<String>,
+    pub source: Option<String>,
+}
+
+fn default_intercept_method() -> String {
+    "GET".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterceptHistoryItem {
+    pub id: String,
+    pub url: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub status: String,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,6 +543,8 @@ pub struct AddDownloadRequest {
     pub expected_hash: Option<ExpectedHash>,
     pub priority: Option<i32>,
     pub duplicate_action: Option<String>,
+    #[serde(default)]
+    pub request_headers: Option<HashMap<String, String>>,
 }
 
 // --- Resposta padrão de erro da API ---

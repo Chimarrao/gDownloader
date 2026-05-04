@@ -170,6 +170,12 @@ export interface PersistedSettings {
     hosts?: string[]
     packages?: string[]
   }
+  uiDensity?: 'comfortable' | 'compact' | 'dense'
+  interceptMode?: 'off' | 'proxy_only'
+  interceptMinSizeMb?: number
+  interceptMimeAllowlist?: string[]
+  interceptDomainBlocklist?: string[]
+  interceptAskBeforeAdd?: boolean
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

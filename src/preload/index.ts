@@ -474,6 +474,24 @@ const api = {
   config: {
     testProxy: (): Promise<{ ip: string }> => ipcRenderer.invoke('config:test-proxy'),
   },
+  intercept: {
+    status: (): Promise<{
+      enabled: boolean
+      proxyAddr: string
+      caCertPath: string
+      history: Array<{
+        id: string
+        url: string
+        filename: string
+        mimeType: string
+        size: number
+        status: string
+        createdAt: number
+      }>
+    }> => ipcRenderer.invoke('intercept:status'),
+    installCa: (): Promise<boolean> => ipcRenderer.invoke('intercept:install-ca'),
+    openProxySettings: (): Promise<boolean> => ipcRenderer.invoke('intercept:open-proxy-settings'),
+  },
 
   auth: {
     isLoggedIn: (moduleId: string): Promise<boolean> =>
