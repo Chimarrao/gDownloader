@@ -81,6 +81,8 @@ export interface DownloadItem {
   priority?: number
   pinned?: boolean
   packageId?: string
+  parallelParts?: number
+  sequential?: boolean
   addedAt: number
   startedAt?: number
   completedAt?: number

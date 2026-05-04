@@ -786,6 +786,8 @@ function rustDownloadToItem(d: Record<string, unknown>) {
     priority: d.priority ?? 0,
     pinned: Boolean(d.pinned),
     packageId: typeof d.package_id === 'string' ? d.package_id : undefined,
+    parallelParts: Number(d.parallel_parts ?? 1),
+    sequential: Boolean(d.sequential),
     addedAt: ((d.created_at as number) ?? 0) * 1000,
     startedAt: d.started_at ? (d.started_at as number) * 1000 : undefined,
     completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,

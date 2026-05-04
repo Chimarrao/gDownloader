@@ -187,6 +187,7 @@
             v-if="hasColumn('host')"
             class="provider-icon"
             v-html="getIcon(item.moduleId).svg"
+            :style="providerIconStyle(item.moduleId)"
             :title="moduleLabel(item.moduleId)"
           ></div>
 
@@ -334,6 +335,26 @@
                   background: getProgressColor(item)
                 }"
               ></div>
+            </div>
+
+            <div class="row-rich-indicators">
+              <canvas
+                v-if="hasSpeedSparkline(item)"
+                :ref="setSparklineCanvas(item.id)"
+                class="row-sparkline"
+                width="90"
+                height="22"
+                aria-hidden="true"
+              ></canvas>
+              <span
+                v-for="badge in rowBadges(item)"
+                :key="`${item.id}:${badge.label}`"
+                class="row-rich-badge"
+                :class="badge.kind"
+                :title="badge.title"
+              >
+                {{ badge.label }}
+              </span>
             </div>
 
             <!-- Row 3: meta info -->
@@ -539,6 +560,11 @@
                 <span class="child-size">{{ formatBytes(node.size) }}</span>
               </div>
             </div>
+
+            <div class="row-rich-tooltip" role="tooltip">
+              <strong>{{ item.title || item.url }}</strong>
+              <span v-for="line in rowTooltipLines(item)" :key="line">{{ line }}</span>
+            </div>
           </div>
         </div>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
@@ -658,6 +684,9 @@ const listScrollTop = ref(0)
 const unsubs: Array<() => void> = []
 const captchaAttemptedIds = new Set<string>()
 const itemIndexById = ref<Record<string, number>>({})
+const speedSamples = ref<Record<string, number[]>>({})
+const captchaSolvedIds = ref<Set<string>>(new Set())
+const sparklineCanvases = new Map<string, HTMLCanvasElement>()
 // Mutex: at most one hydrate() runs at a time; hydrateQueued ensures one follow-up
 // run executes after the in-flight one finishes.
 let hydrateQueued = false
@@ -808,6 +837,111 @@ function formatDateTime(timestamp: number): string {
   })
 }
 
+function recordSpeedSample(id: string, speed: number): void {
+  const samples = speedSamples.value[id] ?? []
+  speedSamples.value = {
+    ...speedSamples.value,
+    [id]: [...samples.slice(-29), Math.max(0, speed)],
+  }
+  drawSparkline(id)
+}
+
+function hasSpeedSparkline(item: DownloadItem): boolean {
+  return (speedSamples.value[item.id]?.length ?? 0) > 1 || effectiveSpeedValue(item) > 0
+}
+
+function setSparklineCanvas(id: string) {
+  return (el: unknown) => {
+    if (el instanceof HTMLCanvasElement) {
+      sparklineCanvases.set(id, el)
+      drawSparkline(id)
+    } else {
+      sparklineCanvases.delete(id)
+    }
+  }
+}
+
+function drawSparkline(id: string): void {
+  const canvas = sparklineCanvases.get(id)
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  const samples = speedSamples.value[id] ?? []
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  if (samples.length < 2) return
+
+  const max = Math.max(...samples, 1)
+  ctx.lineWidth = 1.8
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.strokeStyle = getComputedStyle(canvas).color || '#5b7cff'
+  ctx.beginPath()
+  samples.forEach((speed, index) => {
+    const x = (index / (samples.length - 1)) * (canvas.width - 2) + 1
+    const y = canvas.height - 2 - (speed / max) * (canvas.height - 5)
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+  })
+  ctx.stroke()
+}
+
+function providerIconStyle(moduleId: string): Record<string, string> {
+  const color = modulesById.value[moduleId]?.color ?? getProviderColor(moduleId)
+  return {
+    color,
+    borderColor: `${color}44`,
+    background: `color-mix(in srgb, ${color} 12%, var(--bg-card))`,
+  }
+}
+
+function isPremiumProvider(moduleId: string): boolean {
+  return ['rapidgator', 'fichier', 'katfile', 'brupload', 'terabox'].includes(moduleId)
+}
+
+function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
+  const badges: Array<{ label: string; kind: string; title: string }> = []
+  if (isPremiumProvider(item.moduleId)) {
+    badges.push({ label: 'Premium', kind: 'premium', title: 'Host com fluxo premium ou sessão dedicada' })
+  }
+  if (item.status === DownloadStatusEnum.WaitingCaptcha) {
+    badges.push({ label: 'Captcha', kind: 'captcha', title: 'Aguardando resolução de captcha' })
+  } else if (captchaSolvedIds.value.has(item.id)) {
+    badges.push({ label: 'Captcha ok', kind: 'captcha-ok', title: 'Captcha resolvido nesta sessão' })
+  }
+  if (item.status === DownloadStatusEnum.RateLimited) {
+    badges.push({ label: 'Rate-limited', kind: 'limited', title: 'Download aguardando janela de rate-limit' })
+  }
+  if (item.sequential) {
+    badges.push({ label: 'Sequential', kind: 'sequential', title: 'Download sequencial ativado' })
+  }
+  if (item.expectedHash) {
+    badges.push({
+      label: item.status === DownloadStatusEnum.Complete ? `Verificado ${item.expectedHash.algorithm.toUpperCase()}` : item.expectedHash.algorithm.toUpperCase(),
+      kind: 'verified',
+      title: `Hash ${item.expectedHash.algorithm.toUpperCase()}: ${item.expectedHash.value}`,
+    })
+  }
+  if (item.parallelParts && item.parallelParts > 1) {
+    badges.push({ label: `${item.parallelParts} partes`, kind: 'parts', title: 'Download segmentado em partes paralelas' })
+  }
+  return badges
+}
+
+function rowTooltipLines(item: DownloadItem): string[] {
+  const lines = [
+    `Host: ${moduleLabel(item.moduleId)}`,
+    `Status: ${statusTextValue(item)}`,
+    `Progresso: ${item.percent}%`,
+  ]
+  if (item.size > 0) lines.push(`Tamanho: ${formatBytes(item.size)}`)
+  if (effectiveSpeedValue(item) > 0) lines.push(`Velocidade: ${formatSpeed(effectiveSpeedValue(item))}`)
+  if (effectiveEtaValue(item) > 0) lines.push(`ETA: ${formatEta(effectiveEtaValue(item))}`)
+  if (item.packageId) lines.push(`Pacote: ${packages.value.find((pkg) => pkg.id === item.packageId)?.name ?? item.packageId}`)
+  if (item.outputPath) lines.push(`Destino: ${item.outputPath}`)
+  if (item.expectedHash) lines.push(`Hash: ${item.expectedHash.algorithm.toUpperCase()} ${item.expectedHash.value}`)
+  return lines
+}
+
 async function persistFilters(): Promise<void> {
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
@@ -864,6 +998,11 @@ onMounted(async () => {
   isMounted = true
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
+    for (const item of items.value) {
+      if (item.status === DownloadStatusEnum.Downloading) {
+        recordSpeedSample(item.id, effectiveSpeedValue(item))
+      }
+    }
     const totalSpeed = items.value
       .filter((item) => item.status === DownloadStatusEnum.Downloading)
       .reduce((sum, item) => sum + effectiveSpeedValue(item), 0)
@@ -978,6 +1117,7 @@ onMounted(async () => {
           // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.
           children: nextChildren
         }
+        recordSpeedSample(ev.id, aggregatedChildSpeed)
         // Somar speed de todos os itens ativos (throttled a 200ms para não sobrecarregar)
         const now = Date.now()
         if (now - lastSpeedEmit >= 120) {
@@ -1033,6 +1173,7 @@ onMounted(async () => {
       const idx = itemIndexById.value[ev.id] ?? -1
       const outputPath = ev.path ?? ev.outputPath ?? ''
       if (idx >= 0) {
+        recordSpeedSample(ev.id, 0)
         items.value[idx] = {
           ...items.value[idx],
           status: DownloadStatusEnum.Complete,
@@ -1076,6 +1217,7 @@ onMounted(async () => {
       if (!ev?.id) return
       const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
+        recordSpeedSample(ev.id, 0)
         items.value[idx] = {
           ...items.value[idx],
           status: DownloadStatusEnum.Error,
@@ -1485,6 +1627,7 @@ async function openCaptchaWindow(item: DownloadItem): Promise<void> {
     }
 
     await window.api.captcha.submit(item.id, token).catch(() => null)
+    captchaSolvedIds.value = new Set([...captchaSolvedIds.value, item.id])
     if (activeCaptchaId.value === item.id) {
       activeCaptchaId.value = null
     }
@@ -1507,6 +1650,7 @@ async function maybeResolveCaptcha(item: DownloadItem): Promise<void> {
 
   if (token) {
     await window.api.captcha.submit(item.id, token).catch(() => null)
+    captchaSolvedIds.value = new Set([...captchaSolvedIds.value, item.id])
     return
   }
 
@@ -1583,7 +1727,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .package-node-label {
-  overflow: hidden;
+  overflow: visible;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
@@ -1834,7 +1978,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   box-sizing: border-box;
   align-self: stretch;
   content-visibility: auto;
-  contain: layout paint style;
+  contain: layout style;
 }
 
 .download-card::before {
@@ -1882,6 +2026,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   height: 36px;
   flex-shrink: 0;
   border-radius: 8px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -2103,6 +2248,107 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .progress-shimmer {
   background-size: 200% 100% !important;
   animation: shimmer 1.8s ease-in-out infinite;
+}
+
+.row-rich-indicators {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  flex-wrap: wrap;
+}
+
+.row-sparkline {
+  width: 90px;
+  height: 22px;
+  flex: 0 0 auto;
+  color: var(--accent-color);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 18%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-color) 5%, transparent);
+}
+
+.row-rich-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.row-rich-badge.premium {
+  color: #2563eb;
+  border-color: rgba(37, 99, 235, 0.24);
+  background: rgba(37, 99, 235, 0.1);
+}
+
+.row-rich-badge.captcha {
+  color: #8b5cf6;
+  border-color: rgba(139, 92, 246, 0.24);
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.row-rich-badge.captcha-ok {
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.24);
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.row-rich-badge.limited {
+  color: #d97706;
+  border-color: rgba(217, 119, 6, 0.26);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.row-rich-badge.verified {
+  color: #0891b2;
+  border-color: rgba(8, 145, 178, 0.24);
+  background: rgba(8, 145, 178, 0.1);
+}
+
+.row-rich-badge.sequential,
+.row-rich-badge.parts {
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--border-color) 78%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 65%, var(--bg-card));
+}
+
+.row-rich-tooltip {
+  position: absolute;
+  right: 12px;
+  top: calc(100% - 10px);
+  z-index: 12;
+  width: min(360px, calc(100% - 24px));
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.22);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.row-rich-tooltip strong {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-card:hover {
+  z-index: 14;
+}
+
+.download-card:hover .row-rich-tooltip {
+  display: flex;
 }
 
 @keyframes shimmer {

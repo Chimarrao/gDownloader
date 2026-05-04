@@ -451,14 +451,6 @@ tudo, Ctrl+V em qualquer lugar = abre LinkGrabber com clipboard, Ctrl+P =
 pausa tudo, Ctrl+R = retoma tudo, F5 = recheck (torrent), Esc = fecha
 modais, ?, mostra cheat sheet em modal."
 
-33.8 — Indicadores visuais ricos por linha
-PROMPT CODEX:
-"Cada row mostra: barra de progresso com gradiente (cor por estado),
-sparkline de speed das últimas 30 amostras (canvas inline), badges
-contextuais (Premium, Captcha resolvido, Rate-limited, Sequential,
-Verificado SHA256), ícone do host com cor da marca. Tooltip rico em hover
-com info adicional."
-
 33.9 — Notification center in-app
 PROMPT CODEX:
 "Sino no topbar com contador. Drawer mostra eventos das últimas 24h:
