@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use serde::Deserialize;
 use std::env;
 use std::path::{Path as FsPath, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,16 @@ struct QueueCandidate {
     provider: String,
     created_at: u64,
     priority: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PriorityRequest {
+    pub priority: i32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SpeedLimitRequest {
+    pub speed_limit_kib: u64,
 }
 
 fn normalize_identity_url(url: &str) -> String {
@@ -740,6 +751,61 @@ pub async fn force_download(
         run_download(state_clone, candidate.id, candidate.url, candidate.dest_path).await;
     });
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn update_download_priority(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<PriorityRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let found = {
+        let mut map = state.downloads.lock().await;
+        if let Some(download) = map.get_mut(&id) {
+            download.priority = req.priority;
+            true
+        } else {
+            false
+        }
+    };
+
+    if !found {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("Download não encontrado")),
+        ));
+    }
+
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "priority", &format!("Prioridade alterada para {}", req.priority));
+    schedule_pending_downloads(state).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn update_download_speed_limit(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SpeedLimitRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let found = {
+        let mut map = state.downloads.lock().await;
+        if let Some(download) = map.get_mut(&id) {
+            download.speed_limit_kib = req.speed_limit_kib;
+            true
+        } else {
+            false
+        }
+    };
+
+    if !found {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("Download não encontrado")),
+        ));
+    }
+
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "speed_limit", &format!("Limite individual alterado para {} KiB/s", req.speed_limit_kib));
     Ok(StatusCode::NO_CONTENT)
 }
 

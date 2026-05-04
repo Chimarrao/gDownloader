@@ -177,10 +177,11 @@
           v-for="item in visibleItems"
           :key="item.id"
           class="download-card"
-          :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned }]"
+          :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id) }]"
           draggable="true"
           @dragstart="draggedDownloadId = item.id"
           @dragend="draggedDownloadId = null"
+          @contextmenu.prevent="openContextMenu(item, $event)"
           @click="toggleDetailsFromCard(item, $event)"
         >
           <!-- Left: provider icon -->
@@ -212,116 +213,15 @@
                   <span class="badge-dot" :class="`dot-${item.status}`"></span>
                   {{ statusTextValue(item) }}
                 </span>
-                <button
-                  class="action-btn pin-btn"
-                  :class="{ 'pin-btn-active': item.pinned }"
-                  :title="item.pinned ? 'Desafixar' : 'Fixar no topo'"
-                  @click="togglePin(item.id)"
-                >
-                  <i class="pi pi-star" :class="{ 'pi-star-fill': item.pinned }"></i>
-                </button>
+                <span v-if="selectedDownloadIds.has(item.id)" class="selection-badge">
+                  {{ selectedDownloadIds.size }}
+                </span>
                 <button
                   class="action-btn"
-                  :title="item.isFolder ? 'Copiar URLs' : 'Copiar URL'"
-                  @click="copyUrl(item)"
+                  title="Mais ações"
+                  @click.stop="openContextMenu(item, $event)"
                 >
-                  <i class="pi pi-copy"></i>
-                </button>
-                <button
-                  v-if="item.isFolder && (item.children?.length ?? 0) > 0"
-                  class="action-btn"
-                  :title="isExpanded(item.id) ? 'Ocultar itens' : 'Mostrar itens'"
-                  @click="toggleFolder(item.id)"
-                >
-                  <i class="pi" :class="isExpanded(item.id) ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canPause"
-                  class="action-btn"
-                  title="Pausar"
-                  @click="pause(item.id)"
-                >
-                  <i class="pi pi-pause"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canResume"
-                  class="action-btn"
-                  title="Retomar"
-                  @click="resume(item.id)"
-                >
-                  <i class="pi pi-play"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canOpenCaptcha"
-                  class="action-btn"
-                  title="Resolver captcha"
-                  @click="openCaptcha(item.id)"
-                >
-                  <i class="pi pi-shield"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canCancel"
-                  class="cancel-btn"
-                  title="Cancelar"
-                  @click="cancel(item.id)"
-                >
-                  <i class="pi pi-times"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canRetry"
-                  class="action-btn"
-                  title="Tentar novamente"
-                  @click="retry(item.id)"
-                >
-                  <i class="pi pi-refresh"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canForce"
-                  class="action-btn"
-                  title="Forçar download agora"
-                  @click="force(item.id)"
-                >
-                  <i class="pi pi-bolt"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canRestart"
-                  class="action-btn"
-                  :title="item.status === 'corrupted' ? 'Re-baixar' : 'Reiniciar'"
-                  @click="restart(item.id)"
-                >
-                  <i class="pi pi-replay"></i>
-                </button>
-                <button
-                  v-if="item.status === 'complete' && item.outputPath && isExtractableArchive(item.outputPath)"
-                  class="action-btn"
-                  title="Extrair"
-                  @click="extract(item.outputPath!)"
-                >
-                  <i class="pi pi-folder-plus"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canOpenFolder"
-                  class="open-btn"
-                  title="Mostrar na pasta"
-                  @click="openFolder(item.outputPath!)"
-                >
-                  <i class="pi pi-folder-open"></i>
-                </button>
-                <button
-                  v-if="isTerminal(item.status)"
-                  class="action-btn"
-                  title="Remover da lista"
-                  @click="remove(item.id)"
-                >
-                  <i class="pi pi-trash"></i>
-                </button>
-                <button
-                  v-if="actionsFor(item).canRemoveWithFiles"
-                  class="action-btn"
-                  title="Remover da lista e apagar arquivos físicos"
-                  @click="removeWithFiles(item.id)"
-                >
-                  <i class="pi pi-trash"></i>
+                  <i class="pi pi-ellipsis-v"></i>
                 </button>
               </div>
             </div>
@@ -622,6 +522,56 @@
       </div>
     </div>
 
+    <div
+      v-if="contextMenu.visible && contextMenuItem"
+      class="download-context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+    >
+      <div class="context-menu-title">
+        {{ contextSelection.length > 1 ? `${contextSelection.length} itens selecionados` : contextMenuItem.title || contextMenuItem.url }}
+      </div>
+      <button v-if="contextCan('canPause')" @click="runContextAction('pause')"><i class="pi pi-pause"></i>Pausar</button>
+      <button v-if="contextCan('canResume')" @click="runContextAction('resume')"><i class="pi pi-play"></i>Retomar</button>
+      <button v-if="contextCan('canRestart')" @click="runContextAction('restart')"><i class="pi pi-replay"></i>Reiniciar do zero</button>
+      <button v-if="contextCan('canForce')" @click="runContextAction('force')"><i class="pi pi-bolt"></i>Forçar agora</button>
+      <button v-if="contextCan('canCancel')" @click="runContextAction('cancel')"><i class="pi pi-times"></i>Cancelar</button>
+      <button @click="toggleContextPin"><i class="pi pi-star"></i>{{ contextMenuItem.pinned ? 'Desafixar' : 'Fixar no topo' }}</button>
+      <button v-if="contextMenuItem.isFolder && (contextMenuItem.children?.length ?? 0) > 0" @click="toggleContextFolder">
+        <i class="pi pi-sitemap"></i>{{ isExpanded(contextMenuItem.id) ? 'Ocultar itens' : 'Mostrar itens' }}
+      </button>
+      <button v-if="contextCan('canOpenCaptcha')" @click="openContextCaptcha"><i class="pi pi-shield"></i>Resolver captcha</button>
+      <button v-if="contextMenuItem.status === 'complete' && contextMenuItem.outputPath && isExtractableArchive(contextMenuItem.outputPath)" @click="extractContextArchive">
+        <i class="pi pi-folder-plus"></i>Extrair
+      </button>
+      <button v-if="contextMenuItem.outputPath" @click="openContextFolder"><i class="pi pi-folder-open"></i>Abrir pasta</button>
+      <button v-if="contextMenuItem.outputPath" @click="openContextFile"><i class="pi pi-external-link"></i>Abrir arquivo</button>
+      <button @click="showContextUrl"><i class="pi pi-link"></i>Mostrar URL</button>
+      <button @click="copyContextUrls"><i class="pi pi-copy"></i>Copiar URL</button>
+      <button @click="copyContextNames"><i class="pi pi-file"></i>Copiar nome</button>
+      <button @click="showContextDetails"><i class="pi pi-list"></i>Mostrar detalhes</button>
+      <button v-if="contextMenuItem.moduleId === 'torrent'" @click="runContextAction('retry')"><i class="pi pi-refresh"></i>Recheck</button>
+
+      <div class="context-menu-group">
+        <span>Mover pra pacote</span>
+        <button @click="assignContextPackage('')">Sem pacote</button>
+        <button v-for="pkg in packages" :key="pkg.id" @click="assignContextPackage(pkg.id)">
+          {{ pkg.name }}
+        </button>
+      </div>
+
+      <div class="context-menu-group">
+        <span>Prioridade</span>
+        <button @click="setContextPriority(10)">Alta</button>
+        <button @click="setContextPriority(0)">Normal</button>
+        <button @click="setContextPriority(-10)">Baixa</button>
+      </div>
+
+      <button @click="setContextSpeedLimit"><i class="pi pi-gauge"></i>Limite de velocidade individual</button>
+      <button v-if="contextCanTerminal" class="danger" @click="runContextAction('remove')"><i class="pi pi-trash"></i>Remover</button>
+      <button v-if="contextCan('canRemoveWithFiles')" class="danger" @click="runContextAction('removeWithFiles')"><i class="pi pi-trash"></i>Remover + arquivos</button>
+    </div>
+
     <div v-if="activeCaptchaItem" class="captcha-modal-backdrop" @click.self="closeCaptchaModal">
       <div
         ref="captchaModalRef"
@@ -715,6 +665,14 @@ const items = ref<DownloadItem[]>([])
 const packages = ref<DownloadPackage[]>([])
 const selectedPackageId = ref<'all' | 'unassigned' | string>('all')
 const draggedDownloadId = ref<string | null>(null)
+const selectedDownloadIds = ref<Set<string>>(new Set())
+const lastSelectedDownloadId = ref<string | null>(null)
+const contextMenu = ref<{ visible: boolean; x: number; y: number; itemId: string | null }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  itemId: null,
+})
 const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
 const columnOrder = ref<string[]>([...defaultColumns])
 const visibleColumns = ref<string[]>([...defaultColumns])
@@ -815,6 +773,17 @@ const finishedCount = computed(() =>
 const activeCaptchaItem = computed(() =>
   items.value.find((item) => item.id === activeCaptchaId.value && item.status === DownloadStatusEnum.WaitingCaptcha) ?? null
 )
+const contextMenuItem = computed(() =>
+  items.value.find((item) => item.id === contextMenu.value.itemId) ?? null
+)
+const contextSelection = computed(() => {
+  const selected = items.value.filter((item) => selectedDownloadIds.value.has(item.id))
+  if (selected.length > 0) return selected
+  return contextMenuItem.value ? [contextMenuItem.value] : []
+})
+const contextCanTerminal = computed(() =>
+  contextSelection.value.some((item) => isTerminal(item.status))
+)
 
 function packageStats(packageId: string): { total: number; active: number; failed: number; complete: number } {
   return packageStatsMap.value.get(packageId) ?? { total: 0, active: 0, failed: 0, complete: 0 }
@@ -833,6 +802,48 @@ async function assignDraggedToPackage(packageId: string): Promise<void> {
   const item = items.value.find((entry) => entry.id === draggedDownloadId.value)
   if (!item) return
   await assignPackage(item, packageId)
+}
+
+function selectDownload(item: DownloadItem, event?: MouseEvent): void {
+  const next = new Set(selectedDownloadIds.value)
+  if (event?.shiftKey && lastSelectedDownloadId.value) {
+    const ids = orderedItems.value.map((entry) => entry.id)
+    const start = ids.indexOf(lastSelectedDownloadId.value)
+    const end = ids.indexOf(item.id)
+    if (start >= 0 && end >= 0) {
+      const [from, to] = start <= end ? [start, end] : [end, start]
+      for (const id of ids.slice(from, to + 1)) next.add(id)
+    }
+  } else if (event?.metaKey || event?.ctrlKey) {
+    if (next.has(item.id)) next.delete(item.id)
+    else next.add(item.id)
+    lastSelectedDownloadId.value = item.id
+  } else {
+    next.clear()
+    next.add(item.id)
+    lastSelectedDownloadId.value = item.id
+  }
+  selectedDownloadIds.value = next
+}
+
+function closeContextMenu(): void {
+  contextMenu.value = { visible: false, x: 0, y: 0, itemId: null }
+}
+
+function openContextMenu(item: DownloadItem, event: MouseEvent): void {
+  if (!selectedDownloadIds.value.has(item.id)) {
+    selectDownload(item)
+  }
+  contextMenu.value = {
+    visible: true,
+    x: Math.min(event.clientX, window.innerWidth - 260),
+    y: Math.min(event.clientY, window.innerHeight - 420),
+    itemId: item.id,
+  }
+}
+
+function contextCan(action: string): boolean {
+  return contextSelection.value.some((item) => actionsFor(item)[action])
 }
 
 function hasColumn(column: string): boolean {
@@ -1051,6 +1062,8 @@ const bottomSpacerHeight = computed(() =>
 // ── Lifecycle ──────────────────────────────────────────────
 onMounted(async () => {
   isMounted = true
+  window.addEventListener('click', closeContextMenu)
+  window.addEventListener('blur', closeContextMenu)
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
     for (const item of items.value) {
@@ -1342,6 +1355,8 @@ onUnmounted(() => {
     window.clearInterval(hydrateTimer)
     hydrateTimer = null
   }
+  window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('blur', closeContextMenu)
   for (const unsub of unsubs) unsub()
 })
 
@@ -1511,6 +1526,118 @@ async function togglePin(id: string): Promise<void> {
   await window.api.downloads.togglePin(id).catch(() => null)
 }
 
+async function runContextAction(action: 'pause' | 'resume' | 'restart' | 'force' | 'retry' | 'cancel' | 'remove' | 'removeWithFiles'): Promise<void> {
+  const targets = [...contextSelection.value]
+  closeContextMenu()
+  for (const item of targets) {
+    if (action === 'pause' && actionsFor(item).canPause) await pause(item.id)
+    if (action === 'resume' && actionsFor(item).canResume) await resume(item.id)
+    if (action === 'restart' && actionsFor(item).canRestart) await restart(item.id)
+    if (action === 'force' && actionsFor(item).canForce) await force(item.id)
+    if (action === 'retry' && actionsFor(item).canRetry) await retry(item.id)
+    if (action === 'cancel' && actionsFor(item).canCancel) await cancel(item.id)
+    if (action === 'remove' && isTerminal(item.status)) await remove(item.id)
+    if (action === 'removeWithFiles' && actionsFor(item).canRemoveWithFiles) await removeWithFiles(item.id)
+  }
+  await hydrate()
+}
+
+async function toggleContextPin(): Promise<void> {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (item) await togglePin(item.id)
+}
+
+function toggleContextFolder(): void {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (item) toggleFolder(item.id)
+}
+
+function openContextCaptcha(): void {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (item) openCaptcha(item.id)
+}
+
+async function extractContextArchive(): Promise<void> {
+  const path = contextMenuItem.value?.outputPath
+  closeContextMenu()
+  if (path) await extract(path)
+}
+
+function openContextFolder(): void {
+  const path = contextMenuItem.value?.outputPath
+  closeContextMenu()
+  if (path) openFolder(path)
+}
+
+function openContextFile(): void {
+  const path = contextMenuItem.value?.outputPath
+  closeContextMenu()
+  if (path) void window.api.openPath(path).catch(() => null)
+}
+
+function showContextUrl(): void {
+  const url = contextMenuItem.value?.url
+  closeContextMenu()
+  if (url) window.alert(url)
+}
+
+function showContextDetails(): void {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (item) toggleDetails(item)
+}
+
+async function copyContextUrls(): Promise<void> {
+  const targets = [...contextSelection.value]
+  closeContextMenu()
+  if (targets.length === 1) {
+    await copyUrl(targets[0])
+    return
+  }
+  const payload = targets.map((item) => item.url).join('\n')
+  if (payload) await window.api.clipboard.writeText(payload).catch(() => null)
+}
+
+async function copyContextNames(): Promise<void> {
+  const payload = contextSelection.value.map((item) => item.title || item.url).join('\n')
+  closeContextMenu()
+  if (payload) await window.api.clipboard.writeText(payload).catch(() => null)
+}
+
+async function assignContextPackage(packageId: string): Promise<void> {
+  const targets = [...contextSelection.value]
+  closeContextMenu()
+  for (const item of targets) {
+    await assignPackage(item, packageId)
+  }
+}
+
+async function setContextPriority(priority: number): Promise<void> {
+  const targets = [...contextSelection.value]
+  closeContextMenu()
+  for (const item of targets) {
+    await window.api.downloads.setPriority(item.id, priority).catch(() => null)
+    const idx = itemIndexById.value[item.id] ?? -1
+    if (idx >= 0) items.value[idx] = { ...items.value[idx], priority }
+  }
+  await hydrate()
+}
+
+async function setContextSpeedLimit(): Promise<void> {
+  const raw = window.prompt('Limite em KB/s para o(s) item(ns). Use 0 para sem limite.', '0')
+  if (raw === null) return
+  const value = Math.max(0, Math.trunc(Number(raw) || 0))
+  const targets = [...contextSelection.value]
+  closeContextMenu()
+  for (const item of targets) {
+    await window.api.downloads.setSpeedLimit(item.id, value).catch(() => null)
+  }
+  await hydrate()
+}
+
 function chooseOutputDir(): void {
   window.api.settings.chooseDirectory().then((dir) => {
     if (dir) {
@@ -1555,6 +1682,13 @@ function toggleDetailsFromCard(item: DownloadItem, event: MouseEvent): void {
   const target = event.target as HTMLElement | null
   if (target?.closest('button,input,select,a,label,.download-detail-panel,.folder-children,.captcha-row')) {
     return
+  }
+  if (event.metaKey || event.ctrlKey || event.shiftKey) {
+    selectDownload(item, event)
+    return
+  }
+  if (!selectedDownloadIds.value.has(item.id) || selectedDownloadIds.value.size > 1) {
+    selectDownload(item)
   }
   toggleDetails(item)
 }
@@ -2138,6 +2272,94 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .download-card:hover {
   border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
   box-shadow: var(--shadow-card);
+}
+
+.download-card.selected {
+  border-color: color-mix(in srgb, var(--accent-color) 70%, var(--border-color));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
+}
+
+.selection-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-color);
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.download-context-menu {
+  position: fixed;
+  z-index: 80;
+  width: 248px;
+  max-height: min(620px, calc(100vh - 20px));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.context-menu-title {
+  padding: 6px 8px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  margin-bottom: 3px;
+}
+
+.download-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.download-context-menu button:hover {
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+}
+
+.download-context-menu button.danger {
+  color: #ef4444;
+}
+
+.context-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 5px;
+  margin-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+
+.context-menu-group > span {
+  padding: 3px 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
 /* ── Provider icon ──────────────────────────────────────────── */

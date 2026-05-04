@@ -358,6 +358,22 @@ const api = {
       await fetchBackend(`/downloads/${id}/force`, { method: 'POST' })
     },
 
+    setPriority: async (id: string, priority: number) => {
+      await fetchBackend(`/downloads/${id}/priority`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+      })
+    },
+
+    setSpeedLimit: async (id: string, speedLimitKib: number) => {
+      await fetchBackend(`/downloads/${id}/speed-limit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speed_limit_kib: speedLimitKib }),
+      })
+    },
+
     remove: async (id: string) => {
       await fetchBackend(`/downloads/${id}/remove`, { method: 'DELETE' })
     },

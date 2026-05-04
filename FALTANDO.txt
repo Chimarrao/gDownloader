@@ -403,17 +403,6 @@ none por padrão, ativa em dragenter no document). Aceitar:
   - múltiplas URLs / mistura → LinkGrabber em batch
 Mostrar overlay com ícone grande e texto ('Solte aqui pra adicionar')."
 
-33.2 — Menu de contexto rico (right-click) na DownloadList
-PROMPT CODEX:
-"Em DownloadList.vue substituir botões inline por menu de contexto via
-PrimeVue ContextMenu disparado em right-click + botão 'mais' kebab. Itens:
-Pausar/Retomar, Reiniciar do zero, Forçar agora (ignora limite), Abrir pasta,
-Abrir arquivo, Mostrar URL, Copiar URL, Copiar nome, Mover pra pacote >
-(submenu dinâmico), Mudar prioridade > (Alta/Normal/Baixa), Definir
-limite de velocidade individual, Mostrar detalhes, Recheck (torrent),
-Remover, Remover + arquivos. Suporte a multi-seleção com Shift/Ctrl click —
-ações em massa quando >1 selecionado."
-
 33.4 — Painel lateral com fila futura e prévia
 PROMPT CODEX:
 "Adicionar painel direito colapsável (drag handle) mostrando: 'Próximos na

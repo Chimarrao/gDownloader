@@ -133,6 +133,8 @@ interface RendererApi {
     retry: (id: string) => Promise<void>
     restart: (id: string) => Promise<void>
     force: (id: string) => Promise<void>
+    setPriority: (id: string, priority: number) => Promise<void>
+    setSpeedLimit: (id: string, speedLimitKib: number) => Promise<void>
     remove: (id: string) => Promise<void>
     removeWithFiles: (id: string) => Promise<void>
     clearFinished: () => Promise<void>
