@@ -1,8 +1,96 @@
 import { existsSync, mkdirSync, rmSync } from 'fs'
+import { writeFileSync } from 'fs'
 import { dirname } from 'path'
+import { join } from 'path'
+import { app, session, type BrowserWindow } from 'electron'
+
+const configuredPartitions = new Set<string>()
+
+function chromeMajorVersion(): string {
+  return (process.versions.chrome || '120').split('.')[0]
+}
 
 export const HOSTER_BROWSER_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136 Safari/537.36'
+  `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome || '120.0.0.0'} Safari/537.36`
+
+function ensureHosterPreload(): string {
+  const preloadPath = join(app.getPath('userData'), 'hoster-session-preload.js')
+  const chromeVersion = process.versions.chrome || '120.0.0.0'
+  const chromeMajor = chromeVersion.split('.')[0]
+  const source = `
+(() => {
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+    Object.defineProperty(navigator, 'userAgentData', {
+      get: () => ({
+        brands: [
+          { brand: 'Chromium', version: '${chromeMajor}' },
+          { brand: 'Not A(Brand', version: '24' }
+        ],
+        mobile: false,
+        platform: 'macOS',
+        getHighEntropyValues: async (hints) => {
+          const values = {
+            architecture: 'arm',
+            bitness: '64',
+            brands: [
+              { brand: 'Chromium', version: '${chromeMajor}' },
+              { brand: 'Not A(Brand', version: '24' }
+            ],
+            fullVersionList: [
+              { brand: 'Chromium', version: '${chromeVersion}' },
+              { brand: 'Not A(Brand', version: '24.0.0.0' }
+            ],
+            mobile: false,
+            model: '',
+            platform: 'macOS',
+            platformVersion: '15.0.0',
+            uaFullVersion: '${chromeVersion}'
+          };
+          return Object.fromEntries((hints || []).map((hint) => [hint, values[hint]]).filter(([, value]) => value !== undefined));
+        }
+      }),
+      configurable: true
+    });
+    if (!window.chrome) {
+      Object.defineProperty(window, 'chrome', { value: { runtime: {} }, configurable: true });
+    }
+  } catch {}
+})();
+`
+  try {
+    writeFileSync(preloadPath, source, 'utf8')
+  } catch {
+    // Se não conseguir gravar o preload, ainda seguimos com os headers consistentes.
+  }
+  return preloadPath
+}
+
+export function configureHosterSession(partition: string): void {
+  if (configuredPartitions.has(partition)) {
+    return
+  }
+  configuredPartitions.add(partition)
+
+  const targetSession = session.fromPartition(partition)
+  targetSession.setPreloads([ensureHosterPreload()])
+  targetSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const requestHeaders = { ...details.requestHeaders }
+    requestHeaders['User-Agent'] = HOSTER_BROWSER_USER_AGENT
+    requestHeaders['Accept-Language'] = 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+    requestHeaders['sec-ch-ua'] = `"Chromium";v="${chromeMajorVersion()}", "Not A(Brand";v="24"`
+    requestHeaders['sec-ch-ua-mobile'] = '?0'
+    requestHeaders['sec-ch-ua-platform'] = '"macOS"'
+    callback({ requestHeaders })
+  })
+}
+
+export function configureHosterWindow(win: BrowserWindow, partition: string): void {
+  configureHosterSession(partition)
+  win.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
+}
 
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -76,4 +164,3 @@ export function createExclusiveRunner() {
     }
   }
 }
-

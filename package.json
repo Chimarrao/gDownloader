@@ -1,6 +1,6 @@
 {
   "name": "gdownloader",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "JDownloader-like desktop app — Mega, MediaFire, Google Drive",
   "main": "./out/main/index.js",
   "author": "",
@@ -20,6 +20,8 @@
     "build:mac": "npm run build && electron-builder --mac",
     "build:win": "npm run build && electron-builder --win",
     "build:linux": "npm run build && electron-builder --linux",
+    "build:portable": "npm run build && electron-builder --mac zip --win portable --linux AppImage",
+    "commit:build": "rustc tools/commit_build.rs -o /tmp/gdownloader-commit-build && /tmp/gdownloader-commit-build",
     "test": "vitest run",
     "test:watch": "vitest"
   },

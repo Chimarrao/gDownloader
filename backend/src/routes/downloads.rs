@@ -171,12 +171,12 @@ pub async fn add_download_internal(
     // Detecta qual provider trata essa URL
     let provider = providers::detect_provider(&req.url).ok_or_else(|| {
         let error_msg = if req.url.contains("mega.nz/folder/") {
-            "❌ Links de PASTA do Mega (/folder/) não são suportados.\n\
-             Use um link de ARQUIVO (/file/) em vez disso.\n\
-             Para obter: abra a pasta no Mega > clique em um arquivo > compartilhe aquele arquivo"
+            "❌ URL de pasta do Mega inválida. Formato suportado:\n\
+             • https://mega.nz/folder/HANDLE#KEY"
         } else if req.url.contains("mega.nz") {
             "❌ URL do Mega inválida. Formatos suportados:\n\
              • Novo: https://mega.nz/file/HANDLE#KEY\n\
+             • Pasta: https://mega.nz/folder/HANDLE#KEY\n\
              • Antigo: https://mega.nz/#!HANDLE!KEY"
         } else if req.url.contains("mediafire.com") {
             "⚠️ URL do MediaFire não foi reconhecida.\n\
@@ -184,7 +184,7 @@ pub async fn add_download_internal(
              O link pode estar expirado ou protegido."
         } else {
             "URL não reconhecida. Provedores suportados:\n\
-             • Mega (mega.nz) — arquivos diretos /file/ (não pastas /folder/)\n\
+             • Mega (mega.nz) — arquivos /file/ e pastas /folder/\n\
              • MediaFire (mediafire.com)\n\
              • Google Drive (drive.google.com)\n\
              • PixelDrain (pixeldrain.com)\n\
@@ -988,11 +988,14 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         let mut last_time = std::time::Instant::now();
         let mut current_speed = 0u64;
         let mut last_db_write = std::time::Instant::now();
+        let mut last_progress_broadcast = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(500))
+            .unwrap_or_else(std::time::Instant::now);
 
         while let Some(update) = progress_rx.recv().await {
             let should_persist_snapshot = last_db_write.elapsed().as_secs() >= 5;
             let elapsed = last_time.elapsed().as_secs_f64();
-            if elapsed >= 0.35 {
+            if elapsed >= 0.5 {
                 let delta = update.bytes_downloaded.saturating_sub(last_bytes);
                 if delta > 0 {
                     current_speed = (delta as f64 / elapsed) as u64;
@@ -1057,20 +1060,25 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 last_db_write = std::time::Instant::now();
             }
 
-            state.broadcast(WsEvent::Progress {
-                id: id.clone(),
-                bytes: update.bytes_downloaded,
-                total: update.total_bytes,
-                speed,
-                eta,
-                status: DownloadStatus::Downloading,
-                child_path: update.child_path.clone(),
-                child_filename: update.child_filename.clone(),
-                child_bytes: update.child_bytes_downloaded,
-                child_total: update.child_total_bytes,
-                child_speed: update.child_speed_bps,
-                child_eta: update.child_eta_secs,
-            });
+            if last_progress_broadcast.elapsed() >= std::time::Duration::from_millis(500)
+                || update.total_bytes > 0 && update.bytes_downloaded >= update.total_bytes
+            {
+                last_progress_broadcast = std::time::Instant::now();
+                state.broadcast(WsEvent::Progress {
+                    id: id.clone(),
+                    bytes: update.bytes_downloaded,
+                    total: update.total_bytes,
+                    speed,
+                    eta,
+                    status: DownloadStatus::Downloading,
+                    child_path: update.child_path.clone(),
+                    child_filename: update.child_filename.clone(),
+                    child_bytes: update.child_bytes_downloaded,
+                    child_total: update.child_total_bytes,
+                    child_speed: update.child_speed_bps,
+                    child_eta: update.child_eta_secs,
+                });
+            }
         }
 
         match download_task.await {

@@ -41,7 +41,7 @@ impl KatfileProvider {
     pub fn matches(url: &str) -> bool {
         if !host_matches(
             url,
-            &["katfile.ws", "www.katfile.ws", "katfile.com", "www.katfile.com"],
+            &["katfile.ws", "www.katfile.ws", "katfile.com", "www.katfile.com", "katfile.space", "www.katfile.space"],
         ) {
             return false;
         }
@@ -238,6 +238,7 @@ mod tests {
     fn matches_file_page() {
         assert!(KatfileProvider::matches("https://katfile.ws/u1ifmhkgsyjx"));
         assert!(KatfileProvider::matches("https://katfile.com/u1ifmhkgsyjx"));
+        assert!(KatfileProvider::matches("https://katfile.space/u1ifmhkgsyjx"));
         assert!(!KatfileProvider::matches("https://katfile.ws/login.html"));
     }
 

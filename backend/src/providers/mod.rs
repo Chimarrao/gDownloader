@@ -289,6 +289,7 @@ pub trait ProviderDefaults {
     {
         let mut builder = reqwest::Client::builder()
             .user_agent(DEFAULT_USER_AGENT)
+            .cookie_store(true)
             .redirect(reqwest::redirect::Policy::limited(10));
 
         match proxy_mode {
@@ -674,6 +675,10 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         "MediaFire" | "Mega" => ProviderCapabilities {
             supports_folder: true,
             free_cooldown_secs: if name == "Mega" { Some(30 * 60) } else { None },
+            ..ProviderCapabilities::default()
+        },
+        "Google Drive" => ProviderCapabilities {
+            supports_folder: true,
             ..ProviderCapabilities::default()
         },
         "Rapidgator" => ProviderCapabilities {

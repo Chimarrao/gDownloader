@@ -516,8 +516,8 @@ const api = {
   showInFolder: (path: string): Promise<void> => ipcRenderer.invoke('shell:showInFolder', path),
   clipboard: {
     writeText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:writeText', text),
-    onLinkDetected: (cb: (payload: ClipboardLinkPayload) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload) =>
+    onLinkDetected: (cb: (payload: ClipboardLinkPayload) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload): void =>
         cb(payload)
       ipcRenderer.on('clipboard:link-detected', handler)
       return () => ipcRenderer.removeListener('clipboard:link-detected', handler)
@@ -530,11 +530,11 @@ const api = {
   logs: {
     tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> =>
       ipcRenderer.invoke('logs:tail', maxLines),
-    watch: (cb: (payload: { path: string; lines: string[] }) => void) => {
+    watch: (cb: (payload: { path: string; lines: string[] }) => void): (() => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
         payload: { path: string; lines: string[] },
-      ) => cb(payload)
+      ): void => cb(payload)
       ipcRenderer.on('logs:update', handler)
       ipcRenderer.send('logs:watch-start')
       return () => {
@@ -672,7 +672,7 @@ const api = {
       activeMirrorController = controller
       const port = await getPort()
       const url = `http://127.0.0.1:${port}/mirrors/search?filename=${encodeURIComponent(filename)}`
-      const emit = (ev: MirrorRendererEvent) => {
+      const emit = (ev: MirrorRendererEvent): void => {
         if (searchSeq !== activeMirrorSearchSeq) {
           return
         }
@@ -899,7 +899,7 @@ function normalizeModuleId(provider: unknown): string {
 }
 
 // Converte o formato de download do backend Rust para o formato esperado pelo renderer
-function rustDownloadToItem(d: Record<string, unknown>) {
+function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown> {
   const size = (d.size as number) ?? 0
   const bytes = (d.bytes_downloaded as number) ?? 0
   return {

@@ -17,6 +17,7 @@
 import { computed, ref } from 'vue'
 
 const props = withDefaults(defineProps<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   items: any[]
   itemHeight?: number
   overscan?: number
@@ -52,6 +53,7 @@ function onScroll(): void {
   scrollTop.value = viewportRef.value?.scrollTop ?? 0
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getKey(item: any, fallbackIndex: number): string | number {
   if (item && typeof item === 'object' && props.keyField in item) {
     return String(item[props.keyField] ?? fallbackIndex)

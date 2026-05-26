@@ -38,6 +38,20 @@ export const STATUS_LABELS: Record<string, string> = {
   [DownloadStatus.DiskFull]: 'Disco cheio',
 }
 
+export const STATUS_COLORS: Record<string, string> = {
+  [DownloadStatus.Pending]: '#64748b',
+  [DownloadStatus.Downloading]: '#2563eb',
+  [DownloadStatus.Verifying]: '#38bdf8',
+  [DownloadStatus.Complete]: '#16a34a',
+  [DownloadStatus.Corrupted]: '#dc2626',
+  [DownloadStatus.Error]: '#ef4444',
+  [DownloadStatus.Cancelled]: '#6b7280',
+  [DownloadStatus.Paused]: '#eab308',
+  [DownloadStatus.RateLimited]: '#f59e0b',
+  [DownloadStatus.WaitingCaptcha]: '#8b5cf6',
+  [DownloadStatus.DiskFull]: '#b91c1c',
+}
+
 export function isTerminal(status: DownloadItem['status']): boolean {
   return (
     status === DownloadStatus.Complete

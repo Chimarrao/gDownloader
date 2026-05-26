@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+rustc tools/commit_build.rs -o /tmp/gdownloader-commit-build
+/tmp/gdownloader-commit-build

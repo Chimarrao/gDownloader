@@ -149,6 +149,7 @@ function extractDownloadKey(url?: string): string | null {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createTeraboxService(options: CreateTeraboxServiceOptions) {
   const jobs = new Map<string, TeraboxDownloadJob>()
   const pendingDownloads = new Map<string, string>()
@@ -157,6 +158,7 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
   let authPromise: Promise<void> | null = null
   let sessionWired = false
 
+  // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   function getSession() {
     return session.fromPartition(TERABOX_PARTITION)
   }

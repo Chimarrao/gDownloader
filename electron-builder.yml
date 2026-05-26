@@ -18,7 +18,12 @@ extraResources:
 asarUnpack:
   - resources/**
 win:
+  target:
+    - portable
+    - nsis
   executableName: gdownloader
+portable:
+  artifactName: ${name}-${version}-windows-portable.${ext}
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -34,15 +39,15 @@ mac:
   notarize: false
 dmg:
   artifactName: ${name}-${version}.${ext}
+zip:
+  artifactName: ${name}-${version}-mac-portable.${ext}
 linux:
   target:
     - AppImage
-    - snap
-    - deb
   maintainer: electronjs.org
   category: Utility
 appImage:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-linux-portable.${ext}
 npmRebuild: false
 publish:
   provider: generic

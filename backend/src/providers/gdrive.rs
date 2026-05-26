@@ -1,16 +1,41 @@
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
+use serde_json::Value;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::models::FileInfo;
-use super::{apply_speed_limit, host_matches, try_parallel_download, Provider, ProgressUpdate, ProviderDefaults};
+use crate::models::{FileChildInfo, FileInfo};
+use super::{apply_speed_limit, host_matches, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct GDriveProvider;
 
 impl GDriveProvider {
     pub fn matches(url: &str) -> bool {
         host_matches(url, &["drive.google.com"])
+    }
+
+    pub fn is_folder_url(url: &str) -> bool {
+        url.contains("/drive/folders/")
+    }
+
+    pub fn extract_folder_id(url: &str) -> Option<String> {
+        let pos = url.find("/drive/folders/")?;
+        let after = &url[pos + 15..];
+        let id = after
+            .split('/')
+            .next()?
+            .split('?')
+            .next()?
+            .split('#')
+            .next()?
+            .trim();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id.to_string())
+        }
     }
 
     // Extrai o ID do arquivo de diferentes formatos de URL do Google Drive
@@ -56,13 +81,180 @@ impl GDriveProvider {
                 .unwrap_or(false)
     }
 
+    fn is_html_response(resp: &reqwest::Response) -> bool {
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|value| value.to_ascii_lowercase().contains("text/html"))
+            .unwrap_or(false)
+    }
+
+    async fn ensure_download_response(resp: reqwest::Response) -> Result<reqwest::Response> {
+        if !Self::is_html_response(&resp) {
+            return Ok(resp);
+        }
+
+        let html = resp.text().await.unwrap_or_default();
+        let title = Self::extract_title(&html, "Google Drive retornou uma página HTML");
+        let message = regex::Regex::new(r#"(?is)<p[^>]*class="uc-(?:error|warning)-(?:caption|subcaption)"[^>]*>(.*?)</p>"#)
+            .ok()
+            .and_then(|re| re.captures(&html))
+            .map(|captures| Self::strip_html(&captures[1]))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| title.clone());
+
+        Err(anyhow!("Google Drive não liberou o arquivo: {message}"))
+    }
+
+    async fn existing_file_looks_like_html(path: &str) -> bool {
+        let Ok(mut file) = tokio::fs::File::open(path).await else {
+            return false;
+        };
+        let mut buf = vec![0u8; 512];
+        let Ok(n) = file.read(&mut buf).await else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+        head.contains("<!doctype html") || head.contains("<html")
+    }
+
     fn decode_html(value: &str) -> String {
         value
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#039;", "'")
+            .replace("&#39;", "'")
             .replace("&lt;", "<")
             .replace("&gt;", ">")
+    }
+
+    fn strip_html(value: &str) -> String {
+        let without_tags = regex::Regex::new(r#"(?is)<[^>]+>"#)
+            .ok()
+            .map(|re| re.replace_all(value, " ").to_string())
+            .unwrap_or_else(|| value.to_string());
+        Self::decode_html(&without_tags)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn extract_title(html: &str, fallback: &str) -> String {
+        regex::Regex::new(r#"(?is)<title>\s*(.*?)\s*(?:-\s*Google Drive)?\s*</title>"#)
+            .ok()
+            .and_then(|re| re.captures(html))
+            .map(|captures| Self::decode_html(&captures[1]))
+            .map(|title| title.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn extract_drive_ivd(html: &str) -> Option<String> {
+        let marker = "window['_DRIVE_ivd'] = '";
+        let start = html.find(marker)? + marker.len();
+        let end = html[start..].find("';")? + start;
+        Some(Self::decode_js_string(&html[start..end]).replace("\\=", "="))
+    }
+
+    fn decode_js_string(value: &str) -> String {
+        let mut decoded = String::with_capacity(value.len());
+        let mut chars = value.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                decoded.push(ch);
+                continue;
+            }
+
+            match chars.next() {
+                Some('x') => {
+                    let hex = chars.by_ref().take(2).collect::<String>();
+                    if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                        decoded.push(byte as char);
+                    }
+                }
+                Some('u') => {
+                    let hex = chars.by_ref().take(4).collect::<String>();
+                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                        if let Some(value) = char::from_u32(code) {
+                            decoded.push(value);
+                        }
+                    }
+                }
+                Some('/') => decoded.push('/'),
+                Some('\\') => decoded.push('\\'),
+                Some('"') => decoded.push('"'),
+                Some('\'') => decoded.push('\''),
+                Some('n') => decoded.push('\n'),
+                Some('r') => decoded.push('\r'),
+                Some('t') => decoded.push('\t'),
+                Some(other) => {
+                    decoded.push('\\');
+                    decoded.push(other);
+                }
+                None => decoded.push('\\'),
+            }
+        }
+        decoded
+    }
+
+    fn parse_folder_children_from_ivd(ivd: &str) -> Result<Vec<FileChildInfo>> {
+        let value: Value = serde_json::from_str(ivd)?;
+        let entries = value
+            .get(0)
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("Google Drive não retornou a lista de arquivos da pasta"))?;
+
+        let children = entries
+            .iter()
+            .filter_map(|entry| {
+                let file = entry.as_array()?;
+                let id = file.get(0)?.as_str()?;
+                let filename = file.get(2)?.as_str()?;
+                let mime_type = file.get(3).and_then(Value::as_str).map(String::from);
+                let size = file.get(13).and_then(Value::as_u64).unwrap_or(0);
+                if id.is_empty() || filename.is_empty() {
+                    return None;
+                }
+                let source_url = format!("https://drive.google.com/file/d/{id}/view");
+                Some(FileChildInfo {
+                    filename: filename.to_string(),
+                    size,
+                    mime_type,
+                    is_folder: false,
+                    path: Some(filename.to_string()),
+                    source_url: Some(source_url),
+                    bytes_downloaded: None,
+                    speed_bps: None,
+                    eta_secs: None,
+                    status: None,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if children.is_empty() {
+            return Err(anyhow!("Pasta do Google Drive vazia ou sem arquivos acessíveis"));
+        }
+        Ok(children)
+    }
+
+    async fn get_folder_info(client: &reqwest::Client, url: &str) -> Result<FileInfo> {
+        let folder_id = Self::extract_folder_id(url)
+            .ok_or_else(|| anyhow!("URL de pasta do Google Drive inválida: {url}"))?;
+        let page_url = format!("https://drive.google.com/drive/folders/{folder_id}");
+        let html = client.get(&page_url).send().await?.error_for_status()?.text().await?;
+        let folder_name = Self::extract_title(&html, &format!("gdrive_{folder_id}"));
+        let ivd = Self::extract_drive_ivd(&html)
+            .ok_or_else(|| anyhow!("Google Drive não retornou metadados da pasta pública"))?;
+        let children = Self::parse_folder_children_from_ivd(&ivd)?;
+        let total_size = children.iter().map(|child| child.size).sum();
+
+        Ok(FileInfo {
+            filename: folder_name,
+            size: total_size,
+            mime_type: None,
+            is_folder: true,
+            children: Some(children),
+        })
     }
 
     fn extract_confirm_download_url(html: &str) -> Option<String> {
@@ -164,6 +356,11 @@ impl Provider for GDriveProvider {
         -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>>
     {
         Box::pin(async move {
+            if Self::is_folder_url(url) {
+                let client = <Self as ProviderDefaults>::http_client()?;
+                return Self::get_folder_info(&client, url).await;
+            }
+
             let id = Self::extract_id(url)
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
@@ -218,42 +415,142 @@ impl Provider for GDriveProvider {
         url: &'a str,
         dest_path: &'a str,
         speed_limit_bps: Option<u64>,
-        parallel_parts: usize,
-        _selected_children: Option<Vec<String>>,
+        _parallel_parts: usize,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>
     {
         Box::pin(async move {
+            if Self::is_folder_url(url) {
+                let client = <Self as ProviderDefaults>::http_client()?;
+                let info = Self::get_folder_info(&client, url).await?;
+                let mut children = info.children.unwrap_or_default();
+                if let Some(selected) = selected_children.filter(|items| !items.is_empty()) {
+                    let selected_set = selected.into_iter().collect::<HashSet<_>>();
+                    children.retain(|child| {
+                        child
+                            .source_url
+                            .as_ref()
+                            .map(|source_url| selected_set.contains(source_url))
+                            .unwrap_or(false)
+                    });
+                }
+
+                if children.is_empty() {
+                    return Err(anyhow!("Pasta do Google Drive vazia ou sem arquivos acessíveis"));
+                }
+
+                tokio::fs::create_dir_all(dest_path).await?;
+                let total_size: u64 = children.iter().map(|child| child.size).sum();
+                let started_at = tokio::time::Instant::now();
+                let mut downloaded_total = 0u64;
+                let mut session_downloaded = 0u64;
+
+                for child in &children {
+                    let source_url = child
+                        .source_url
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("Item da pasta do Google Drive sem URL"))?;
+                    let id = Self::extract_id(source_url)
+                        .ok_or_else(|| anyhow!("Item da pasta do Google Drive com URL inválida: {source_url}"))?;
+                    let (download_url, _hinted_filename, _hinted_size) =
+                        Self::resolve_download_url(&client, &id).await?;
+                    let child_path = child.path.clone().unwrap_or_else(|| child.filename.clone());
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), child_path);
+                    if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {
+                        tokio::fs::create_dir_all(parent_dir).await?;
+                    }
+
+                    let mut existing_bytes = tokio::fs::metadata(&output_path)
+                        .await
+                        .ok()
+                        .filter(|meta| meta.is_file())
+                        .map(|meta| meta.len())
+                        .unwrap_or(0);
+                    if existing_bytes > 0 && Self::existing_file_looks_like_html(&output_path).await {
+                        existing_bytes = 0;
+                    }
+                    if child.size > 0 && existing_bytes >= child.size {
+                        downloaded_total += child.size;
+                        continue;
+                    }
+
+                    let (resp, resumed) =
+                        <Self as ProviderDefaults>::send_with_resume_fallback(&client, &download_url, &output_path, existing_bytes).await?;
+                    let resp = Self::ensure_download_response(resp).await?;
+                    if resumed {
+                        downloaded_total += existing_bytes;
+                    }
+                    let mut file = if resumed {
+                        OpenOptions::new().create(true).append(true).open(&output_path).await?
+                    } else {
+                        tokio::fs::File::create(&output_path).await?
+                    };
+                    let mut stream = resp.bytes_stream();
+                    let mut child_session_downloaded = 0u64;
+                    let child_started_at = tokio::time::Instant::now();
+
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk?;
+                        file.write_all(&chunk).await?;
+                        let chunk_len = chunk.len() as u64;
+                        downloaded_total += chunk_len;
+                        session_downloaded += chunk_len;
+                        child_session_downloaded += chunk_len;
+
+                        let child_downloaded = if resumed { existing_bytes } else { 0 } + child_session_downloaded;
+                        let child_elapsed = child_started_at.elapsed().as_secs_f64();
+                        let child_speed = if child_elapsed > 0.0 {
+                            (child_session_downloaded as f64 / child_elapsed) as u64
+                        } else {
+                            0
+                        };
+                        let child_eta = if child_speed > 0 && child.size > child_downloaded {
+                            (child.size - child_downloaded) / child_speed
+                        } else {
+                            0
+                        };
+
+                        let _ = progress_tx
+                            .send(ProgressUpdate {
+                                bytes_downloaded: downloaded_total,
+                                total_bytes: total_size,
+                                child_path: Some(child_path.clone()),
+                                child_filename: Some(child.filename.clone()),
+                                child_bytes_downloaded: Some(child_downloaded),
+                                child_total_bytes: Some(child.size),
+                                child_speed_bps: Some(child_speed),
+                                child_eta_secs: Some(child_eta),
+                            })
+                            .await;
+                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                    }
+
+                    file.flush().await?;
+                }
+
+                return Ok(downloaded_total);
+            }
+
             let id = Self::extract_id(url)
                 .ok_or_else(|| anyhow!("URL do Google Drive inválida: {url}"))?;
 
             let client = <Self as ProviderDefaults>::http_client()?;
             let (download_url, _hinted_filename, _hinted_size) = Self::resolve_download_url(&client, &id).await?;
 
-            let existing_bytes = tokio::fs::metadata(dest_path)
+            let mut existing_bytes = tokio::fs::metadata(dest_path)
                 .await
                 .ok()
                 .filter(|meta| meta.is_file())
                 .map(|meta| meta.len())
                 .unwrap_or(0);
-
-            if existing_bytes == 0 {
-                if let Some(downloaded) = try_parallel_download(
-                    &client,
-                    &download_url,
-                    dest_path,
-                    speed_limit_bps,
-                    parallel_parts,
-                    progress_tx.clone(),
-                )
-                .await?
-                {
-                    return Ok(downloaded);
-                }
+            if existing_bytes > 0 && Self::existing_file_looks_like_html(dest_path).await {
+                existing_bytes = 0;
             }
 
             let (resp, resumed) =
                 <Self as ProviderDefaults>::send_with_resume_fallback(&client, &download_url, dest_path, existing_bytes).await?;
+            let resp = Self::ensure_download_response(resp).await?;
             let total = if resumed {
                 <Self as ProviderDefaults>::response_total_bytes(&resp, existing_bytes)
             } else {
@@ -330,5 +627,38 @@ mod tests {
         assert!(url.contains("export=download"));
         assert!(url.contains("confirm=t"));
         assert!(url.contains("uuid=uuid-123"));
+    }
+
+    #[test]
+    fn parses_folder_children_from_drive_ivd() {
+        let ivd = r#"[[["file123",["folder123"],"Movie.mkv","video/x-matroska",0,null,0,0,0,0,0,null,null,12345],["file456",["folder123"],"Subtitle.srt","text/plain",0,null,0,0,0,0,0,null,null,678]],null]"#;
+        let children = GDriveProvider::parse_folder_children_from_ivd(ivd).expect("children");
+
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].filename, "Movie.mkv");
+        assert_eq!(children[0].size, 12345);
+        assert_eq!(
+            children[0].source_url.as_deref(),
+            Some("https://drive.google.com/file/d/file123/view")
+        );
+    }
+
+    #[test]
+    fn extracts_folder_id_from_drive_folder_url() {
+        assert_eq!(
+            GDriveProvider::extract_folder_id(
+                "https://drive.google.com/drive/folders/1P6BHkRSXsfF2pCPi4ZlJ18GBtlODhX5Y?usp=sharing"
+            )
+            .as_deref(),
+            Some("1P6BHkRSXsfF2pCPi4ZlJ18GBtlODhX5Y")
+        );
+    }
+
+    #[test]
+    fn strips_google_drive_error_html() {
+        let message = GDriveProvider::strip_html(
+            r#"Sorry, you can&#39;t view or download this file at this time."#,
+        );
+        assert_eq!(message, "Sorry, you can't view or download this file at this time.");
     }
 }

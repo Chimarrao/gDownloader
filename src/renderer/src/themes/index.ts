@@ -58,7 +58,7 @@ function normalizeHexColor(color: string): string {
   const raw = color.trim()
   if (/^#[0-9a-f]{6}$/i.test(raw)) return raw
   if (/^#[0-9a-f]{3}$/i.test(raw)) {
-    const [_, r, g, b] = raw
+    const [, r, g, b] = raw
     return `#${r}${r}${g}${g}${b}${b}`
   }
   return '#5b7cff'
@@ -68,14 +68,14 @@ function mixHex(color: string, target: string, weight: number): string {
   const source = normalizeHexColor(color)
   const other = normalizeHexColor(target)
   const ratio = Math.min(1, Math.max(0, weight))
-  const toRgb = (hex: string) => ({
+  const toRgb = (hex: string): { r: number; g: number; b: number } => ({
     r: Number.parseInt(hex.slice(1, 3), 16),
     g: Number.parseInt(hex.slice(3, 5), 16),
     b: Number.parseInt(hex.slice(5, 7), 16),
   })
   const a = toRgb(source)
   const b = toRgb(other)
-  const channel = (left: number, right: number) =>
+  const channel = (left: number, right: number): string =>
     Math.round(left * (1 - ratio) + right * ratio)
       .toString(16)
       .padStart(2, '0')
@@ -132,7 +132,7 @@ export function useTheme(): UseThemeResult {
       return
     }
     const media = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = () => {
+    const onChange = (): void => {
       if (currentTheme.value === 'system') {
         applyTheme('system')
       }

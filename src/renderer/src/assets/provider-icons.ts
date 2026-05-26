@@ -9,6 +9,8 @@ import teraboxSvg from './provider-icons/terabox.svg?raw'
 import akiraboxSvg from './provider-icons/akirabox.svg?raw'
 import brfilesSvg from './provider-icons/brfiles.svg?raw'
 import katfileSvg from './provider-icons/katfile.svg?raw'
+import pixeldrainSvg from './provider-icons/pixeldrain.svg?raw'
+import bruploadSvg from './provider-icons/brupload.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -57,18 +59,11 @@ const ICONS: Record<string, ProviderIcon> = {
   },
   pixeldrain: {
     color: '#ff7b00',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
-    <rect width="36" height="36" rx="8" fill="#ff7b00"/>
-    <path d="M18 8 C18 8, 10 17, 10 22 C10 26.4 13.6 30 18 30 C22.4 30 26 26.4 26 22 C26 17 18 8 18 8Z" fill="white"/>
-    <text x="18" y="24" text-anchor="middle" font-size="10" font-weight="bold" fill="#ff7b00" font-family="sans-serif">P</text>
-  </svg>`,
+    svg: pixeldrainSvg,
   },
   brupload: {
-    color: '#16a34a',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
-      <rect width="36" height="36" rx="8" fill="#16a34a"/>
-      <text x="18" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="Arial, sans-serif">BR</text>
-    </svg>`,
+    color: '#119b62',
+    svg: bruploadSvg,
   },
   brfiles: {
     color: '#22c55e',

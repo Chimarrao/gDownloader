@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
 import vue from '@vitejs/plugin-vue'
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 function legacyOrphanGuard() {
   const forbiddenFiles = [
     'src/renderer/src/api/client.ts',

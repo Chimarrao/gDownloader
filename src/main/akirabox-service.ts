@@ -73,6 +73,7 @@ function fallbackNameFromUrl(url: string): string {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
   const jobs = new Map<string, AkiraboxDownloadJob>()
   let helperWindow: BrowserWindow | null = null
@@ -80,6 +81,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
   let pendingDownloadJobId: string | null = null
   const runExclusive = createExclusiveRunner()
 
+  // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   function getSession() {
     return session.fromPartition(AKIRABOX_PARTITION)
   }
@@ -764,50 +766,49 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
       throw new Error('Job do AkiraBox não encontrado.')
     }
 
-    await new Promise<void>(async (resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       job.startResolve = resolve
       job.startReject = reject
 
-      const clicked = await clickDownloadCandidate().catch((error) => {
-        reject(error instanceof Error ? error : new Error(String(error)))
-        return false
-      })
-
-      if (!clicked) {
-        logMain('akirabox', 'Nenhum botão de download utilizável encontrado')
-        pendingDownloadJobId = null
-        job.startResolve = undefined
-        job.startReject = undefined
-        reject(new Error('O AkiraBox não exibiu um botão de download utilizável nesta página.'))
-        return
-      }
-
-      job.driveInterval = setInterval(() => {
-        void driveDownloadStart(jobId).catch(() => undefined)
-      }, 1800)
-
-      job.showTimeout = setTimeout(() => {
-        const win = getWindow()
-        if (!win.isVisible()) {
-          void setChallengeWindowMode(true)
-          win.setTitle('AkiraBox - finalize apenas o captcha para continuar')
-          win.show()
-          win.focus()
-        }
-      }, 5000)
-
-      job.startTimeout = setTimeout(() => {
-        if (pendingDownloadJobId === jobId) {
+      void clickDownloadCandidate().then((clicked) => {
+        if (!clicked) {
+          logMain('akirabox', 'Nenhum botão de download utilizável encontrado')
           pendingDownloadJobId = null
-          clearJobTimers(job)
           job.startResolve = undefined
-          logMain('akirabox', 'Timeout aguardando o navegador iniciar o download', {
-            sourceUrl: job.sourceUrl,
-          })
-          job.startReject?.(new Error('O AkiraBox não iniciou o download a tempo.'))
           job.startReject = undefined
+          reject(new Error('O AkiraBox não exibiu um botão de download utilizável nesta página.'))
+          return
         }
-      }, 180_000)
+
+        job.driveInterval = setInterval(() => {
+          void driveDownloadStart(jobId).catch(() => undefined)
+        }, 1800)
+
+        job.showTimeout = setTimeout(() => {
+          const win = getWindow()
+          if (!win.isVisible()) {
+            void setChallengeWindowMode(true)
+            win.setTitle('AkiraBox - finalize apenas o captcha para continuar')
+            win.show()
+            win.focus()
+          }
+        }, 5000)
+
+        job.startTimeout = setTimeout(() => {
+          if (pendingDownloadJobId === jobId) {
+            pendingDownloadJobId = null
+            clearJobTimers(job)
+            job.startResolve = undefined
+            logMain('akirabox', 'Timeout aguardando o navegador iniciar o download', {
+              sourceUrl: job.sourceUrl,
+            })
+            job.startReject?.(new Error('O AkiraBox não iniciou o download a tempo.'))
+            job.startReject = undefined
+          }
+        }, 180_000)
+      }).catch((error) => {
+        reject(error instanceof Error ? error : new Error(String(error)))
+      })
     })
   }
 

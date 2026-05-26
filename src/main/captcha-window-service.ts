@@ -1,8 +1,10 @@
 import { BrowserWindow, shell } from 'electron'
-import { delay, HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
+import { configureHosterSession, configureHosterWindow, delay } from './browser-helper-common'
 import { logMain } from './debug-log'
 
 const CAPTCHA_PARTITION = 'persist:captcha-helper'
+const KATFILE_PARTITION = 'persist:katfile'
+export const BROWSER_SESSION_READY_TOKEN = '__gdownloader_browser_session_ready__'
 
 type CaptchaProvider = 'brupload' | 'rapidgator' | 'katfile' | 'unknown'
 
@@ -15,6 +17,7 @@ export interface ManualCaptchaRequest {
 interface CaptchaPageState {
   token: string
   hasCaptcha: boolean
+  hasHostDownloadSurface: boolean
 }
 
 function normalizeProvider(raw: string | undefined): CaptchaProvider {
@@ -30,7 +33,9 @@ function normalizeProvider(raw: string | undefined): CaptchaProvider {
   }
 }
 
-function createWindow(): BrowserWindow {
+function createWindow(provider: CaptchaProvider): BrowserWindow {
+  const partition = provider === 'katfile' ? KATFILE_PARTITION : CAPTCHA_PARTITION
+  configureHosterSession(partition)
   const parent =
     BrowserWindow.getFocusedWindow()
     ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
@@ -47,14 +52,14 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     title: 'Resolver captcha',
     webPreferences: {
-      partition: CAPTCHA_PARTITION,
+      partition,
       contextIsolation: true,
       sandbox: false,
       backgroundThrottling: false,
     },
   })
 
-  win.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
+  configureHosterWindow(win, partition)
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
@@ -69,10 +74,8 @@ async function readCaptchaState(win: BrowserWindow): Promise<CaptchaPageState> {
       const selectors = [
         'textarea[name="g-recaptcha-response"]',
         'textarea[name="h-captcha-response"]',
-        'textarea[name="cf-turnstile-response"]',
         'input[name="g-recaptcha-response"]',
-        'input[name="h-captcha-response"]',
-        'input[name="cf-turnstile-response"]'
+        'input[name="h-captcha-response"]'
       ]
 
       let token = ''
@@ -96,16 +99,22 @@ async function readCaptchaState(win: BrowserWindow): Promise<CaptchaPageState> {
         + (document.body?.innerText || '') + '\\n'
         + Array.from(document.querySelectorAll('iframe')).map((frame) => frame.src || '').join('\\n')
       ).toLowerCase()
+      const hasChallengeWidget = Boolean(document.querySelector(
+        '.cf-turnstile, iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"]'
+      ))
+      const hasCloudflareInterstitial =
+        /just a moment|checking your browser|verify you are human|verifique se voce e humano|verifique se você é humano/i.test(blob)
 
       return {
         token,
         hasCaptcha:
-          blob.includes('captcha')
-          || blob.includes('turnstile')
-          || blob.includes('cloudflare')
+          hasChallengeWidget
+          || hasCloudflareInterstitial
           || blob.includes('i am human')
-          || blob.includes('robot')
-          || blob.includes('verificação')
+          || blob.includes('robot'),
+        hasHostDownloadSurface: Boolean(
+          document.querySelector('#fbtn1, #m_fbtn1, #freebtn, #Send, form#btn_download, form#_mform, form[name="F1"]')
+        )
       }
     })()`,
     true
@@ -170,11 +179,16 @@ async function prepareKatfilePage(win: BrowserWindow): Promise<void> {
 async function advanceKatfileIfSolved(win: BrowserWindow): Promise<boolean> {
   return (await win.webContents.executeJavaScript(
     `(() => {
-      const tokenNode = document.querySelector('textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]')
-      const token =
-        tokenNode instanceof HTMLTextAreaElement || tokenNode instanceof HTMLInputElement
-          ? tokenNode.value.trim()
-          : ''
+      const tokenNodes = Array.from(document.querySelectorAll(
+        'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]'
+      ))
+      const token = tokenNodes
+        .map((node) => (
+          node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement
+            ? node.value.trim()
+            : ''
+        ))
+        .find((value) => value.length >= 20) || ''
       if (token.length < 20) {
         return false
       }
@@ -209,6 +223,7 @@ async function prepareProviderPage(win: BrowserWindow, request: ManualCaptchaReq
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createCaptchaWindowService() {
   async function solve(request: ManualCaptchaRequest): Promise<string | null> {
     const startUrl = request.pageUrl || request.sourceUrl || ''
@@ -222,7 +237,8 @@ export function createCaptchaWindowService() {
       sourceUrl: request.sourceUrl,
     })
 
-    const win = createWindow()
+    const provider = normalizeProvider(request.provider)
+    const win = createWindow(provider)
     let closedByUser = false
     win.once('closed', () => {
       closedByUser = true
@@ -236,7 +252,6 @@ export function createCaptchaWindowService() {
 
     const deadline = Date.now() + 8 * 60_000
     while (!closedByUser && !win.isDestroyed() && Date.now() < deadline) {
-      const provider = normalizeProvider(request.provider)
       if (provider === 'katfile') {
         await advanceKatfileIfSolved(win).catch(() => false)
       }
@@ -251,6 +266,17 @@ export function createCaptchaWindowService() {
           win.close()
         }
         return state.token
+      }
+
+      if (provider === 'katfile' && state && !state.hasCaptcha && state.hasHostDownloadSurface) {
+        logMain('captcha-window', 'Sessão do navegador liberada pelo Cloudflare', {
+          provider: request.provider,
+          pageUrl: request.pageUrl,
+        })
+        if (!win.isDestroyed()) {
+          win.close()
+        }
+        return BROWSER_SESSION_READY_TOKEN
       }
 
       await delay(500)

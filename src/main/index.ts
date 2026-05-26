@@ -404,6 +404,7 @@ function toArrayBuffer(buffer: Buffer): ArrayBuffer {
 }
 
 async function extractRarEmbedded(archivePath: string, outputDir: string): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const unrar = require('node-unrar-js') as {
     createExtractorFromFile: (options: {
       filepath: string
@@ -425,7 +426,8 @@ async function extractRarEmbedded(archivePath: string, outputDir: string): Promi
     wasmBinary,
   })
   const extracted = extractor.extract()
-  for (const _entry of extracted.files) {
+  for (const entry of extracted.files) {
+    void entry
     // percorre até o fim para garantir liberação dos recursos internos
   }
   return outputDir
@@ -1112,6 +1114,7 @@ app.whenReady().then(async () => {
 
   // Inicia o proxy local do Terabox (usa sessão browser com cookies reais)
   await new Promise<void>((resolve) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const http = require('http') as typeof import('http')
     const server = http.createServer(async (req, res) => {
       if (req.method !== 'POST') {

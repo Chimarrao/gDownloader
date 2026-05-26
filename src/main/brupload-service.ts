@@ -87,6 +87,7 @@ function parseCookiePairs(rawCookies: string[] | undefined): Array<{ name: strin
   return pairs
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createBruploadService(options: CreateBruploadServiceOptions) {
   const jobs = new Map<string, BruploadDownloadJob>()
   let helperWindow: BrowserWindow | null = null
@@ -94,6 +95,7 @@ export function createBruploadService(options: CreateBruploadServiceOptions) {
   let pendingDownloadJobId: string | null = null
   const runExclusive = createExclusiveRunner()
 
+  // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   function getSession() {
     return session.fromPartition(BRUPLOAD_PARTITION)
   }

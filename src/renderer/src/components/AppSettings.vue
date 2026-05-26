@@ -63,19 +63,31 @@
           <span class="setting-label">{{ t('speedLimitSetting') }}</span>
           <span class="setting-desc">{{ t('speedLimitDesc') }}</span>
         </div>
-        <input
-          v-model.number="settings.speedLimitKib"
-          type="number"
-          min="0"
-          step="100"
-          class="setting-input"
-          @change="save"
-        />
+        <div class="speed-limit-control">
+          <input
+            v-model.number="settings.speedLimitKib"
+            type="range"
+            min="0"
+            max="51200"
+            step="100"
+            class="setting-range"
+            @change="save"
+          />
+          <input
+            v-model.number="settings.speedLimitKib"
+            type="number"
+            min="0"
+            step="100"
+            class="setting-input speed-limit-input"
+            @change="save"
+          />
+          <span class="speed-limit-value">{{ speedLimitLabel(settings.speedLimitKib) }}</span>
+        </div>
       </div>
 
       <div class="setting-row">
         <div class="setting-info">
-          <span class="setting-label">Duplicatas</span>
+          <span class="setting-label">Duplicatas padrão</span>
           <span class="setting-desc">Ação padrão quando o arquivo já existe na fila ou no histórico</span>
         </div>
         <select v-model="settings.duplicateAction" class="setting-select" @change="save">
@@ -84,52 +96,6 @@
           <option value="rename">Salvar com sufixo _2</option>
           <option value="always_download">Baixar mesmo assim</option>
         </select>
-      </div>
-
-      <div class="setting-row setting-row-stack" data-tour="browser-capture">
-        <div class="setting-info">
-          <span class="setting-label">Interceptação local</span>
-          <span class="setting-desc">Proxy em 127.0.0.1:9667 para capturar downloads de apps no mesmo computador</span>
-        </div>
-        <div class="remote-actions">
-          <select v-model="settings.interceptMode" class="setting-select" @change="save">
-            <option value="off">Desativado</option>
-            <option value="proxy_only">Proxy local</option>
-          </select>
-          <input
-            v-model.number="settings.interceptMinSizeMb"
-            class="setting-input"
-            type="number"
-            min="0"
-            title="Tamanho mínimo em MB"
-            @change="save"
-          />
-          <button class="browse-btn" @click="installInterceptCa">Instalar CA</button>
-          <button class="browse-btn" @click="openProxySettings">Configurar proxy do sistema</button>
-        </div>
-        <div class="setting-grid">
-          <label>
-            <span>Mimes permitidos</span>
-            <textarea
-              v-model="interceptMimeText"
-              class="setting-textarea"
-              placeholder="application/zip&#10;video/"
-              @change="saveInterceptLists"
-            ></textarea>
-          </label>
-          <label>
-            <span>Domínios ignorados</span>
-            <textarea
-              v-model="interceptBlockText"
-              class="setting-textarea"
-              placeholder="bank.com&#10;accounts.google.com"
-              @change="saveInterceptLists"
-            ></textarea>
-          </label>
-        </div>
-        <p v-if="interceptInfo" class="settings-feedback">
-          Proxy: {{ interceptInfo.proxyAddr }} · CA: {{ interceptInfo.caCertPath || 'gerando no backend' }}
-        </p>
       </div>
 
       <div class="setting-row">
@@ -221,20 +187,6 @@
     <div class="settings-section">
       <h3 class="section-title">{{ t('integrationsSection') }}</h3>
 
-      <div class="setting-row" data-tour="captcha-solver">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('nopechaApiKeyLabel') }}</span>
-          <span class="setting-desc">{{ t('nopechaApiKeyDesc') }}</span>
-        </div>
-        <input
-          v-model="settings.nopechaApiKey"
-          type="password"
-          class="setting-input setting-input-wide"
-          placeholder="nopecha_xxxxxxxxx"
-          @change="save"
-        />
-      </div>
-
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">{{ t('clipboardMonitorLabel') }}</span>
@@ -272,112 +224,6 @@
             <span class="toggle-thumb"></span>
           </span>
         </label>
-      </div>
-    </div>
-
-    <!-- Network section -->
-    <div class="settings-section">
-      <h3 class="section-title">{{ t('networkSection') }}</h3>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('proxyMode') }}</span>
-          <span class="setting-desc">{{ t('proxyModeDesc') }}</span>
-        </div>
-        <select v-model="settings.proxyMode" class="setting-select" @change="save">
-          <option value="none">{{ t('proxyNone') }}</option>
-          <option value="http">{{ t('proxyHttp') }}</option>
-          <option value="socks5">{{ t('proxySocks5') }}</option>
-          <option value="tor">{{ t('proxyTor') }}</option>
-        </select>
-      </div>
-
-      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('proxyHost') }}</span>
-          <span class="setting-desc">{{ t('proxyHostDesc') }}</span>
-        </div>
-        <input
-          v-model="settings.proxyHost"
-          class="setting-input setting-input-wide"
-          placeholder="proxy.example.com"
-          @change="save"
-        />
-      </div>
-
-      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('proxyPort') }}</span>
-          <span class="setting-desc">{{ t('proxyPortDesc') }}</span>
-        </div>
-        <input
-          v-model.number="settings.proxyPort"
-          type="number"
-          min="1"
-          max="65535"
-          class="setting-input"
-          @change="save"
-        />
-      </div>
-
-      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('proxyUsername') }}</span>
-          <span class="setting-desc">{{ t('proxyUsernameDesc') }}</span>
-        </div>
-        <input
-          v-model="settings.proxyUsername"
-          class="setting-input setting-input-wide"
-          placeholder="username (optional)"
-          @change="save"
-        />
-      </div>
-
-      <div v-if="settings.proxyMode !== 'none' && settings.proxyMode !== 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('proxyPassword') }}</span>
-          <span class="setting-desc">{{ t('proxyPasswordDesc') }}</span>
-        </div>
-        <input
-          v-model="settings.proxyPassword"
-          type="password"
-          class="setting-input setting-input-wide"
-          placeholder="password (optional)"
-          @change="save"
-        />
-      </div>
-
-      <div v-if="settings.proxyMode === 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('torNote') }}</span>
-          <span class="setting-desc">{{ t('torNoteDesc') }}</span>
-        </div>
-        <div></div>
-      </div>
-
-      <div v-if="settings.proxyMode === 'tor'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('startTor') }}</span>
-          <span class="setting-desc">{{ t('startTorDesc') }}</span>
-        </div>
-        <label class="toggle">
-          <input
-            v-model="settings.startTor"
-            type="checkbox"
-            @change="save"
-          />
-          <span class="toggle-track">
-            <span class="toggle-thumb"></span>
-          </span>
-        </label>
-      </div>
-
-      <div v-if="settings.proxyMode !== 'none'" class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('testConnection') }}</span>
-          <span class="setting-desc">{{ t('testConnectionDesc') }}</span>
-        </div>
-        <button class="browse-btn" @click="testConnection">{{ t('test') }}</button>
       </div>
     </div>
 
@@ -485,53 +331,11 @@
         </div>
         <label class="toggle">
           <input type="checkbox" v-model="settings.useReconnectOnRateLimit" @change="save" />
-          <span class="toggle-track"></span>
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
         </label>
       </div>
-
-      <template v-if="settings.useReconnectOnRateLimit">
-        <div class="setting-row">
-          <div class="setting-label-wrap">
-            <span class="setting-label">{{ t('reconnectMethod') }}</span>
-            <span class="setting-desc">{{ t('reconnectMethodDesc') }}</span>
-          </div>
-          <select class="setting-select" v-model="settings.reconnectMethod" @change="save">
-            <option value="none">{{ t('reconnectNone') }}</option>
-            <option value="router_script">{{ t('reconnectRouterScript') }}</option>
-            <option value="curl_command">{{ t('reconnectCurlCommand') }}</option>
-          </select>
-        </div>
-
-        <div class="setting-row" v-if="settings.reconnectMethod !== 'none'">
-          <div class="setting-label-wrap">
-            <span class="setting-label">{{ t('reconnectRouterIp') }}</span>
-            <span class="setting-desc">{{ t('reconnectRouterIpDesc') }}</span>
-          </div>
-          <input
-            class="setting-input"
-            type="text"
-            v-model="settings.routerIp"
-            placeholder="192.168.1.1"
-            @change="save"
-          />
-        </div>
-
-        <div class="setting-row" v-if="settings.reconnectMethod !== 'none'">
-          <div class="setting-label-wrap">
-            <span class="setting-label">{{ t('reconnectCommand') }}</span>
-            <span class="setting-desc">{{ t('reconnectCommandDesc') }}</span>
-          </div>
-          <input
-            class="setting-input"
-            type="text"
-            v-model="settings.reconnectCommand"
-            :placeholder="settings.reconnectMethod === 'router_script'
-              ? 'curl -s http://{router_ip}/reboot'
-              : 'curl -X POST http://{router_ip}/api/reconnect'"
-            @change="save"
-          />
-        </div>
-      </template>
     </div>
 
     <!-- Automation section -->
@@ -669,7 +473,7 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadActionTrigger: 'queue_empty',
   postDownloadCommand: '',
   postDownloadWebhookUrl: '',
-  duplicateAction: 'ask',
+  duplicateAction: 'skip',
   uiDensity: 'comfortable',
   interceptMode: 'off',
   interceptMinSizeMb: 1,
@@ -696,11 +500,8 @@ let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
 const remoteInfo = ref<Awaited<ReturnType<typeof window.api.remoteAccess.info>> | null>(null)
-const interceptInfo = ref<Awaited<ReturnType<typeof window.api.intercept.status>> | null>(null)
 const archivePasswords = ref<ArchivePassword[]>([])
 const archivePasswordImport = ref('')
-const interceptMimeText = ref('')
-const interceptBlockText = ref('')
 
 function setSaveFeedback(message: string, error = false): void {
   saveFeedback.value = message
@@ -718,7 +519,6 @@ onMounted(async () => {
   const saved = await window.api.settings.load().catch(() => null)
   if (saved) {
     Object.assign(settings, saved)
-    syncInterceptText()
     setLocale(saved.locale)
     if (themeOptions.some((option) => option.id === saved.theme)) {
       setTheme(saved.theme as ThemeId)
@@ -727,7 +527,6 @@ onMounted(async () => {
     }
     applyUiPreferences(saved)
     await refreshRemoteInfo()
-    await refreshInterceptInfo()
     await loadArchivePasswords()
   }
 })
@@ -736,9 +535,7 @@ async function save(): Promise<void> {
   try {
     const persisted = await window.api.settings.save({ ...settings })
     Object.assign(settings, persisted)
-    syncInterceptText()
     await refreshRemoteInfo()
-    await refreshInterceptInfo()
     setSaveFeedback(t('settingsSaved'))
   } catch (error) {
     setSaveFeedback(
@@ -748,35 +545,8 @@ async function save(): Promise<void> {
   }
 }
 
-function syncInterceptText(): void {
-  interceptMimeText.value = (settings.interceptMimeAllowlist ?? []).join('\n')
-  interceptBlockText.value = (settings.interceptDomainBlocklist ?? []).join('\n')
-}
-
-function lines(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-}
-
-async function saveInterceptLists(): Promise<void> {
-  settings.interceptMimeAllowlist = lines(interceptMimeText.value)
-  settings.interceptDomainBlocklist = lines(interceptBlockText.value)
-  await save()
-}
-
-async function refreshInterceptInfo(): Promise<void> {
-  interceptInfo.value = await window.api.intercept.status().catch(() => null)
-}
-
-async function installInterceptCa(): Promise<void> {
-  await window.api.intercept.installCa().catch(() => false)
-  await refreshInterceptInfo()
-}
-
-async function openProxySettings(): Promise<void> {
-  await window.api.intercept.openProxySettings().catch(() => false)
+function speedLimitLabel(value: number | undefined): string {
+  return value && value > 0 ? `${value} KiB/s` : 'Sem limite'
 }
 
 async function chooseDirectory(): Promise<void> {
@@ -813,18 +583,6 @@ function resetAccentColor(): void {
   settings.accentColor = undefined
   applyUiPreferences(settings)
   void save()
-}
-
-async function testConnection(): Promise<void> {
-  try {
-    const result = await window.api.config.testProxy()
-    setSaveFeedback(`IP atual: ${result.ip}`)
-  } catch (error) {
-    setSaveFeedback(
-      error instanceof Error ? error.message : String(error),
-      true,
-    )
-  }
 }
 
 async function refreshRemoteInfo(): Promise<void> {
@@ -881,7 +639,7 @@ async function forgetArchivePassword(password: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 28px;
-  max-width: 640px;
+  max-width: 960px;
   width: 100%;
   min-height: 0;
   overflow-y: auto;
@@ -1137,13 +895,37 @@ async function forgetArchivePassword(password: string): Promise<void> {
 }
 
 .setting-input-wide {
-  width: 220px;
+  width: min(420px, 42vw);
   font-family: 'JetBrains Mono', 'Courier New', monospace;
 }
 
 .setting-select {
   cursor: pointer;
   min-width: 140px;
+}
+
+.speed-limit-control {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 110px auto;
+  align-items: center;
+  gap: 10px;
+  width: min(520px, 52vw);
+}
+
+.setting-range {
+  width: 100%;
+  accent-color: var(--accent-color);
+}
+
+.speed-limit-input {
+  width: 110px;
+}
+
+.speed-limit-value {
+  min-width: 84px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .setting-select option {

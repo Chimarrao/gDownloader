@@ -5,8 +5,9 @@ import { dirname } from 'path'
 import { BrowserWindow, session } from 'electron'
 import {
   createExclusiveRunner,
+  configureHosterSession,
+  configureHosterWindow,
   delay,
-  HOSTER_BROWSER_USER_AGENT,
   looksLikeFilename,
   parseHumanSize,
   sanitizeFilename,
@@ -56,6 +57,7 @@ function fallbackNameFromUrl(url: string): string {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createKatfileService() {
   const jobs = new Map<string, KatfileDownloadJob>()
   let helperWindow: BrowserWindow | null = null
@@ -68,6 +70,7 @@ export function createKatfileService() {
       return helperWindow
     }
 
+    configureHosterSession(KATFILE_PARTITION)
     helperWindow = new BrowserWindow({
       show: false,
       width: 1280,
@@ -82,7 +85,7 @@ export function createKatfileService() {
       },
     })
 
-    helperWindow.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
+    configureHosterWindow(helperWindow, KATFILE_PARTITION)
     helperWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     helperWindow.on('closed', () => {
       helperWindow = null
@@ -97,11 +100,14 @@ export function createKatfileService() {
         const bodyText = (document.body?.innerText || '').replace(/\\u00a0/g, ' ').trim()
         const title = (document.title || '').trim()
         const lowerBlob = (title + '\\n' + bodyText + '\\n' + document.documentElement.outerHTML.slice(0, 16000)).toLowerCase()
+        const hasChallengeWidget = Boolean(document.querySelector(
+          '.cf-turnstile, iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"], textarea[name="cf-turnstile-response"], textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"]'
+        ))
         const hasCaptcha =
-          lowerBlob.includes('turnstile')
-          || lowerBlob.includes('captcha')
-          || lowerBlob.includes('cloudflare')
-          || Boolean(document.querySelector('.cf-turnstile, iframe[src*="turnstile"], textarea[name="cf-turnstile-response"], textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"]'))
+          hasChallengeWidget
+          || lowerBlob.includes('just a moment')
+          || lowerBlob.includes('checking your browser')
+          || lowerBlob.includes('verify you are human')
 
         const hasDownloadForm = Boolean(
           document.querySelector('form#_mform')
@@ -229,7 +235,7 @@ export function createKatfileService() {
     await win.webContents.executeJavaScript(
       `(() => {
         const tokenNodes = Array.from(document.querySelectorAll(
-          'textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"], textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]'
+          'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]'
         ))
 
         const token = tokenNodes
@@ -244,7 +250,9 @@ export function createKatfileService() {
           document.querySelector(
             '.cf-turnstile, iframe[src*="turnstile"], iframe[src*="challenges.cloudflare.com"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"]'
           )
-        ) || /cloudflare|captcha|verification|verifica/i.test(pageText)
+        )
+        const hasCloudflareInterstitial =
+          /just a moment|checking your browser|verify you are human|verifique se voce e humano|verifique se você é humano/i.test(pageText)
 
         const submittedFlag = '__gdlKatfileSubmitted'
         const clickCountKey = '__gdlKatfileClickCount'
@@ -276,7 +284,7 @@ export function createKatfileService() {
           return
         }
 
-        if (hasChallengeWidget) {
+        if (hasChallengeWidget || hasCloudflareInterstitial) {
           return
         }
 
@@ -477,7 +485,7 @@ export function createKatfileService() {
           job.startReject?.(new Error('O Katfile não iniciou o download a tempo.'))
           job.startReject = undefined
         }
-      }, 180_000)
+      }, 8 * 60_000)
     })
   }
 

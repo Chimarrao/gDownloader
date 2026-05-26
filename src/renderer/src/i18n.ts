@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, type ComputedRef } from 'vue'
 
 import ptBR from './locales/pt-BR.json'
 import enUS from './locales/en-US.json'
@@ -32,7 +32,7 @@ export function setLocale(nextLocale: string | undefined | null): void {
   locale.value = (supported.includes(nextLocale as LocaleCode) ? nextLocale : 'pt-BR') as LocaleCode
 }
 
-export function useI18n() {
+export function useI18n(): { t: (key: MessageKey) => string; locale: ComputedRef<LocaleCode>; setLocale: typeof setLocale } {
   const t = (key: MessageKey): string => messages[locale.value][key]
   const currentLocale = computed(() => locale.value)
   return { t, locale: currentLocale, setLocale }

@@ -79,7 +79,6 @@
         @scroll="onListScroll"
       >
       <div
-        v-if="items.length === 0"
         v-for="i in (skeletonCount ?? 0)"
         :key="`skeleton-${i}`"
         class="download-card skeleton-card"
@@ -92,50 +91,6 @@
       <div v-if="items.length > 0" class="list-toolbar">
         <span class="list-count">{{ orderedItems.length }} item(ns) na sessão</span>
         <div class="toolbar-actions">
-          <button
-            class="toolbar-btn"
-            title="Criar pacote"
-            @click="createPackage"
-          >
-            Novo pacote
-          </button>
-          <div class="density-toggle" title="Densidade da lista">
-            <button
-              v-for="density in densityOptions"
-              :key="density.value"
-              class="density-btn"
-              :class="{ active: uiDensity === density.value }"
-              @click="setDensity(density.value)"
-            >
-              <i :class="density.icon"></i>
-            </button>
-          </div>
-          <button class="toolbar-btn" title="Alternar painel da fila (Q)" @click="toggleQueuePanel">
-            Fila futura
-          </button>
-          <div class="columns-menu-wrap">
-            <button class="toolbar-btn" title="Mostrar/esconder colunas" @click="showColumnsMenu = !showColumnsMenu">
-              Colunas
-            </button>
-            <div v-if="showColumnsMenu" class="columns-menu">
-              <label
-                v-for="column in columnOrder"
-                :key="column"
-                class="column-option"
-                draggable="true"
-                @dragstart="draggedColumn = column"
-                @dragover.prevent
-                @drop="dropColumn(column)"
-              >
-                <input
-                  type="checkbox"
-                  :checked="visibleColumns.includes(column)"
-                  @change="toggleColumn(column)"
-                />
-                <span>{{ columnLabel(column) }}</span>
-              </label>
-            </div>
-          </div>
           <label class="toolbar-sort">
             <span>Status</span>
             <select v-model="filterStatuses" class="toolbar-select" multiple size="1" @change="persistFilters">
@@ -492,7 +447,12 @@
               <div v-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
                 <div><span>ID</span><strong>{{ item.id }}</strong></div>
                 <div><span>Host</span><strong>{{ moduleLabel(item.moduleId) }}</strong></div>
-                <div><span>Status</span><strong>{{ statusTextValue(item) }}</strong></div>
+                <div>
+                  <span>Status</span>
+                  <strong class="status-detail-value" :style="{ color: statusColor(item.status) }">
+                    {{ statusTextValue(item) }} · {{ statusColor(item.status) }}
+                  </strong>
+                </div>
                 <div><span>Tamanho</span><strong>{{ formatBytes(item.size) }}</strong></div>
                 <div><span>Speed</span><strong>{{ formatSpeed(effectiveSpeedValue(item)) }}</strong></div>
                 <div><span>ETA</span><strong>{{ effectiveEtaValue(item) > 0 ? formatEta(effectiveEtaValue(item)) : '-' }}</strong></div>
@@ -692,6 +652,7 @@ import {
   isTerminal,
   isWaitingRetry,
   retryCountdown,
+  STATUS_COLORS,
   statusText,
   type DownloadSortMode,
 } from '../utils/download-display'
@@ -734,10 +695,7 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; itemId: string
   itemId: null,
 })
 const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
-const columnOrder = ref<string[]>([...defaultColumns])
 const visibleColumns = ref<string[]>([...defaultColumns])
-const showColumnsMenu = ref(false)
-const draggedColumn = ref<string | null>(null)
 const filterStatuses = ref<string[]>([])
 const filterHosts = ref<string[]>([])
 const filterPackages = ref<string[]>([])
@@ -763,6 +721,7 @@ const itemIndexById = ref<Record<string, number>>({})
 const speedSamples = ref<Record<string, number[]>>({})
 const captchaSolvedIds = ref<Set<string>>(new Set())
 const sparklineCanvases = new Map<string, HTMLCanvasElement>()
+const BROWSER_SESSION_READY_TOKEN = '__gdownloader_browser_session_ready__'
 // Mutex: at most one hydrate() runs at a time; hydrateQueued ensures one follow-up
 // run executes after the in-flight one finishes.
 let hydrateQueued = false
@@ -773,11 +732,6 @@ const nowTick = ref(Date.now())
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 const sortOptions = DOWNLOAD_SORT_OPTIONS
-const densityOptions = [
-  { value: 'comfortable' as const, icon: 'pi pi-bars' },
-  { value: 'compact' as const, icon: 'pi pi-list' },
-  { value: 'dense' as const, icon: 'pi pi-align-justify' },
-]
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
 
@@ -819,9 +773,9 @@ const orderedItems = computed(() =>
     return compareDownloads(left, right, sortMode.value, nowTick.value)
   })
 )
-const packageStatsMap = computed(() => {
+const packageStatsMap = computed<Map<string, { total: number; active: number; failed: number; complete: number }>>(() => {
   const stats = new Map<string, { total: number; active: number; failed: number; complete: number }>()
-  const ensure = (id: string) => {
+  const ensure = (id: string): { total: number; active: number; failed: number; complete: number } => {
     if (!stats.has(id)) stats.set(id, { total: 0, active: 0, failed: 0, complete: 0 })
     return stats.get(id)!
   }
@@ -927,50 +881,6 @@ function contextCan(action: string): boolean {
 
 function hasColumn(column: string): boolean {
   return visibleColumns.value.includes(column)
-}
-
-function columnLabel(column: string): string {
-  return {
-    status: 'Status',
-    name: 'Nome',
-    size: 'Tamanho',
-    progress: 'Progresso',
-    speed: 'Speed',
-    eta: 'ETA',
-    host: 'Host',
-    package: 'Pacote',
-    added: 'Adicionado',
-    completed: 'Concluído',
-    hash: 'Hash',
-  }[column] ?? column
-}
-
-async function persistVisibleColumns(): Promise<void> {
-  const settings = await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  await window.api.settings.save({
-    ...settings,
-    visibleColumns: columnOrder.value.filter((column) => visibleColumns.value.includes(column)),
-  }).catch(() => null)
-}
-
-function toggleColumn(column: string): void {
-  if (visibleColumns.value.includes(column)) {
-    visibleColumns.value = visibleColumns.value.filter((entry) => entry !== column)
-  } else {
-    visibleColumns.value = [...visibleColumns.value, column]
-  }
-  void persistVisibleColumns()
-}
-
-function dropColumn(target: string): void {
-  if (!draggedColumn.value || draggedColumn.value === target) return
-  const next = columnOrder.value.filter((column) => column !== draggedColumn.value)
-  const targetIndex = next.indexOf(target)
-  next.splice(targetIndex, 0, draggedColumn.value)
-  columnOrder.value = next
-  draggedColumn.value = null
-  void persistVisibleColumns()
 }
 
 function formatDateTime(timestamp: number): string {
@@ -1107,13 +1017,6 @@ function clearListFilters(): void {
   void persistFilters()
 }
 
-async function setDensity(value: 'comfortable' | 'compact' | 'dense'): Promise<void> {
-  uiDensity.value = value
-  const settings = await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  await window.api.settings.save({ ...settings, uiDensity: value }).catch(() => null)
-}
-
 function toggleQueuePanel(): void {
   queuePanelCollapsed.value = !queuePanelCollapsed.value
 }
@@ -1207,10 +1110,6 @@ onMounted(async () => {
   if (Array.isArray(settings?.visibleColumns) && settings.visibleColumns.length > 0) {
     const known = new Set(defaultColumns)
     visibleColumns.value = settings.visibleColumns.filter((column) => known.has(column))
-    columnOrder.value = [
-      ...settings.visibleColumns.filter((column) => known.has(column)),
-      ...defaultColumns.filter((column) => !settings.visibleColumns?.includes(column)),
-    ]
   }
   filterStatuses.value = settings?.lastFilters?.statuses ?? []
   filterHosts.value = settings?.lastFilters?.hosts ?? []
@@ -1377,7 +1276,7 @@ onMounted(async () => {
         if (outputPath) {
           void window.api.settings.load().then((settings) => {
             if (!settings.autoExtract) return
-            const passwords = (settings as any).passwordList ?? []
+            const passwords = (settings as { passwordList?: string[] }).passwordList ?? []
             return window.api.archive.autoExtract(outputPath, passwords).then((result) => {
               if (result.success && result.outputDir) {
                 void window.api.system.notify('Extração concluída', result.outputDir).catch(() => null)
@@ -1545,15 +1444,6 @@ async function hydrate(): Promise<void> {
       if (isMounted) void hydrate()
     }
   }
-}
-
-async function createPackage(): Promise<void> {
-  const name = window.prompt('Nome do pacote')
-  if (!name?.trim()) return
-  const palette = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2']
-  const color = palette[packages.value.length % palette.length]
-  const created = await window.api.packages.create({ name: name.trim(), color }).catch(() => null)
-  if (created) packages.value = [created, ...packages.value]
 }
 
 async function assignPackage(item: DownloadItem, packageId: string): Promise<void> {
@@ -1892,6 +1782,10 @@ function statusTextValue(item: DownloadItem): string {
   return statusText(item, nowTick.value)
 }
 
+function statusColor(status: DownloadItem['status']): string {
+  return STATUS_COLORS[status] ?? '#64748b'
+}
+
 function actionsFor(item: DownloadItem): Record<string, boolean> {
   return getDownloadActions(item)
 }
@@ -1963,7 +1857,7 @@ function moduleLabel(moduleId: string): string {
   return modulesById.value[moduleId]?.name ?? moduleId
 }
 
-function getIcon(moduleId: string) {
+function getIcon(moduleId: string): ReturnType<typeof getProviderIcon> {
   return getProviderIcon(moduleId)
 }
 
@@ -2002,7 +1896,11 @@ async function openCaptchaWindow(item: DownloadItem): Promise<void> {
       return
     }
 
-    await window.api.captcha.submit(item.id, token).catch(() => null)
+    if (token === BROWSER_SESSION_READY_TOKEN && item.moduleId === 'katfile') {
+      await window.api.downloads.force(item.id).catch(() => null)
+    } else {
+      await window.api.captcha.submit(item.id, token).catch(() => null)
+    }
     captchaSolvedIds.value = new Set([...captchaSolvedIds.value, item.id])
     if (activeCaptchaId.value === item.id) {
       activeCaptchaId.value = null
@@ -2324,13 +2222,19 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 .toolbar-select {
   border: 1px solid var(--border-color);
-  background: var(--bg-card);
-  color: var(--text-primary);
+  background: #ffffff;
+  color: #111827;
   border-radius: 10px;
   padding: 8px 10px;
   font-size: 12px;
   font-weight: 600;
   outline: none;
+  color-scheme: light;
+}
+
+.toolbar-select option {
+  background: #ffffff;
+  color: #111827;
 }
 
 .toolbar-btn {
@@ -2724,6 +2628,10 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   font-weight: 700;
   letter-spacing: 0.3px;
   text-transform: uppercase;
+}
+
+.status-detail-value {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
 }
 
 .badge-pending {

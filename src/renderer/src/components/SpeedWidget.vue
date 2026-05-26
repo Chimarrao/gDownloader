@@ -1,5 +1,5 @@
 <template>
-  <div class="speed-widget" :title="hostBreakdownTitle" @click="expanded = !expanded">
+  <div class="speed-widget" :title="widgetTitle" @click="expanded = !expanded">
     <svg class="speed-gauge" viewBox="0 0 64 40" aria-hidden="true">
       <path class="gauge-track" d="M10 34 A22 22 0 0 1 54 34" />
       <path class="gauge-fill" d="M10 34 A22 22 0 0 1 54 34" :style="{ strokeDashoffset: gaugeOffset }" />
@@ -105,6 +105,14 @@ const topHost = computed(() => {
 const hostBreakdownTitle = computed(() => {
   if (hostEntries.value.length === 0) return 'Sem tráfego por host'
   return hostEntries.value.map(([host, speed]) => `${host}: ${formatSpeed(speed)}`).join('\n')
+})
+
+const widgetTitle = computed(() => {
+  return [
+    'Medidor de velocidade: mostra a velocidade atual em relação ao pico recente da sessão.',
+    `Referência atual: ${formatSpeed(maxReference.value)}.`,
+    hostBreakdownTitle.value,
+  ].join('\n')
 })
 </script>
 

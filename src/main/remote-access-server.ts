@@ -40,6 +40,7 @@ interface DownloadRow {
   dest_path?: string
 }
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const QRCode = require('qrcode') as {
   toDataURL: (text: string, options?: Record<string, unknown>) => Promise<string>
 }
@@ -182,6 +183,7 @@ async function qrCodeDataUrl(text: string): Promise<string> {
   })
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
   let server: Server | null = null
   let activeSettings: RemoteAccessSettings = normalizeRemoteAccess(options.getSettings())

@@ -56,6 +56,7 @@ export function parseRustReadyPort(chunk: string): number | null {
   return null
 }
 
+// eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 export function createBackendRuntime(options: BackendRuntimeOptions) {
   let backend: ChildProcess | null = null
   let port: number | null = null

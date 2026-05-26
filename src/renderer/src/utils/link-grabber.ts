@@ -5,7 +5,10 @@ export function normalizeUrlCandidate(line: string): string {
   if (!match) return ''
   try {
     const parsed = new URL(match[0].replace(/[),.;]+$/, ''))
-    parsed.hash = ''
+    const isMega = /(^|\.)mega\.(nz|co\.nz)$/i.test(parsed.hostname)
+    if (!isMega) {
+      parsed.hash = ''
+    }
     if (parsed.pathname !== '/' && parsed.pathname.endsWith('/')) {
       parsed.pathname = parsed.pathname.replace(/\/+$/, '')
     }
@@ -33,4 +36,3 @@ export function truncateUrl(url: string): string {
     return url.length > 50 ? `${url.slice(0, 47)}...` : url
   }
 }
-
