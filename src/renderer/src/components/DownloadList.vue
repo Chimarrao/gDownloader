@@ -1,7 +1,7 @@
 <template>
   <div class="download-list" :class="[`density-${uiDensity}`, { 'queue-panel-collapsed': queuePanelCollapsed }]">
     <!-- Empty state -->
-    <div v-if="items.length === 0 && (skeletonCount ?? 0) === 0" class="empty-state">
+    <div v-if="items.length === 0 && skeletonCount === 0" class="empty-state">
       <div class="empty-icon">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" width="48" height="48">
           <circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
@@ -9,8 +9,10 @@
           <path d="M16 36 H32" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
       </div>
-      <p class="empty-title">Nenhum download ativo</p>
-      <p class="empty-sub">Cole um link, arraste um arquivo ou importe um container para começar</p>
+      <p class="empty-title">{{ (skeletonCount ?? 0) > 0 ? 'Preparando download' : 'Nenhum download ativo' }}</p>
+      <p class="empty-sub">
+        {{ (skeletonCount ?? 0) > 0 ? 'Lendo metadados e adicionando à fila...' : 'Cole um link, arraste um arquivo ou importe um container para começar' }}
+      </p>
       <div class="empty-actions">
         <button class="empty-primary" @click="$emit('open-grabber')">
           <i class="pi pi-link"></i>
@@ -27,69 +29,41 @@
       </div>
     </div>
 
-    <aside v-if="items.length > 0" class="package-sidebar" aria-label="Pacotes">
+    <aside v-if="items.length > 0" class="package-sidebar" aria-label="Tags">
       <button
         class="package-node"
         :class="{ active: selectedPackageId === 'all' }"
         @click="selectedPackageId = 'all'"
-        @dragover.prevent
-        @drop="assignDraggedToPackage('')"
       >
         <span class="package-status-dot ok"></span>
         <span class="package-node-label">Todos</span>
         <span class="package-node-count">{{ items.length }}</span>
       </button>
       <button
+        v-for="tag in typeTags"
+        :key="tag.id"
         class="package-node"
-        :class="{ active: selectedPackageId === 'unassigned' }"
-        @click="selectedPackageId = 'unassigned'"
-        @dragover.prevent
-        @drop="assignDraggedToPackage('')"
+        :class="{ active: selectedPackageId === tag.id }"
+        @click="selectedPackageId = tag.id"
       >
-        <span class="package-status-dot" :class="packageAggregateClass('')"></span>
-        <span class="package-node-label">Sem pacote</span>
-        <span class="package-node-count">{{ packageStats('').total }}</span>
+        <span class="package-color-dot" :style="{ backgroundColor: tag.color }"></span>
+        <span class="package-node-label">{{ tag.label }}</span>
+        <span class="package-node-count">{{ tag.count }}</span>
       </button>
-      <div class="package-tree">
-        <button
-          v-for="pkg in packages"
-          :key="pkg.id"
-          class="package-node"
-          :class="{ active: selectedPackageId === pkg.id }"
-          @click="selectedPackageId = pkg.id"
-          @dragover.prevent
-          @drop="assignDraggedToPackage(pkg.id)"
-        >
-          <span
-            class="package-color-dot"
-            :style="{ backgroundColor: pkg.color }"
-          ></span>
-          <span class="package-node-label">{{ pkg.name }}</span>
-          <span class="package-status-dot" :class="packageAggregateClass(pkg.id)"></span>
-          <span class="package-node-count">{{ packageStats(pkg.id).total }}</span>
-        </button>
-      </div>
     </aside>
 
     <!-- Download items -->
       <div
-        v-if="items.length > 0 || (skeletonCount ?? 0) > 0"
+        v-if="items.length > 0 || skeletonCount > 0"
         ref="itemsContainerRef"
         class="items-container"
         @scroll="onListScroll"
       >
-      <div
-        v-for="i in (skeletonCount ?? 0)"
-        :key="`skeleton-${i}`"
-        class="download-card skeleton-card"
-      >
-        <div class="skeleton-line skeleton-title"></div>
-        <div class="skeleton-line skeleton-progress"></div>
-        <div class="skeleton-line skeleton-meta"></div>
-      </div>
-
-      <div v-if="items.length > 0" class="list-toolbar">
-        <span class="list-count">{{ orderedItems.length }} item(ns) na sessão</span>
+      <div v-if="items.length > 0 || skeletonCount > 0" class="list-toolbar">
+        <span class="list-count">
+          {{ orderedItems.length }} item(ns)
+          <template v-if="(skeletonCount ?? 0) > 0"> · adicionando {{ skeletonCount }}</template>
+        </span>
         <div class="toolbar-actions">
           <label class="toolbar-sort">
             <span>Status</span>
@@ -118,18 +92,14 @@
           >
             Limpar filtros
           </button>
-          <label class="toolbar-sort">
-            <span>Ordenar</span>
-            <select v-model="sortMode" class="toolbar-select">
-              <option
-                v-for="option in sortOptions"
-                :key="option.value"
-                :value="option.value"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </label>
+          <button
+            class="toolbar-btn sort-cycle-btn"
+            :title="`Ordenar por ${currentSortLabel}`"
+            @click="cycleSortMode"
+          >
+            <i class="pi pi-sort-alt"></i>
+            {{ currentSortLabel }}
+          </button>
           <button
             class="toolbar-btn"
             :disabled="finishedCount === 0"
@@ -141,15 +111,21 @@
         </div>
       </div>
       <div class="items-stack">
+        <div
+          v-for="n in skeletonCount"
+          :key="`skeleton-${n}`"
+          class="skeleton-card"
+        >
+          <div class="skeleton-line skeleton-title"></div>
+          <div class="skeleton-line skeleton-progress"></div>
+          <div class="skeleton-line skeleton-meta"></div>
+        </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <div
           v-for="item in visibleItems"
           :key="item.id"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id) }]"
-          draggable="true"
-          @dragstart="draggedDownloadId = item.id"
-          @dragend="draggedDownloadId = null"
           @contextmenu.prevent="openContextMenu(item, $event)"
           @click="toggleDetailsFromCard(item, $event)"
         >
@@ -207,7 +183,7 @@
               ></div>
             </div>
 
-            <div class="row-rich-indicators">
+            <div class="item-meta">
               <canvas
                 v-if="hasSpeedSparkline(item)"
                 :ref="setSparklineCanvas(item.id)"
@@ -216,19 +192,6 @@
                 height="22"
                 aria-hidden="true"
               ></canvas>
-              <span
-                v-for="badge in rowBadges(item)"
-                :key="`${item.id}:${badge.label}`"
-                class="row-rich-badge"
-                :class="badge.kind"
-                :title="badge.title"
-              >
-                {{ badge.label }}
-              </span>
-            </div>
-
-            <!-- Row 3: meta info -->
-            <div class="item-meta">
               <span class="meta-percent">{{ item.percent }}%</span>
 
               <template v-if="item.status === 'downloading' && hasColumn('speed')">
@@ -345,6 +308,16 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-size">{{ item.expectedHash.algorithm.toUpperCase() }}</span>
               </template>
+              <span
+                v-for="badge in rowBadges(item)"
+                :key="`${item.id}:${badge.label}`"
+                class="row-rich-badge"
+                :class="badge.kind"
+                :title="badge.title"
+              >
+                <span v-if="badge.kind === 'tor'" class="row-tor-icon" v-html="torIconSvg"></span>
+                {{ badge.label }}
+              </span>
             </div>
 
             <!-- ErrorState for specific error types -->
@@ -366,17 +339,6 @@
                 { label: 'Tentar novamente', icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
               ]"
             />
-
-            <!-- Row 5: output path (clickable) -->
-            <div
-              v-if="item.outputPath"
-              class="item-path"
-              :title="item.outputPath"
-              @click="openFolder(item.outputPath!)"
-            >
-              <i class="pi pi-folder" style="font-size: 10px;"></i>
-              {{ item.outputPath }}
-            </div>
 
             <div
               v-show="item.isFolder && isExpanded(item.id) && (item.children?.length ?? 0) > 0"
@@ -444,7 +406,54 @@
                 </button>
               </div>
 
-              <div v-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
+              <div v-if="activeDetailTab(item.id) === 'files'" class="detail-files-pane">
+                <div class="folder-tree-header">
+                  <span>Arquivos</span>
+                  <span>{{ item.children?.length ?? 0 }} item(ns)</span>
+                </div>
+                <div v-if="!(item.children?.length)" class="queue-empty">Nenhum arquivo interno foi informado pelo provedor.</div>
+                <div
+                  v-for="node in childNodes(item.children)"
+                  :key="`${item.id}:detail:${node.key}`"
+                  class="child-row"
+                  :class="{ 'is-folder-row': node.isFolder }"
+                >
+                  <div class="child-main">
+                    <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
+                      <span
+                        class="child-icon"
+                        :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
+                        :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
+                        role="img"
+                      ></span>
+                      <span class="child-name-label">{{ node.name }}</span>
+                      <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
+                    </div>
+                    <div class="child-meta">
+                      <span class="child-status">{{ childStatusText(node.status) }}</span>
+                      <span class="meta-sep">·</span>
+                      <span>{{ childPercent(node) }}%</span>
+                      <template v-if="(node.speedBps ?? 0) > 0">
+                        <span class="meta-sep">·</span>
+                        <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
+                      </template>
+                      <template v-if="(node.etaSec ?? 0) > 0">
+                        <span class="meta-sep">·</span>
+                        <span>{{ formatEta(node.etaSec ?? 0) }}</span>
+                      </template>
+                    </div>
+                    <div class="child-track">
+                      <div
+                        class="child-fill"
+                        :style="{ width: `${childPercent(node)}%` }"
+                      ></div>
+                    </div>
+                  </div>
+                  <span class="child-size">{{ formatBytes(node.size) }}</span>
+                </div>
+              </div>
+
+              <div v-else-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
                 <div><span>ID</span><strong>{{ item.id }}</strong></div>
                 <div><span>Host</span><strong>{{ moduleLabel(item.moduleId) }}</strong></div>
                 <div>
@@ -456,8 +465,23 @@
                 <div><span>Tamanho</span><strong>{{ formatBytes(item.size) }}</strong></div>
                 <div><span>Speed</span><strong>{{ formatSpeed(effectiveSpeedValue(item)) }}</strong></div>
                 <div><span>ETA</span><strong>{{ effectiveEtaValue(item) > 0 ? formatEta(effectiveEtaValue(item)) : '-' }}</strong></div>
+                <div><span>Rede</span><strong>{{ networkRouteLabel(item) }}</strong></div>
+                <div v-if="item.networkRoute?.isolated"><span>Circuito</span><strong>{{ item.networkRoute.proxyUsername ?? 'Isolado' }} · {{ item.networkRoute.circuitChanges ?? 0 }} troca(s)</strong></div>
                 <div><span>Adicionado</span><strong>{{ formatDateTime(item.addedAt) }}</strong></div>
                 <div><span>Destino</span><strong>{{ item.outputPath || '-' }}</strong></div>
+                <div class="detail-wide archive-password-editor">
+                  <span>Senha do arquivo</span>
+                  <div>
+                    <input
+                      :value="archivePasswordDrafts[item.id] ?? ''"
+                      type="text"
+                      placeholder="Digite a senha deste arquivo"
+                      @input="archivePasswordDrafts[item.id] = ($event.target as HTMLInputElement).value"
+                    />
+                    <button class="toolbar-btn" @click="saveArchivePasswordFor(item.id)">Salvar senha</button>
+                  </div>
+                  <em>{{ archivePasswordFeedback[item.id] ?? 'Usada na extração automática de arquivos compactados.' }}</em>
+                </div>
                 <div class="detail-wide"><span>URL</span><strong>{{ item.url }}</strong></div>
               </div>
 
@@ -478,17 +502,12 @@
 
               <div v-else class="detail-events">
                 <p v-if="!(detailEvents[item.id]?.length)">Nenhum evento persistido ainda.</p>
-                <div v-for="event in detailEvents[item.id]" :key="event.id" class="detail-event">
+                <div v-for="event in sortedDetailEvents(item.id)" :key="event.id" class="detail-event">
                   <span>{{ formatDateTime(event.createdAt) }}</span>
-                  <strong>{{ event.kind }}</strong>
+                  <strong>{{ eventKindLabel(event.kind) }}</strong>
                   <em>{{ event.message }}</em>
                 </div>
               </div>
-            </div>
-
-            <div class="row-rich-tooltip" role="tooltip">
-              <strong>{{ item.title || item.url }}</strong>
-              <span v-for="line in rowTooltipLines(item)" :key="line">{{ line }}</span>
             </div>
           </div>
         </div>
@@ -641,6 +660,7 @@ import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadChild, DownloadEvent, DownloadItem, DownloadPackage } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
 import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
+import torIconSvg from '../assets/tor.svg?raw'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import {
   childStatusText,
@@ -667,10 +687,12 @@ interface ModuleSummary {
 }
 
 // ── Props ──────────────────────────────────────────────────
-const props = withDefaults(defineProps<{ skeletonCount?: number }>(), {
-  skeletonCount: 0
+const props = withDefaults(defineProps<{ skeletonCount?: number; torActive?: boolean }>(), {
+  skeletonCount: 0,
+  torActive: false,
 })
 const skeletonCount = computed(() => props.skeletonCount)
+const torActive = computed(() => props.torActive)
 
 // ── Emits ──────────────────────────────────────────────────
 const emit = defineEmits<{
@@ -683,9 +705,9 @@ const emit = defineEmits<{
 
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
+const stageLabels = ref<Record<string, string>>({})
 const packages = ref<DownloadPackage[]>([])
 const selectedPackageId = ref<'all' | 'unassigned' | string>('all')
-const draggedDownloadId = ref<string | null>(null)
 const selectedDownloadIds = ref<Set<string>>(new Set())
 const lastSelectedDownloadId = ref<string | null>(null)
 const contextMenu = ref<{ visible: boolean; x: number; y: number; itemId: string | null }>({
@@ -705,9 +727,13 @@ const draggedPreviewId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
-const detailTabs = ref<Record<string, 'general' | 'logs' | 'mirrors' | 'peers' | 'history'>>({})
+type DetailTabId = 'files' | 'general' | 'logs' | 'mirrors' | 'peers' | 'history'
+
+const detailTabs = ref<Record<string, DetailTabId>>({})
 const detailLogs = ref<Record<string, string[]>>({})
 const detailEvents = ref<Record<string, DownloadEvent[]>>({})
+const archivePasswordDrafts = ref<Record<string, string>>({})
+const archivePasswordFeedback = ref<Record<string, string>>({})
 const activeCaptchaId = ref<string | null>(null)
 const captchaWindowBusy = ref(false)
 const captchaModalRef = ref<HTMLElement | null>(null)
@@ -719,6 +745,7 @@ const unsubs: Array<() => void> = []
 const captchaAttemptedIds = new Set<string>()
 const itemIndexById = ref<Record<string, number>>({})
 const speedSamples = ref<Record<string, number[]>>({})
+const smoothedSpeeds = ref<Record<string, number>>({})
 const captchaSolvedIds = ref<Set<string>>(new Set())
 const sparklineCanvases = new Map<string, HTMLCanvasElement>()
 const BROWSER_SESSION_READY_TOKEN = '__gdownloader_browser_session_ready__'
@@ -731,6 +758,8 @@ let lastSpeedEmit = 0
 const nowTick = ref(Date.now())
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
+let scheduledHydrateTimer: number | null = null
+const torCircuitRetryIds = new Set<string>()
 const sortOptions = DOWNLOAD_SORT_OPTIONS
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
@@ -738,10 +767,8 @@ const flashingIds = ref<Set<string>>(new Set())
 // ── Computed ───────────────────────────────────────────────
 const packageFilteredItems = computed(() => {
   let base = items.value
-  if (selectedPackageId.value === 'unassigned') {
-    base = base.filter((item) => !item.packageId)
-  } else if (selectedPackageId.value !== 'all') {
-    base = base.filter((item) => item.packageId === selectedPackageId.value)
+  if (selectedPackageId.value !== 'all') {
+    base = base.filter((item) => itemTypeTag(item).id === selectedPackageId.value)
   }
   if (filterStatuses.value.length > 0) {
     base = base.filter((item) => filterStatuses.value.includes(item.status))
@@ -764,6 +791,19 @@ const hostFilterOptions = computed(() => {
 const hasActiveListFilters = computed(() =>
   filterStatuses.value.length > 0 || filterHosts.value.length > 0 || filterPackages.value.length > 0
 )
+const typeTags = computed(() => {
+  const counts = new Map<string, { id: string; label: string; color: string; count: number }>()
+  for (const item of items.value) {
+    const tag = itemTypeTag(item)
+    const current = counts.get(tag.id) ?? { ...tag, count: 0 }
+    current.count += 1
+    counts.set(tag.id, current)
+  }
+  return [...counts.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'pt-BR'))
+})
+const currentSortLabel = computed(() =>
+  sortOptions.find((option) => option.value === sortMode.value)?.label ?? 'Mais recentes'
+)
 
 const orderedItems = computed(() =>
   [...packageFilteredItems.value].sort((left, right) => {
@@ -773,22 +813,6 @@ const orderedItems = computed(() =>
     return compareDownloads(left, right, sortMode.value, nowTick.value)
   })
 )
-const packageStatsMap = computed<Map<string, { total: number; active: number; failed: number; complete: number }>>(() => {
-  const stats = new Map<string, { total: number; active: number; failed: number; complete: number }>()
-  const ensure = (id: string): { total: number; active: number; failed: number; complete: number } => {
-    if (!stats.has(id)) stats.set(id, { total: 0, active: 0, failed: 0, complete: 0 })
-    return stats.get(id)!
-  }
-  for (const item of items.value) {
-    const id = item.packageId ?? ''
-    const stat = ensure(id)
-    stat.total += 1
-    if (item.status === 'error' || item.status === 'corrupted' || item.status === 'disk_full') stat.failed += 1
-    else if (item.status === 'complete') stat.complete += 1
-    else if (!isTerminal(item.status)) stat.active += 1
-  }
-  return stats
-})
 const finishedCount = computed(() =>
   items.value.filter((item) => isTerminal(item.status)).length
 )
@@ -804,7 +828,7 @@ const contextSelection = computed(() => {
   return contextMenuItem.value ? [contextMenuItem.value] : []
 })
 const contextCanTerminal = computed(() =>
-  contextSelection.value.some((item) => isTerminal(item.status))
+  contextSelection.value.some((item) => actionsFor(item).canRemove)
 )
 const nextQueueItems = computed(() =>
   orderedItems.value
@@ -818,23 +842,31 @@ const rateLimitedItems = computed(() =>
     .slice(0, 8)
 )
 
-function packageStats(packageId: string): { total: number; active: number; failed: number; complete: number } {
-  return packageStatsMap.value.get(packageId) ?? { total: 0, active: 0, failed: 0, complete: 0 }
-}
-
-function packageAggregateClass(packageId: string): string {
-  const stats = packageStats(packageId)
-  if (stats.failed > 0) return 'failed'
-  if (stats.active > 0) return 'active'
-  if (stats.total > 0 && stats.complete === stats.total) return 'ok'
-  return 'idle'
-}
-
-async function assignDraggedToPackage(packageId: string): Promise<void> {
-  if (!draggedDownloadId.value) return
-  const item = items.value.find((entry) => entry.id === draggedDownloadId.value)
-  if (!item) return
-  await assignPackage(item, packageId)
+function itemTypeTag(item: DownloadItem): { id: string; label: string; color: string } {
+  if (item.isFolder) {
+    return { id: 'folders', label: 'Pastas', color: '#f59e0b' }
+  }
+  const name = (item.title || item.url || '').toLowerCase().split('?')[0]
+  const ext = name.includes('.') ? name.split('.').pop() ?? '' : ''
+  if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'webm', 'm4v', 'flv'].includes(ext)) {
+    return { id: 'videos', label: 'Vídeos', color: '#ef4444' }
+  }
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'avif'].includes(ext)) {
+    return { id: 'images', label: 'Imagens', color: '#06b6d4' }
+  }
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'iso'].includes(ext)) {
+    return { id: 'archives', label: 'Compactados', color: '#8b5cf6' }
+  }
+  if (['exe', 'msi', 'dmg', 'pkg', 'appimage', 'deb', 'rpm', 'apk'].includes(ext)) {
+    return { id: 'executables', label: 'Executáveis', color: '#64748b' }
+  }
+  if (['mp3', 'flac', 'wav', 'aac', 'm4a', 'ogg', 'opus'].includes(ext)) {
+    return { id: 'audio', label: 'Áudios', color: '#22c55e' }
+  }
+  if (['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'odt'].includes(ext)) {
+    return { id: 'documents', label: 'Documentos', color: '#2563eb' }
+  }
+  return { id: 'others', label: 'Outros', color: '#94a3b8' }
 }
 
 function selectDownload(item: DownloadItem, event?: MouseEvent): void {
@@ -901,6 +933,19 @@ function recordSpeedSample(id: string, speed: number): void {
   drawSparkline(id)
 }
 
+function smoothSpeedSample(id: string, rawSpeed: number): number {
+  if (!Number.isFinite(rawSpeed) || rawSpeed <= 0) {
+    smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: 0 }
+    return 0
+  }
+  const cappedRaw = Math.min(rawSpeed, 200 * 1024 * 1024)
+  const previous = smoothedSpeeds.value[id] ?? cappedRaw
+  const spikeLimited = previous > 0 ? Math.min(cappedRaw, previous * 3 + 512 * 1024) : cappedRaw
+  const next = Math.round(previous * 0.72 + spikeLimited * 0.28)
+  smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: next }
+  return next
+}
+
 function hasSpeedSparkline(item: DownloadItem): boolean {
   return (speedSamples.value[item.id]?.length ?? 0) > 1 || effectiveSpeedValue(item) > 0
 }
@@ -950,11 +995,20 @@ function providerIconStyle(moduleId: string): Record<string, string> {
 }
 
 function isPremiumProvider(moduleId: string): boolean {
-  return ['rapidgator', 'fichier', 'katfile', 'brupload', 'terabox'].includes(moduleId)
+  return ['rapidgator', 'fichier', 'katfile', 'terabox'].includes(moduleId)
 }
 
 function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
   const badges: Array<{ label: string; kind: string; title: string }> = []
+  if ((item.networkRoute?.mode === 'tor' || torActive.value) && !isTerminal(item.status)) {
+    badges.push({
+      label: item.networkRoute?.isolated ? 'Tor isolado' : 'Tor',
+      kind: 'tor',
+      title: item.networkRoute?.isolated
+        ? 'Este download usa credenciais SOCKS próprias para forçar circuito separado'
+        : 'Este download está usando a rota Tor ativa',
+    })
+  }
   if (isPremiumProvider(item.moduleId)) {
     badges.push({ label: 'Premium', kind: 'premium', title: 'Host com fluxo premium ou sessão dedicada' })
   }
@@ -982,19 +1036,34 @@ function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; tit
   return badges
 }
 
-function rowTooltipLines(item: DownloadItem): string[] {
-  const lines = [
-    `Host: ${moduleLabel(item.moduleId)}`,
-    `Status: ${statusTextValue(item)}`,
-    `Progresso: ${item.percent}%`,
-  ]
-  if (item.size > 0) lines.push(`Tamanho: ${formatBytes(item.size)}`)
-  if (effectiveSpeedValue(item) > 0) lines.push(`Velocidade: ${formatSpeed(effectiveSpeedValue(item))}`)
-  if (effectiveEtaValue(item) > 0) lines.push(`ETA: ${formatEta(effectiveEtaValue(item))}`)
-  if (item.packageId) lines.push(`Pacote: ${packages.value.find((pkg) => pkg.id === item.packageId)?.name ?? item.packageId}`)
-  if (item.outputPath) lines.push(`Destino: ${item.outputPath}`)
-  if (item.expectedHash) lines.push(`Hash: ${item.expectedHash.algorithm.toUpperCase()} ${item.expectedHash.value}`)
-  return lines
+function networkRouteLabel(item: DownloadItem): string {
+  const route = item.networkRoute
+  if (route?.mode === 'tor') {
+    const exit = route.exitIp || route.exitCountry
+    const base = route.isolated ? 'Tor isolado' : 'Tor'
+    return exit ? `${base} · ${exit}` : `${base} · ${route.proxyHost ?? '127.0.0.1'}:${route.proxyPort ?? 9150}`
+  }
+  return torActive.value && !isTerminal(item.status) ? 'Tor global' : 'Conexão direta'
+}
+
+function sortedDetailEvents(id: string): DownloadEvent[] {
+  return [...(detailEvents.value[id] ?? [])].sort((left, right) => right.createdAt - left.createdAt)
+}
+
+function eventKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    created: 'Criado',
+    started: 'Iniciado',
+    paused: 'Pausado',
+    cancelled: 'Cancelado',
+    completed: 'Concluído',
+    error: 'Erro',
+    removed: 'Removido',
+    removed_files: 'Arquivos apagados',
+    retry: 'Nova tentativa',
+    forced: 'Forçado',
+  }
+  return labels[kind] ?? kind
 }
 
 async function persistFilters(): Promise<void> {
@@ -1140,13 +1209,22 @@ onMounted(async () => {
       if (!ev?.id) return
       const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
-        const total = ev.total ?? items.value[idx].size
+        const rawTotal = ev.total ?? items.value[idx].size
+        const isSyntheticYoutubeProgress = items.value[idx].moduleId === 'youtube' && rawTotal === 10_000
+        const total = rawTotal
+        const displaySize = isSyntheticYoutubeProgress ? items.value[idx].size : rawTotal
         const bytes = ev.bytes ?? 0
         let nextChildren = items.value[idx].children
+        if (items.value[idx].moduleId === 'youtube' && ev.child_filename) {
+          stageLabels.value = {
+            ...stageLabels.value,
+            [ev.id]: ev.child_filename,
+          }
+        }
         if (ev.child_filename && nextChildren?.length) {
           nextChildren = nextChildren.map((child) => {
             const matches = ev.child_path
-              ? child.path === ev.child_path
+              ? child.path === ev.child_path || child.sourceUrl === ev.child_path
               : child.filename === ev.child_filename
 
             if (!matches) {
@@ -1157,6 +1235,7 @@ onMounted(async () => {
 
             const childTotal = ev.child_total ?? child.size ?? 0
             const childBytes = ev.child_bytes ?? child.bytesDownloaded ?? 0
+            const childSpeed = smoothSpeedSample(`${ev.id}:${child.path ?? child.sourceUrl ?? child.filename}`, ev.child_speed ?? child.speedBps ?? 0)
             const childStatus =
               childTotal > 0 && childBytes >= childTotal
                 ? DownloadStatusEnum.Complete
@@ -1164,8 +1243,11 @@ onMounted(async () => {
 
             return {
               ...child,
+              filename: items.value[idx].moduleId === 'youtube' && ev.child_filename
+                ? ev.child_filename
+                : child.filename,
               bytesDownloaded: childBytes,
-              speedBps: ev.child_speed ?? child.speedBps ?? 0,
+              speedBps: childSpeed,
               etaSec: ev.child_eta ?? child.etaSec ?? 0,
               status: childStatus
             }
@@ -1176,9 +1258,10 @@ onMounted(async () => {
         const aggregatedChildBytes = isFolder
           ? nextChildren!.reduce((sum, child) => sum + (child.bytesDownloaded ?? 0), 0)
           : bytes
-        const aggregatedChildSpeed = isFolder
+        const rawAggregatedChildSpeed = isFolder
           ? nextChildren!.reduce((sum, child) => sum + (child.speedBps ?? 0), 0)
           : (ev.speed ?? 0)
+        const aggregatedChildSpeed = smoothSpeedSample(ev.id, rawAggregatedChildSpeed)
         const aggregatedPercent = total > 0
           ? Math.min(100, Math.floor((aggregatedChildBytes / total) * 100))
           : items.value[idx].percent
@@ -1193,7 +1276,7 @@ onMounted(async () => {
           etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0),
           lastProgressAt: Date.now(),
           status: (ev.status as DownloadItem['status']) ?? items.value[idx].status,
-          size: total > 0 ? total : items.value[idx].size,
+          size: displaySize > 0 ? displaySize : items.value[idx].size,
           // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.
           children: nextChildren
         }
@@ -1209,7 +1292,7 @@ onMounted(async () => {
         }
       } else {
         // Unknown item — refresh list
-        void hydrate()
+        scheduleHydrate(100)
       }
     })
   )
@@ -1224,7 +1307,7 @@ onMounted(async () => {
       if (!ev?.id) return
       const idx = itemIndexById.value[ev.id] ?? -1
       if (idx < 0) {
-        void hydrate()
+        scheduleHydrate(100)
         return
       }
 
@@ -1254,6 +1337,8 @@ onMounted(async () => {
       const outputPath = ev.path ?? ev.outputPath ?? ''
       if (idx >= 0) {
         recordSpeedSample(ev.id, 0)
+        const { [ev.id]: _done, ...restStages } = stageLabels.value
+        stageLabels.value = restStages
         items.value[idx] = {
           ...items.value[idx],
           status: DownloadStatusEnum.Complete,
@@ -1287,7 +1372,7 @@ onMounted(async () => {
           }).catch(() => null)
         }
       }
-      void hydrate()
+      scheduleHydrate(900)
     })
   )
 
@@ -1298,6 +1383,8 @@ onMounted(async () => {
       const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
         recordSpeedSample(ev.id, 0)
+        const { [ev.id]: _failed, ...restStages } = stageLabels.value
+        stageLabels.value = restStages
         items.value[idx] = {
           ...items.value[idx],
           status: DownloadStatusEnum.Error,
@@ -1306,7 +1393,7 @@ onMounted(async () => {
           error: ev.message ?? ev.error ?? 'Erro desconhecido'
         }
       }
-      void hydrate()
+      scheduleHydrate(900)
     })
   )
 
@@ -1341,8 +1428,18 @@ onMounted(async () => {
           flashingIds.value = new Set([...flashingIds.value].filter((id) => id !== ev.id))
         }, 400)
         void maybeResolveCaptchaById(ev.id)
+        if (props.torActive && ev.status === DownloadStatusEnum.RateLimited && !torCircuitRetryIds.has(ev.id)) {
+          torCircuitRetryIds.add(ev.id)
+          void window.api.tor.newIdentity()
+            .then(() => retry(ev.id))
+            .catch(() => null)
+        }
+        if (ev.status && ev.status !== DownloadStatusEnum.RateLimited) {
+          torCircuitRetryIds.delete(ev.id)
+        }
+        scheduleHydrate(900)
       } else {
-        void hydrate()
+        scheduleHydrate(300)
       }
     })
   )
@@ -1352,7 +1449,7 @@ onMounted(async () => {
       const ev = event as { id: string }
       if (!ev?.id) return
       upsertById(ev.id, { status: DownloadStatusEnum.Cancelled })
-      void hydrate()
+      scheduleHydrate(900)
     })
   )
 })
@@ -1366,6 +1463,10 @@ onUnmounted(() => {
   if (hydrateTimer !== null) {
     window.clearInterval(hydrateTimer)
     hydrateTimer = null
+  }
+  if (scheduledHydrateTimer !== null) {
+    window.clearTimeout(scheduledHydrateTimer)
+    scheduledHydrateTimer = null
   }
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('blur', closeContextMenu)
@@ -1446,6 +1547,23 @@ async function hydrate(): Promise<void> {
   }
 }
 
+function scheduleHydrate(delayMs = 700): void {
+  if (!isMounted) return
+  if (scheduledHydrateTimer !== null) {
+    window.clearTimeout(scheduledHydrateTimer)
+  }
+  scheduledHydrateTimer = window.setTimeout(() => {
+    scheduledHydrateTimer = null
+    void hydrate()
+  }, delayMs)
+}
+
+function cycleSortMode(): void {
+  const index = sortOptions.findIndex((option) => option.value === sortMode.value)
+  const next = sortOptions[(index + 1) % sortOptions.length]
+  sortMode.value = next?.value ?? 'newest'
+}
+
 async function assignPackage(item: DownloadItem, packageId: string): Promise<void> {
   if (packageId) {
     await window.api.packages.assign(packageId, item.id).catch(() => null)
@@ -1501,6 +1619,16 @@ async function retry(id: string): Promise<void> {
   await hydrate()
 }
 
+async function saveArchivePasswordFor(id: string): Promise<void> {
+  const password = (archivePasswordDrafts.value[id] ?? '').trim()
+  if (!password) {
+    archivePasswordFeedback.value = { ...archivePasswordFeedback.value, [id]: 'Informe uma senha antes de salvar.' }
+    return
+  }
+  await window.api.archivePasswords.import([password])
+  archivePasswordFeedback.value = { ...archivePasswordFeedback.value, [id]: 'Senha salva e será testada na extração automática.' }
+}
+
 async function force(id: string): Promise<void> {
   await window.api.downloads.force(id).catch(() => null)
   await hydrate()
@@ -1548,7 +1676,7 @@ async function runContextAction(action: 'pause' | 'resume' | 'restart' | 'force'
     if (action === 'force' && actionsFor(item).canForce) await force(item.id)
     if (action === 'retry' && actionsFor(item).canRetry) await retry(item.id)
     if (action === 'cancel' && actionsFor(item).canCancel) await cancel(item.id)
-    if (action === 'remove' && isTerminal(item.status)) await remove(item.id)
+    if (action === 'remove' && actionsFor(item).canRemove) await remove(item.id)
     if (action === 'removeWithFiles' && actionsFor(item).canRemoveWithFiles) await removeWithFiles(item.id)
   }
   await hydrate()
@@ -1711,7 +1839,10 @@ function toggleDetails(item: DownloadItem): void {
     [item.id]: !expandedDetails.value[item.id],
   }
   if (expandedDetails.value[item.id]) {
-    detailTabs.value = { ...detailTabs.value, [item.id]: detailTabs.value[item.id] ?? 'general' }
+    detailTabs.value = {
+      ...detailTabs.value,
+      [item.id]: detailTabs.value[item.id] ?? defaultDetailTab(item),
+    }
     void loadDetailData(item)
   }
 }
@@ -1720,22 +1851,30 @@ function isDetailExpanded(id: string): boolean {
   return !!expandedDetails.value[id]
 }
 
-function activeDetailTab(id: string): 'general' | 'logs' | 'mirrors' | 'peers' | 'history' {
+function defaultDetailTab(item: DownloadItem): DetailTabId {
+  return item.isFolder && (item.children?.length ?? 0) > 0 ? 'files' : 'general'
+}
+
+function activeDetailTab(id: string): DetailTabId {
   return detailTabs.value[id] ?? 'general'
 }
 
-function detailTabOptions(item: DownloadItem): Array<{ id: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'; label: string }> {
-  const tabs: Array<{ id: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'; label: string }> = [
+function detailTabOptions(item: DownloadItem): Array<{ id: DetailTabId; label: string }> {
+  const tabs: Array<{ id: DetailTabId; label: string }> = []
+  if (item.isFolder && (item.children?.length ?? 0) > 0) {
+    tabs.push({ id: 'files', label: 'Arquivos' })
+  }
+  tabs.push(
     { id: 'general', label: 'Geral' },
     { id: 'logs', label: 'Logs' },
     { id: 'mirrors', label: 'Mirrors' },
-  ]
+  )
   if (item.moduleId === 'torrent') tabs.push({ id: 'peers', label: 'Peers' })
   tabs.push({ id: 'history', label: 'Histórico' })
   return tabs
 }
 
-function setDetailTab(item: DownloadItem, tab: 'general' | 'logs' | 'mirrors' | 'peers' | 'history'): void {
+function setDetailTab(item: DownloadItem, tab: DetailTabId): void {
   detailTabs.value = { ...detailTabs.value, [item.id]: tab }
   void loadDetailData(item)
 }
@@ -1779,6 +1918,9 @@ function retryCountdownNow(item: DownloadItem): number {
 }
 
 function statusTextValue(item: DownloadItem): string {
+  if (item.status === DownloadStatusEnum.Downloading && stageLabels.value[item.id]) {
+    return stageLabels.value[item.id]
+  }
   return statusText(item, nowTick.value)
 }
 
@@ -2802,6 +2944,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .row-rich-badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   height: 22px;
   padding: 0 7px;
   border-radius: 999px;
@@ -2809,6 +2952,25 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   font-size: 10px;
   font-weight: 800;
   line-height: 1;
+}
+
+.row-rich-badge.tor {
+  color: #7c3aed;
+  border-color: rgba(124, 58, 237, 0.25);
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.row-tor-icon {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.row-tor-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .row-rich-badge.premium {
@@ -2848,38 +3010,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: color-mix(in srgb, var(--bg-primary) 65%, var(--bg-card));
 }
 
-.row-rich-tooltip {
-  position: absolute;
-  right: 12px;
-  top: calc(100% - 10px);
-  z-index: 12;
-  width: min(360px, calc(100% - 24px));
-  display: none;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--text-muted);
-  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.22);
-  font-size: 11px;
-  pointer-events: none;
-}
-
-.row-rich-tooltip strong {
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .download-card:hover {
   z-index: 14;
-}
-
-.download-card:hover .row-rich-tooltip {
-  display: flex;
 }
 
 @keyframes shimmer {
@@ -2891,8 +3023,9 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .item-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
+  min-height: 24px;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -2987,6 +3120,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
   overflow: hidden;
   transition: opacity 0.2s ease;
+}
+
+.detail-files-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 
 .folder-tree-header {
@@ -3178,6 +3318,51 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 .detail-wide {
   grid-column: 1 / -1;
+}
+
+.archive-password-editor {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.28fr) minmax(240px, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.archive-password-editor > span {
+  margin-bottom: 0;
+}
+
+.archive-password-editor > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.archive-password-editor input {
+  min-width: 0;
+  flex: 1;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  padding: 0 10px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.archive-password-editor input:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 18%, transparent);
+}
+
+.archive-password-editor em {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .detail-log-list,

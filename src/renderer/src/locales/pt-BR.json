@@ -67,7 +67,6 @@
   "accountBrowserHelperNote": "Este provider usa navegador integrado quando o host exige sessão real ou challenge.",
   "accountFreeLimitNote": "Conta free pode ser necessária para arquivos maiores ou para reduzir bloqueios do host.",
   "accountSharedSessionNote": "Pastas e arquivos usam a mesma sessão salva localmente.",
-  "accountBruploadDesc": "Conta free usada para destravar arquivos acima de 1 GB e reduzir bloqueios do host.",
   "downloadsSection": "Downloads",
   "outputFolder": "Pasta de destino",
   "outputFolderDesc": "Onde os arquivos serão salvos",

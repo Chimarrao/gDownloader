@@ -72,7 +72,7 @@ const loadingById = ref<Record<string, boolean>>({})
 const feedbackById = ref<Record<string, string>>({})
 
 function isKnownAuthProvider(id: string): boolean {
-  return id === 'terabox' || id === 'brupload'
+  return id === 'terabox'
 }
 
 function providerNotes(card: ProviderCardSummary): string[] {
@@ -100,9 +100,6 @@ function providerDescription(card: ProviderCardSummary): string {
   }
   if (card.id === 'terabox') {
     return t('accountTeraboxDesc')
-  }
-  if (card.id === 'brupload') {
-    return t('accountBruploadDesc')
   }
   return card.name
 }

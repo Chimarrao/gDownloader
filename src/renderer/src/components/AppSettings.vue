@@ -51,7 +51,7 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">{{ t('parallelParts') }}</span>
-          <span class="setting-desc">{{ t('parallelPartsDesc') }}</span>
+          <span class="setting-desc">{{ t('parallelPartsDesc') }} YouTube sempre usa 1 parte.</span>
         </div>
         <select v-model="settings.parallelPartsPerDownload" class="setting-select" @change="save">
           <option v-for="n in [1,2,4,6,8]" :key="n" :value="n">{{ n }}</option>
@@ -110,6 +110,104 @@
       </div>
     </div>
 
+    <div class="settings-section">
+      <h3 class="section-title">YouTube</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Usar cookies</span>
+          <span class="setting-desc">Usa cookies do navegador ou de um arquivo Netscape para videos restritos</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.youtubeUseCookies" @change="save" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Navegador dos cookies</span>
+          <span class="setting-desc">Usado quando nenhum arquivo de cookies for informado</span>
+        </div>
+        <select v-model="settings.youtubeCookieBrowser" class="setting-select" @change="save">
+          <option value="chrome">Chrome</option>
+          <option value="brave">Brave</option>
+          <option value="firefox">Firefox</option>
+          <option value="edge">Edge</option>
+          <option value="safari">Safari</option>
+          <option value="chromium">Chromium</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Arquivo de cookies</span>
+          <span class="setting-desc">Opcional. Se preenchido, tem prioridade sobre cookies do navegador</span>
+        </div>
+        <input
+          v-model="settings.youtubeCookiesFile"
+          class="setting-input setting-input-wide"
+          placeholder="/caminho/cookies.txt"
+          @change="save"
+        />
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Container de merge</span>
+          <span class="setting-desc">Formato final quando yt-dlp junta video e audio com ffmpeg</span>
+        </div>
+        <select v-model="settings.youtubeMergeFormat" class="setting-select" @change="save">
+          <option value="mp4">MP4</option>
+          <option value="mkv">MKV</option>
+          <option value="webm">WEBM</option>
+        </select>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Legendas</span>
+          <span class="setting-desc">Baixa legendas manuais e automáticas nos idiomas escolhidos</span>
+        </div>
+        <label class="setting-toggle">
+          <input type="checkbox" v-model="settings.youtubeDownloadSubs" @change="save" />
+          <span>{{ settings.youtubeDownloadSubs ? 'Baixar' : 'Nao baixar' }}</span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Idiomas das legendas</span>
+          <span class="setting-desc">Exemplo: pt,en ou all</span>
+        </div>
+        <input v-model="settings.youtubeSubLangs" class="setting-input" placeholder="pt,en" @change="save" />
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Embutir legendas</span>
+          <span class="setting-desc">Requer ffmpeg e container compatível</span>
+        </div>
+        <label class="setting-toggle">
+          <input type="checkbox" v-model="settings.youtubeEmbedSubs" @change="save" />
+          <span>{{ settings.youtubeEmbedSubs ? 'Ativado' : 'Desativado' }}</span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Separar por capitulos</span>
+          <span class="setting-desc">Quando disponível, gera arquivos separados por capítulo</span>
+        </div>
+        <label class="setting-toggle">
+          <input type="checkbox" v-model="settings.youtubeSplitChapters" @change="save" />
+          <span>{{ settings.youtubeSplitChapters ? 'Ativado' : 'Desativado' }}</span>
+        </label>
+      </div>
+    </div>
+
     <!-- Appearance section -->
     <div class="settings-section">
       <h3 class="section-title">{{ t('appearance') }}</h3>
@@ -126,27 +224,6 @@
           <option value="dark-monokai">{{ t('themeDarkMonokai') }}</option>
           <option value="dark-default">{{ t('themeDarkDefault') }}</option>
         </select>
-      </div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('accentColorLabel') }}</span>
-          <span class="setting-desc">{{ t('accentColorDesc') }}</span>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input
-            type="color"
-            :value="settings.accentColor || '#a855f7'"
-            class="color-picker"
-            @change="onAccentColorChange"
-          />
-          <button
-            v-if="settings.accentColor"
-            class="browse-btn"
-            style="padding:6px 10px;font-size:12px;"
-            @click="resetAccentColor"
-          >{{ t('reset') }}</button>
-        </div>
       </div>
 
       <div class="setting-row">
@@ -183,31 +260,8 @@
       </div>
     </div>
 
-    <!-- Integrations section -->
     <div class="settings-section">
-      <h3 class="section-title">{{ t('integrationsSection') }}</h3>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">{{ t('clipboardMonitorLabel') }}</span>
-          <span class="setting-desc">{{ t('clipboardMonitorDesc') }}</span>
-        </div>
-        <label class="toggle">
-          <input
-            v-model="settings.clipboardMonitorEnabled"
-            type="checkbox"
-            @change="save"
-          />
-          <span class="toggle-track">
-            <span class="toggle-thumb"></span>
-          </span>
-        </label>
-      </div>
-    </div>
-
-    <!-- Notifications section -->
-    <div class="settings-section">
-      <h3 class="section-title">{{ t('notificationsSection') }}</h3>
+      <h3 class="section-title">Outros</h3>
 
       <div class="setting-row">
         <div class="setting-info">
@@ -308,15 +362,40 @@
           <span v-if="remoteInfo?.error" class="remote-error">{{ remoteInfo.error }}</span>
           <div class="remote-actions">
             <button class="browse-btn" :disabled="!remoteInfo?.url" @click="copyRemoteUrl">Copiar link</button>
+            <button class="browse-btn" :disabled="!remoteInfo?.qrCodeDataUrl" @click="showRemoteQr = !showRemoteQr">
+              {{ showRemoteQr ? 'Ocultar QR Code' : 'Gerar QR Code' }}
+            </button>
             <button class="browse-btn" @click="refreshRemoteInfo">Atualizar</button>
           </div>
         </div>
         <img
-          v-if="remoteInfo?.qrCodeDataUrl"
+          v-if="showRemoteQr && remoteInfo?.qrCodeDataUrl"
           class="remote-qr"
           :src="remoteInfo.qrCodeDataUrl"
           alt="QR Code do acesso remoto local"
         />
+      </div>
+      <div v-if="remoteInfo?.insecureCredentials" class="remote-security-alert">
+        Credenciais padrão detectadas. Altere usuário e senha antes de manter o acesso remoto ativo na rede local.
+      </div>
+      <div class="remote-sessions">
+        <div class="remote-sessions-header">
+          <strong>Sessões conectadas</strong>
+          <button class="browse-btn" @click="refreshRemoteInfo">Atualizar</button>
+        </div>
+        <div v-if="!(remoteInfo?.sessions?.length)" class="remote-session-empty">Nenhum dispositivo autenticado por token.</div>
+        <div
+          v-for="session in remoteInfo?.sessions ?? []"
+          :key="session.id"
+          class="remote-session-row"
+        >
+          <div>
+            <strong>{{ session.ip }} <span v-if="session.current">(atual)</span></strong>
+            <span>{{ session.userAgent }}</span>
+            <em>{{ new Date(session.lastSeenAt).toLocaleString() }}</em>
+          </div>
+          <button class="browse-btn" :disabled="session.current" @click="revokeRemoteSession(session.id)">Derrubar</button>
+        </div>
       </div>
     </div>
 
@@ -394,6 +473,40 @@
     </div>
 
     <div class="settings-section">
+      <h3 class="section-title">Cache local</h3>
+
+      <div class="cache-summary">
+        <div>
+          <strong>{{ fmtCacheBytes(cacheInfo?.totalBytes ?? 0) }}</strong>
+          <span>dados temporários e metadados locais</span>
+        </div>
+        <div class="remote-actions">
+          <button class="browse-btn" @click="refreshCacheInfo">Atualizar</button>
+          <button class="browse-btn" :disabled="clearingCache || !(cacheInfo?.items?.some(item => item.clearable && item.bytes > 0))" @click="clearCache()">
+            {{ clearingCache ? 'Limpando...' : 'Limpar tudo' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="cache-list">
+        <div v-if="!(cacheInfo?.items?.length)" class="cache-empty">
+          Nenhum cache local identificado.
+        </div>
+        <div v-for="item in cacheInfo?.items ?? []" :key="item.id" class="cache-row">
+          <div>
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.description }}</span>
+            <em v-if="item.entries !== undefined">{{ item.entries }} entrada(s)</em>
+          </div>
+          <span>{{ fmtCacheBytes(item.bytes) }}</span>
+          <button class="browse-btn" :disabled="clearingCache || !item.clearable || item.bytes <= 0" @click="clearCache([item.id])">
+            Limpar
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
       <h3 class="section-title">Senhas de archives</h3>
 
       <div class="setting-row">
@@ -436,7 +549,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import type { AppSettingsSnapshot, ArchivePassword } from '../../../shared/types'
 import { applyUiPreferences, useTheme, type ThemeId } from '../themes'
 import { setLocale, useI18n } from '../i18n'
@@ -465,6 +578,7 @@ const settings = reactive<AppSettingsSnapshot>({
   proxyUsername: undefined,
   proxyPassword: undefined,
   startTor: false,
+  reservedDiskMb: 500,
   useReconnectOnRateLimit: false,
   reconnectMethod: 'none',
   reconnectCommand: '',
@@ -489,6 +603,14 @@ const settings = reactive<AppSettingsSnapshot>({
   interceptDomainBlocklist: [],
   interceptAskBeforeAdd: false,
   onboardingCompleted: false,
+  youtubeUseCookies: true,
+  youtubeCookieBrowser: 'chrome',
+  youtubeCookiesFile: '',
+  youtubeMergeFormat: 'mp4',
+  youtubeDownloadSubs: false,
+  youtubeSubLangs: 'pt,en',
+  youtubeEmbedSubs: false,
+  youtubeSplitChapters: false,
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -500,8 +622,11 @@ let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
 const remoteInfo = ref<Awaited<ReturnType<typeof window.api.remoteAccess.info>> | null>(null)
+const showRemoteQr = ref(false)
 const archivePasswords = ref<ArchivePassword[]>([])
 const archivePasswordImport = ref('')
+const cacheInfo = ref<Awaited<ReturnType<typeof window.api.cache.stats>> | null>(null)
+const clearingCache = ref(false)
 
 function setSaveFeedback(message: string, error = false): void {
   saveFeedback.value = message
@@ -528,13 +653,25 @@ onMounted(async () => {
     applyUiPreferences(saved)
     await refreshRemoteInfo()
     await loadArchivePasswords()
+    await refreshCacheInfo()
   }
+  window.addEventListener('gdownloader-settings-updated', onExternalSettingsUpdated as EventListener)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('gdownloader-settings-updated', onExternalSettingsUpdated as EventListener)
+})
+
+function onExternalSettingsUpdated(event: CustomEvent<AppSettingsSnapshot>): void {
+  if (!event.detail) return
+  Object.assign(settings, event.detail)
+}
 
 async function save(): Promise<void> {
   try {
-    const persisted = await window.api.settings.save({ ...settings })
+    const persisted = await window.api.settings.save(settingsSnapshot())
     Object.assign(settings, persisted)
+    window.dispatchEvent(new CustomEvent('gdownloader-settings-updated', { detail: persisted }))
     await refreshRemoteInfo()
     setSaveFeedback(t('settingsSaved'))
   } catch (error) {
@@ -545,8 +682,19 @@ async function save(): Promise<void> {
   }
 }
 
+function settingsSnapshot(): AppSettingsSnapshot {
+  return JSON.parse(JSON.stringify(settings)) as AppSettingsSnapshot
+}
+
 function speedLimitLabel(value: number | undefined): string {
   return value && value > 0 ? `${value} KiB/s` : 'Sem limite'
+}
+
+function fmtCacheBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${bytes} B`
 }
 
 async function chooseDirectory(): Promise<void> {
@@ -567,20 +715,7 @@ function onLocaleChange(): void {
   void save()
 }
 
-function onAccentColorChange(e: Event): void {
-  const color = (e.target as HTMLInputElement).value
-  settings.accentColor = color
-  applyUiPreferences(settings)
-  void save()
-}
-
 function onAppearanceChange(): void {
-  applyUiPreferences(settings)
-  void save()
-}
-
-function resetAccentColor(): void {
-  settings.accentColor = undefined
   applyUiPreferences(settings)
   void save()
 }
@@ -604,6 +739,11 @@ async function copyRemoteUrl(): Promise<void> {
   if (!value) return
   await window.api.clipboard.writeText(value)
   setSaveFeedback('Link remoto copiado')
+}
+
+async function revokeRemoteSession(id: string): Promise<void> {
+  await window.api.remoteAccess.revokeSession(id).catch(() => false)
+  await refreshRemoteInfo()
 }
 
 async function loadArchivePasswords(): Promise<void> {
@@ -631,18 +771,43 @@ async function forgetArchivePassword(password: string): Promise<void> {
   await window.api.archivePasswords.forget(password)
   await loadArchivePasswords()
 }
+
+async function refreshCacheInfo(): Promise<void> {
+  cacheInfo.value = await window.api.cache.stats().catch(() => null)
+}
+
+async function clearCache(ids?: string[]): Promise<void> {
+  const selected = ids ?? cacheInfo.value?.items.filter((item) => item.clearable && item.bytes > 0).map((item) => item.id) ?? []
+  if (selected.length === 0 || clearingCache.value) return
+  clearingCache.value = true
+  try {
+    cacheInfo.value = await window.api.cache.clear(selected)
+    setSaveFeedback('Cache limpo')
+  } finally {
+    clearingCache.value = false
+  }
+}
 </script>
 
 <style scoped>
 .settings-panel {
   padding: 24px 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  max-width: 960px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(360px, 1fr));
+  align-content: start;
+  gap: 18px;
+  max-width: none;
   width: 100%;
   min-height: 0;
   overflow-y: auto;
+}
+
+.settings-header {
+  grid-column: 1 / -1;
+}
+
+.settings-section {
+  min-width: 0;
 }
 
 .remote-inline {
@@ -730,6 +895,56 @@ async function forgetArchivePassword(password: string): Promise<void> {
   padding: 6px;
 }
 
+.remote-security-alert {
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remote-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.remote-sessions-header,
+.remote-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-session-row {
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.remote-session-row div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.remote-session-row span,
+.remote-session-row em,
+.remote-session-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.remote-session-row em {
+  font-style: normal;
+}
+
 .setting-row-stack {
   grid-template-columns: 1fr;
   align-items: stretch;
@@ -778,6 +993,73 @@ async function forgetArchivePassword(password: string): Promise<void> {
   color: var(--text-primary);
 }
 
+.cache-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.cache-summary div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cache-summary strong {
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+.cache-summary span,
+.cache-row span,
+.cache-row em,
+.cache-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.cache-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cache-empty,
+.cache-row {
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.cache-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.cache-row div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cache-row strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.cache-row em {
+  font-style: normal;
+}
+
 .settings-header {
   display: flex;
   flex-direction: column;
@@ -813,6 +1095,10 @@ async function forgetArchivePassword(password: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
 }
 
 .section-title {
@@ -828,9 +1114,9 @@ async function forgetArchivePassword(password: string): Promise<void> {
 
 /* Setting row */
 .setting-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, auto);
   align-items: center;
-  justify-content: space-between;
   gap: 20px;
   padding: 12px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 50%, transparent);
@@ -844,6 +1130,7 @@ async function forgetArchivePassword(password: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .setting-label {
@@ -875,7 +1162,7 @@ async function forgetArchivePassword(password: string): Promise<void> {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 320px;
+  min-width: 0;
 }
 
 .browse-btn {
@@ -892,6 +1179,18 @@ async function forgetArchivePassword(password: string): Promise<void> {
 .setting-input:focus,
 .setting-select:focus {
   border-color: var(--accent-color);
+}
+
+@media (max-width: 980px) {
+  .settings-panel {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+
+  .setting-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
 }
 
 .setting-input-wide {
@@ -913,8 +1212,34 @@ async function forgetArchivePassword(password: string): Promise<void> {
 }
 
 .setting-range {
+  --range-fill: var(--accent-color);
+  appearance: none;
   width: 100%;
-  accent-color: var(--accent-color);
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--range-fill), rgba(148, 163, 184, 0.22));
+  outline: none;
+}
+
+.setting-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border: 3px solid var(--bg-card);
+  border-radius: 50%;
+  background: var(--accent-color);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.22);
+  cursor: pointer;
+}
+
+.setting-range::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border: 3px solid var(--bg-card);
+  border-radius: 50%;
+  background: var(--accent-color);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.22);
+  cursor: pointer;
 }
 
 .speed-limit-input {

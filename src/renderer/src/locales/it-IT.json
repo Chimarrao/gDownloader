@@ -67,7 +67,6 @@
   "accountBrowserHelperNote": "This provider uses the integrated browser when the host requires a real session or challenge.",
   "accountFreeLimitNote": "A free account may be required for larger files or to reduce host blocks.",
   "accountSharedSessionNote": "Folders and files use the same locally saved session.",
-  "accountBruploadDesc": "Free account used to unlock files above 1 GB and reduce host blocks.",
   "downloadsSection": "Download",
   "outputFolder": "Cartella di destinazione",
   "outputFolderDesc": "Dove verranno salvati i file",

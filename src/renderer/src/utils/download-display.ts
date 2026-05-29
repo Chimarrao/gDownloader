@@ -82,7 +82,7 @@ export function effectiveSpeed(item: DownloadItem, nowTick: number): number {
   if (!item.lastProgressAt) {
     return item.speedBps ?? 0
   }
-  return nowTick - item.lastProgressAt > 1800 ? 0 : (item.speedBps ?? 0)
+  return nowTick - item.lastProgressAt > 5000 ? 0 : (item.speedBps ?? 0)
 }
 
 export function effectiveEta(item: DownloadItem, nowTick: number): number {
@@ -123,8 +123,10 @@ export function compareDownloads(
     case 'active_first': {
       const priorityDiff = activePriority(left) - activePriority(right)
       if (priorityDiff !== 0) return priorityDiff
-      if (effectiveSpeed(right, nowTick) !== effectiveSpeed(left, nowTick)) {
-        return effectiveSpeed(right, nowTick) - effectiveSpeed(left, nowTick)
+      const rightSpeedBucket = Math.floor(effectiveSpeed(right, nowTick) / (256 * 1024))
+      const leftSpeedBucket = Math.floor(effectiveSpeed(left, nowTick) / (256 * 1024))
+      if (rightSpeedBucket !== leftSpeedBucket) {
+        return rightSpeedBucket - leftSpeedBucket
       }
       return right.addedAt - left.addedAt
     }
@@ -182,7 +184,8 @@ export function getDownloadActions(item: DownloadItem): Record<string, boolean> 
       || item.status === DownloadStatus.Complete
       || item.status === DownloadStatus.DiskFull,
     canOpenFolder: item.status === DownloadStatus.Complete && Boolean(item.outputPath),
-    canRemove: isTerminal(item.status),
-    canRemoveWithFiles: isTerminal(item.status) && Boolean(item.outputPath),
+    canRemove: isTerminal(item.status) || item.status === DownloadStatus.Paused,
+    canRemoveWithFiles:
+      (isTerminal(item.status) || item.status === DownloadStatus.Paused) && Boolean(item.outputPath),
   }
 }

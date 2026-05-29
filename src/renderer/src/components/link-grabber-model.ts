@@ -28,6 +28,7 @@ export interface CapturedRow {
   expanded: boolean
   sourceUrls: string[]
   sourceLabels: string[]
+  destDir?: string
   expectedHash?: ExpectedHash
 }
 

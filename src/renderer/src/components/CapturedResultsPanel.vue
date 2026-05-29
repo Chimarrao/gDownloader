@@ -125,6 +125,15 @@
           </label>
 
           <span
+            v-if="row.module?.id === 'youtube'"
+            class="row-icon provider-row-icon"
+            :style="{ color: getProviderIcon(row.module.id).color }"
+            aria-label="YouTube"
+            role="img"
+            v-html="getProviderIcon(row.module.id).svg"
+          ></span>
+          <span
+            v-else
             class="row-icon"
             :class="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).className"
             :aria-label="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).alt"
@@ -159,10 +168,28 @@
               <span v-else-if="row.loading">{{ t('linkGrabberReadingMetadata') }}</span>
               <span v-else-if="row.error">{{ row.error }}</span>
               <span v-else-if="row.info">{{ fmtBytes(row.info.size) }}</span>
+              <template v-if="selectedQualityLabel(row)">
+                <span>·</span>
+                <span class="quality-chip">{{ selectedQualityLabel(row) }}</span>
+              </template>
               <template v-if="row.expectedHash">
                 <span>·</span>
                 <span class="hash-chip">{{ row.expectedHash.algorithm.toUpperCase() }} {{ row.expectedHash.value }}</span>
               </template>
+            </div>
+            <div class="row-destination">
+              <i class="pi pi-folder"></i>
+              <span class="destination-path" :title="row.destDir || 'Pasta padrão'">
+                {{ row.destDir || 'Pasta padrão' }}
+              </span>
+              <button
+                class="destination-btn"
+                type="button"
+                title="Escolher pasta deste download"
+                @click="emit('choose-destination', row)"
+              >
+                Alterar
+              </button>
             </div>
           </div>
 
@@ -177,7 +204,7 @@
               <i class="pi pi-sitemap"></i>
             </button>
             <button
-              v-if="(row.info?.isFolder && (row.info.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
+              v-if="(supportsChildSelection(row) && (row.info?.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
               class="row-action-btn expand-btn"
               :title="row.expanded ? t('closeDetails') : t('openDetails')"
               @click="emit('toggle-expanded', row)"
@@ -187,7 +214,7 @@
           </div>
         </div>
 
-        <div v-if="row.expanded && ((row.info?.isFolder && row.info.children?.length) || row.sourceUrls.length > 1)" class="child-panel">
+        <div v-if="row.expanded && ((supportsChildSelection(row) && row.info?.children?.length) || row.sourceUrls.length > 1)" class="child-panel">
           <div v-if="row.sourceUrls.length > 1" class="source-panel">
             <div class="source-heading">{{ t('linkGrabberAvailableSources') }}</div>
             <div
@@ -200,7 +227,7 @@
             </div>
           </div>
 
-          <div v-if="row.info?.isFolder && row.info.children?.length" class="children-list">
+          <div v-if="supportsChildSelection(row) && row.info?.children?.length" class="children-list">
             <div v-if="supportsChildSelection(row)" class="children-toolbar">
               <label class="tree-master-check">
                   <input
@@ -209,7 +236,7 @@
                     :indeterminate.prop="isRowIndeterminate(row)"
                     @change="onToggleRow(row, $event)"
                   />
-                <span>{{ t('linkGrabberSelectAllFolder') }}</span>
+                <span>{{ childSelectionLabel(row) }}</span>
               </label>
               <button class="tree-action-btn" type="button" @click="emit('set-row-selection', { row, checked: false })">
                 {{ t('clear') }}
@@ -283,6 +310,7 @@ import { ref, computed, watch } from 'vue'
 
 import { useI18n } from '../i18n'
 import { getFileIcon } from '../assets/file-icons'
+import { getProviderIcon } from '../assets/provider-icons'
 import type { DerivedChildNode } from '../utils/child-tree'
 import VirtualRows from './VirtualRows.vue'
 import type { CapturedRow, SelectableChild } from './link-grabber-model'
@@ -394,6 +422,7 @@ const emit = defineEmits<{
   (e: 'set-row-selection', payload: { row: CapturedRow; checked: boolean }): void
   (e: 'toggle-expanded', row: CapturedRow): void
   (e: 'open-mirrors', row: CapturedRow): void
+  (e: 'choose-destination', row: CapturedRow): void
   (e: 'filtered-change', urls: string[]): void
 }>()
 
@@ -496,6 +525,20 @@ function rowBadgeLabel(row: CapturedRow): string {
     return t('linkGrabberStatusFolder')
   }
   return t('linkGrabberStatusFile')
+}
+
+function childSelectionLabel(row: CapturedRow): string {
+  return row.info?.isFolder ? t('linkGrabberSelectAllFolder') : 'Formato do video'
+}
+
+function selectedQualityLabel(row: CapturedRow): string {
+  if (row.module?.id !== 'youtube') return ''
+  const child = row.info?.children?.find((item) => item.selected !== false && !item.isFolder)
+    ?? row.info?.children?.find((item) => !item.isFolder)
+  if (!child) return ''
+  return child.filename
+    .replace(/^Melhor qualidade\s*-\s*/i, 'Best: ')
+    .replace(/\s+#\S+$/i, '')
 }
 
 function availabilityLabel(row: CapturedRow): string {
@@ -638,6 +681,18 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   background-repeat: no-repeat;
 }
 
+.provider-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.provider-row-icon :deep(svg) {
+  width: 24px;
+  height: 24px;
+  display: block;
+}
+
 .row-copy {
   min-width: 0;
   flex: 1;
@@ -659,6 +714,11 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+.quality-chip {
+  color: var(--text-primary);
+  font-weight: 700;
 }
 
 .row-badge {
@@ -702,6 +762,45 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   margin-top: 3px;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.row-destination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.row-destination i {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.destination-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destination-btn {
+  flex-shrink: 0;
+  border: 1px solid rgba(126, 139, 164, 0.22);
+  border-radius: 7px;
+  padding: 3px 8px;
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--accent-color));
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.destination-btn:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 36%, var(--border-color));
+  color: var(--accent-color);
 }
 
 .hash-chip {

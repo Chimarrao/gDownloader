@@ -102,13 +102,13 @@ export function applyAccentColor(color?: string): void {
   )
 }
 
-export function applyUiPreferences(settings: Pick<AppSettingsSnapshot, 'fontFamily' | 'fontSize' | 'uiZoom' | 'accentColor'>): void {
+export function applyUiPreferences(settings: Pick<AppSettingsSnapshot, 'fontFamily' | 'fontSize' | 'uiZoom'>): void {
   const root = rootElement()
   if (!root) return
   root.style.setProperty('--ui-font-family', settings.fontFamily?.trim() || 'Inter')
   root.style.setProperty('--ui-font-size', `${Math.max(12, Number(settings.fontSize) || 14)}px`)
   root.style.setProperty('--ui-zoom', String(Math.min(1.5, Math.max(0.8, Number(settings.uiZoom) || 1))))
-  applyAccentColor(settings.accentColor)
+  applyAccentColor(undefined)
 }
 
 export interface UseThemeResult {

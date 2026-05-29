@@ -49,7 +49,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-type TourTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
+type TourTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'speed-history' | 'logs'
 
 interface TourStep {
   tab: TourTab

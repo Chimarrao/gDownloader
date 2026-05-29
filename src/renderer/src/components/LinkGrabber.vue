@@ -8,6 +8,21 @@
       @import-error="showImportError"
     />
 
+    <div v-if="rows.length > 0" class="global-destination">
+      <div>
+        <span>Pasta para novos downloads</span>
+        <strong :title="globalDestDir">{{ globalDestDir || defaultOutputDir() }}</strong>
+      </div>
+      <div class="global-destination-actions">
+        <button type="button" class="destination-btn" @click="chooseGlobalDestination">
+          Escolher pasta
+        </button>
+        <button type="button" class="destination-btn" @click="applyGlobalDestinationToRows">
+          Aplicar a todos
+        </button>
+      </div>
+    </div>
+
     <CapturedResultsPanel
       v-if="rows.length > 0"
       :rows="rows"
@@ -41,6 +56,7 @@
       @set-row-selection="setRowSelectionChecked"
       @toggle-expanded="toggleExpanded"
       @open-mirrors="openMirrors"
+      @choose-destination="chooseRowDestination"
       @filtered-change="visibleFilteredUrls = new Set($event)"
     />
 
@@ -85,7 +101,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ExpectedHash, FileInfo } from '../../../shared/types'
+import type { AppSettingsSnapshot, ExpectedHash, FileInfo } from '../../../shared/types'
 import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes, formatDuration } from '../utils/format'
@@ -143,6 +159,8 @@ const actionsRef = ref<HTMLElement | null>(null)
 const addQueueDone = ref(0)
 const addQueueTotal = ref(0)
 const expectedHashesByFilename = ref<Record<string, ExpectedHash>>({})
+const currentSettings = ref<AppSettingsSnapshot | null>(null)
+const globalDestDir = ref('')
 let detectTimer: number | null = null
 
 // ── Mirrors ───────────────────────────────────────────────────────────────
@@ -461,6 +479,7 @@ interface QueueEntry {
   title: string
   size: number
   sourceLabel: string
+  destDir: string
   selectedChildren?: string[]
   expectedHash?: ExpectedHash
 }
@@ -491,6 +510,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           title: row.info.name,
           size: row.info.size,
           sourceLabel: row.module.name,
+          destDir: row.destDir || defaultOutputDir(),
           expectedHash: row.expectedHash,
         })
         continue
@@ -502,6 +522,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         title: row.info.name,
         size: chosen.reduce((sum, child) => sum + child.size, 0),
         sourceLabel: row.module.name,
+        destDir: row.destDir || defaultOutputDir(),
         selectedChildren: chosen
           .map((child) => child.sourceUrl)
           .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
@@ -517,6 +538,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         title: row.info.name,
         size: row.info.size,
         sourceLabel: row.module.name,
+        destDir: row.destDir || defaultOutputDir(),
         expectedHash: row.expectedHash,
       })
     }
@@ -544,7 +566,11 @@ const addButtonLabel = computed(() => {
 })
 
 onMounted(async () => {
-  await window.api.settings.load().catch(() => null)
+  currentSettings.value = await window.api.settings.load().catch(() => null)
+  globalDestDir.value = defaultOutputDir()
+  for (const row of rows.value) {
+    row.destDir ||= defaultOutputDir()
+  }
 })
 
 onUnmounted(() => {
@@ -571,7 +597,7 @@ watch(
   () => props.incomingUrl,
   (url) => {
     if (!url) return
-    appendImportedLinks([url])
+    appendImportedLinks(parseUrls(url))
   }
 )
 
@@ -669,6 +695,7 @@ async function detectProviders(): Promise<void> {
     expanded: false,
     sourceUrls: [url],
     sourceLabels: [],
+    destDir: defaultOutputDir(),
     expectedHash: expectedHashFromUrl(url),
   }))
 
@@ -708,8 +735,10 @@ async function detectProviders(): Promise<void> {
           rows.value[index].info = hydrateInfoForSelection(cached)
           rows.value[index].displayName = cached.name
           applyExpectedHash(rows.value[index])
+          normalizeProviderSelection(rows.value[index])
           rows.value[index].cachedInfo = true
           rows.value[index].availability = 'checking'
+          await applyDiskAvailability(rows.value[index])
         }
 
         try {
@@ -718,11 +747,13 @@ async function detectProviders(): Promise<void> {
           rows.value[index].info = hydrateInfoForSelection(info)
           rows.value[index].displayName = info.name
           applyExpectedHash(rows.value[index])
+          normalizeProviderSelection(rows.value[index])
           rows.value[index].selected = isRowChecked(rows.value[index])
           rows.value[index].loading = false
           rows.value[index].availability = 'online'
           rows.value[index].cachedInfo = false
           rows.value[index].error = ''
+          await applyDiskAvailability(rows.value[index])
         } catch (error) {
           if (token !== detectToken.value) return
           rows.value[index].loading = false
@@ -766,7 +797,7 @@ async function addAll(): Promise<void> {
   emit('adding-urls', entries.length)
   emit('added')
   const current = await window.api.settings.load().catch(() => null)
-  const outputDir = current?.outputDir ?? '~/Downloads'
+  currentSettings.value = current
   for (const entry of entries) {
     try {
       await window.api.downloads.add(
@@ -774,7 +805,7 @@ async function addAll(): Promise<void> {
         entry.module.id,
         entry.title,
         entry.size,
-        outputDir,
+        entry.destDir,
         entry.selectedChildren,
         entry.expectedHash
       )
@@ -792,6 +823,25 @@ async function addAll(): Promise<void> {
   if (addedCount === entries.length) {
     urlsInput.value = ''
     rows.value = []
+  }
+}
+
+async function applyDiskAvailability(row: CapturedRow): Promise<void> {
+  const info = row.info
+  if (!info || info.size <= 0) return
+  const settings = currentSettings.value ?? await window.api.settings.load().catch(() => null)
+  currentSettings.value = settings
+  const outputDir = row.destDir || settings?.outputDir || '~/Downloads'
+  const disk = await window.api.system.diskSpace(outputDir).catch(() => null)
+  if (!disk) return
+  if (info.size > disk.freeBytes) {
+    row.selected = false
+    row.availability = 'offline'
+    row.error = `Espaço insuficiente em disco: precisa de ${fmtBytes(info.size)}, disponível ${fmtBytes(disk.freeBytes)}.`
+  } else if (row.error.startsWith('Espaço insuficiente em disco')) {
+    row.error = ''
+    row.availability = 'online'
+    row.selected = rowSelectableUnitCount(row) > 0
   }
 }
 
@@ -895,6 +945,7 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
     if ((!existing.info || !existing.info.children?.length) && row.info) existing.info = row.info
     if (!existing.error && row.error) existing.error = row.error
     if (!existing.expectedHash && row.expectedHash) existing.expectedHash = row.expectedHash
+    if (!existing.destDir && row.destDir) existing.destDir = row.destDir
   }
 
   for (const row of grouped.values()) {
@@ -902,6 +953,32 @@ function groupDuplicateRows(inputRows: CapturedRow[]): CapturedRow[] {
   }
 
   return [...grouped.values()]
+}
+
+function defaultOutputDir(): string {
+  return globalDestDir.value || currentSettings.value?.outputDir || '~/Downloads'
+}
+
+async function chooseRowDestination(row: CapturedRow): Promise<void> {
+  const chosen = await window.api.settings.chooseDirectory().catch(() => '')
+  if (!chosen) return
+  row.destDir = chosen
+  await applyDiskAvailability(row)
+}
+
+async function chooseGlobalDestination(): Promise<void> {
+  const chosen = await window.api.settings.chooseDirectory().catch(() => '')
+  if (!chosen) return
+  globalDestDir.value = chosen
+  applyGlobalDestinationToRows()
+}
+
+function applyGlobalDestinationToRows(): void {
+  const target = globalDestDir.value || defaultOutputDir()
+  for (const row of rows.value) {
+    row.destDir = target
+    void applyDiskAvailability(row)
+  }
 }
 
 function hydrateInfoForSelection(info: FileInfo): RowFileInfo {
@@ -915,8 +992,27 @@ function hydrateInfoForSelection(info: FileInfo): RowFileInfo {
   return next
 }
 
+function isYouTubeRow(row: CapturedRow): boolean {
+  return row.module?.id === 'youtube'
+}
+
+function normalizeProviderSelection(row: CapturedRow): void {
+  if (!isYouTubeRow(row) || !row.info?.children?.length) {
+    return
+  }
+  let selectedAssigned = false
+  for (const child of row.info.children) {
+    const selectable = !!child.sourceUrl && !child.isFolder
+    child.selected = selectable && !selectedAssigned
+    if (child.selected) {
+      selectedAssigned = true
+    }
+  }
+  row.selected = selectedAssigned
+}
+
 function supportsChildSelection(row: CapturedRow): boolean {
-  return !!row.info?.isFolder && selectableChildren(row).length > 0
+  return (!!row.info?.isFolder || isYouTubeRow(row)) && selectableChildren(row).length > 0
 }
 
 function childNodes(row: CapturedRow): DerivedChildNode<SelectableChild>[] {
@@ -1000,6 +1096,16 @@ function isFolderNodeIndeterminate(node: DerivedChildNode<SelectableChild>): boo
 }
 
 function setRowSelection(row: CapturedRow, checked: boolean): void {
+  if (isYouTubeRow(row) && supportsChildSelection(row)) {
+    let selectedAssigned = false
+    for (const child of selectableChildren(row)) {
+      child.selected = checked && !selectedAssigned
+      if (child.selected) selectedAssigned = true
+    }
+    row.selected = checked && selectedAssigned
+    return
+  }
+
   if (supportsChildSelection(row)) {
     for (const child of selectableChildren(row)) {
       child.selected = checked
@@ -1021,11 +1127,25 @@ function toggleRowChecked(payload: { row: CapturedRow; checked: boolean }): void
 }
 
 function toggleChildChecked(payload: { row: CapturedRow; child: SelectableChild; checked: boolean }): void {
+  if (isYouTubeRow(payload.row)) {
+    for (const child of selectableChildren(payload.row)) {
+      child.selected = child === payload.child ? payload.checked : false
+    }
+    payload.row.selected = isRowChecked(payload.row)
+    return
+  }
   payload.child.selected = payload.checked
   payload.row.selected = isRowChecked(payload.row)
 }
 
 function toggleFolderNodeChecked(payload: { row: CapturedRow; node: DerivedChildNode<SelectableChild>; checked: boolean }): void {
+  if (isYouTubeRow(payload.row)) {
+    const first = selectableChildrenFromNode(payload.node)[0]
+    if (first) {
+      toggleChildChecked({ row: payload.row, child: first, checked: payload.checked })
+    }
+    return
+  }
   for (const child of selectableChildrenFromNode(payload.node)) {
     child.selected = payload.checked
   }
@@ -1053,6 +1173,58 @@ function truncateUrl(url: string): string {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+.global-destination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.global-destination div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.global-destination span {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.global-destination strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-destination-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.destination-btn {
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 7px 10px;
 }
 
 .grabber-header {

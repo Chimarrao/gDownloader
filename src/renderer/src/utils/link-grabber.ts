@@ -20,8 +20,9 @@ export function normalizeUrlCandidate(line: string): string {
 
 export function parseUrls(text: string): string[] {
   const seen = new Set<string>()
-  for (const line of text.split('\n')) {
-    const url = normalizeUrlCandidate(line)
+  const matches = text.match(/https?:\/\/\S+/gi) ?? []
+  for (const match of matches) {
+    const url = normalizeUrlCandidate(match)
     if (url) seen.add(url)
   }
   return [...seen]

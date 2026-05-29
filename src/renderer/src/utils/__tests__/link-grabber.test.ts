@@ -27,6 +27,18 @@ describe('link-grabber utils', () => {
     ])
   })
 
+  it('extrai varios links do youtube mesmo quando vierem colados com espacos', () => {
+    const urls = parseUrls(
+      'https://youtu.be/xF8l17MJkMk?si=S-AEA4ToNixGWrE5 https://youtu.be/YirJG0bNHUI?si=4h3LQhrIk7q2I7Sp\n  https://youtu.be/pUscL1uCSrk?si=aoPm1kILDPwluytb',
+    )
+
+    expect(urls).toEqual([
+      'https://youtu.be/xF8l17MJkMk?si=S-AEA4ToNixGWrE5',
+      'https://youtu.be/YirJG0bNHUI?si=4h3LQhrIk7q2I7Sp',
+      'https://youtu.be/pUscL1uCSrk?si=aoPm1kILDPwluytb',
+    ])
+  })
+
   it('trunca urls longas pelo último segmento útil', () => {
     expect(truncateUrl('https://brfiles.com/f/MoQFnG5r/Hannibal.S02e01.1080P.WEB-DL.DUAL.DUBLASERIES.TV.mkv'))
       .toContain('Hannibal')

@@ -33,7 +33,7 @@ describe('download-display helpers', () => {
     const item = makeItem({
       status: DownloadStatus.Downloading,
       speedBps: 2048,
-      lastProgressAt: now - 2500,
+      lastProgressAt: now - 5500,
     })
 
     expect(effectiveSpeed(item, now)).toBe(0)
@@ -45,13 +45,13 @@ describe('download-display helpers', () => {
     const fast = makeItem({
       id: 'fast',
       status: DownloadStatus.Downloading,
-      speedBps: 4096,
+      speedBps: 1024 * 1024,
       lastProgressAt: now,
     })
     const slow = makeItem({
       id: 'slow',
       status: DownloadStatus.Downloading,
-      speedBps: 1024,
+      speedBps: 128 * 1024,
       lastProgressAt: now,
     })
 
