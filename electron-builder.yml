@@ -1,5 +1,6 @@
 appId: com.gdownloader.app
 productName: gDownloader
+icon: build/icon
 directories:
   buildResources: build
 files:
@@ -15,9 +16,14 @@ extraResources:
     filter:
       - gdownloader-backend
       - gdownloader-backend.exe
+  - from: resources/icons
+    to: icons
+  - from: resources/tor
+    to: tor
 asarUnpack:
   - resources/**
 win:
+  icon: build/icon.ico
   target:
     - portable
     - nsis
@@ -30,6 +36,7 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  icon: build/icon.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -42,6 +49,7 @@ dmg:
 zip:
   artifactName: ${name}-${version}-mac-portable.${ext}
 linux:
+  icon: build/icon.png
   target:
     - AppImage
   maintainer: electronjs.org
