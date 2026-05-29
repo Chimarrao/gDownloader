@@ -7,7 +7,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, host_matches, Provider, ProgressUpdate, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, rate_limit_error, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct GDriveProvider;
 
@@ -66,9 +66,10 @@ impl GDriveProvider {
     }
 
     // Monta a URL de download direto
-    // confirm=t evita a página de aviso para arquivos grandes
+    // Sem confirm para permitir que o Google devolva a página com uuid atual
+    // quando o arquivo é grande demais para scan de vírus.
     fn download_url(id: &str) -> String {
-        format!("https://drive.google.com/uc?export=download&id={id}&confirm=t")
+        format!("https://drive.google.com/uc?export=download&id={id}")
     }
 
     fn is_binary_response(resp: &reqwest::Response) -> bool {
@@ -96,12 +97,33 @@ impl GDriveProvider {
 
         let html = resp.text().await.unwrap_or_default();
         let title = Self::extract_title(&html, "Google Drive retornou uma página HTML");
-        let message = regex::Regex::new(r#"(?is)<p[^>]*class="uc-(?:error|warning)-(?:caption|subcaption)"[^>]*>(.*?)</p>"#)
+        let messages = regex::Regex::new(r#"(?is)<p[^>]*class="uc-(?:error|warning)-(?:caption|subcaption)"[^>]*>(.*?)</p>"#)
             .ok()
-            .and_then(|re| re.captures(&html))
-            .map(|captures| Self::strip_html(&captures[1]))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| title.clone());
+            .map(|re| {
+                re.captures_iter(&html)
+                    .filter_map(|captures| {
+                        let value = Self::strip_html(&captures[1]);
+                        if value.trim().is_empty() { None } else { Some(value) }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let message = if messages.is_empty() {
+            title.clone()
+        } else {
+            messages.join(" ")
+        };
+
+        let lower = message.to_lowercase();
+        if lower.contains("too many users")
+            || lower.contains("quota exceeded")
+            || lower.contains("view or download this file at this time")
+        {
+            return Err(rate_limit_error(
+                24 * 60 * 60,
+                "Google Drive atingiu a cota pública deste arquivo. O arquivo existe, mas o Google bloqueou downloads públicos temporariamente; vamos tentar novamente em até 24h.",
+            ));
+        }
 
         Err(anyhow!("Google Drive não liberou o arquivo: {message}"))
     }

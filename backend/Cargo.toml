@@ -18,7 +18,7 @@ axum = { version = "0.7", features = ["ws", "multipart"] }
 # Runtime assíncrono — permite usar async/await no Rust (equivalente a Node.js event loop)
 tokio = { version = "1", features = ["full"] }
 # Cliente HTTP para baixar arquivos (equivalente a axios/fetch)
-reqwest = { version = "0.12", features = ["stream", "json", "gzip", "multipart", "cookies"] }
+reqwest = { version = "0.12", features = ["stream", "json", "gzip", "multipart", "cookies", "socks"] }
 # Serialização/deserialização JSON (como JSON.parse/stringify)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

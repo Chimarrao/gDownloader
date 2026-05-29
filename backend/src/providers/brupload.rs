@@ -1,38 +1,17 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
-use serde::Deserialize;
-use serde_json::json;
 use tokio::io::AsyncWriteExt;
-use tokio::time::{sleep, Duration};
 
 use crate::models::FileInfo;
 
 use super::{
-    apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches, parse_human_size,
-    premium_required_error, ProgressUpdate, Provider, ProviderDefaults,
+    apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches,
+    parse_human_size, premium_required_error, ProgressUpdate, Provider, ProviderDefaults,
 };
 
 pub struct BruploadProvider;
 
 impl BruploadProvider {
-    fn electron_proxy_port() -> Option<u16> {
-        std::env::var("BRUPLOAD_PROXY_PORT")
-            .ok()
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|&value| value > 0)
-    }
-
-    async fn proxy_action(payload: serde_json::Value) -> Result<serde_json::Value> {
-        let port = Self::electron_proxy_port()
-            .ok_or_else(|| anyhow!("Helper local do BRupload não disponível"))?;
-        let proxy_url = format!("http://127.0.0.1:{port}/");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(240))
-            .build()?;
-        let response = client.post(&proxy_url).json(&payload).send().await?;
-        Ok(response.json::<serde_json::Value>().await?)
-    }
-
     pub fn matches(url: &str) -> bool {
         host_matches(url, &["brupload.net", "www.brupload.net"]) && Self::file_code(url).is_some()
     }
@@ -56,11 +35,13 @@ impl BruploadProvider {
     }
 
     fn decode_html(value: &str) -> String {
-        value.replace("&gt;", ">")
+        value
+            .replace("&gt;", ">")
             .replace("&lt;", "<")
             .replace("&amp;", "&")
             .replace("&quot;", "\"")
             .replace("&#039;", "'")
+            .replace("&#39;", "'")
             .replace("&#133;", "...")
             .trim()
             .to_string()
@@ -98,33 +79,30 @@ impl BruploadProvider {
             }
         }
 
-        if let Some(title) = regex::Regex::new(r#"(?is)<title>\s*Download\s+([^<]+?)\s*</title>"#)
+        regex::Regex::new(r#"(?is)<title>\s*Download\s+([^<]+?)\s*</title>"#)
             .ok()
             .and_then(|re| re.captures(html))
             .map(|captures| Self::decode_html(&captures[1]))
-        {
-            if !title.is_empty() {
-                return Some(title);
-            }
-        }
-
-        None
-    }
-
-    fn parse_human_size(value: &str) -> u64 {
-        parse_human_size(value)
+            .filter(|title| !title.is_empty())
     }
 
     fn extract_size(html: &str) -> u64 {
-        let value = regex::Regex::new(
+        let patterns = [
             r#"(?is)<span class="statd">\s*(?:tamanho|size)\s*</span>\s*<span>\s*([^<]+)\s*</span>"#,
-        )
-        .ok()
-        .and_then(|re| re.captures(html))
-        .map(|captures| Self::decode_html(&captures[1]))
-        .unwrap_or_default();
+            r#"(?is)(?:tamanho|size)\s*:\s*</[^>]+>\s*<[^>]+>\s*([^<]+)\s*<"#,
+            r#"(?is)(?:tamanho|size)\s*:\s*([0-9][0-9.,]*\s*[KMGT]?B)"#,
+        ];
 
-        Self::parse_human_size(&value)
+        patterns
+            .iter()
+            .find_map(|pattern| {
+                regex::Regex::new(pattern)
+                    .ok()
+                    .and_then(|re| re.captures(html))
+                    .map(|captures| parse_human_size(&Self::decode_html(&captures[1])))
+                    .filter(|size| *size > 0)
+            })
+            .unwrap_or(0)
     }
 
     fn extract_error(html: &str) -> Option<String> {
@@ -139,21 +117,17 @@ impl BruploadProvider {
             .map(|re| re.replace_all(&cleaned, "").to_string())
             .unwrap_or(cleaned);
         let message = Self::decode_html(&text);
-        if message.is_empty() {
-            None
-        } else {
-            Some(message)
-        }
+        if message.is_empty() { None } else { Some(message) }
     }
 
     fn extract_wait_seconds(html: &str) -> Option<u64> {
-        let patterns = [
+        [
             r#"class="seconds">\s*(\d+)\s*<"#,
             r#"var\s+estimated_time\s*=\s*(\d+)"#,
             r#"var\s+seconds\s*=\s*(\d+)"#,
-        ];
-
-        patterns.iter().find_map(|pattern| {
+        ]
+        .iter()
+        .find_map(|pattern| {
             regex::Regex::new(pattern)
                 .ok()
                 .and_then(|re| re.captures(html))
@@ -176,45 +150,19 @@ impl BruploadProvider {
     }
 
     fn extract_direct_download_url(html: &str) -> Option<String> {
-        let patterns = [
+        [
             r#"(?is)href=["'](https?://[^"']+)["'][^>]*class=["'][^"']*downloadbtn"#,
             r#"(?is)href=["'](https?://[^"']+)["'][^>]*id=["']downloadbtn"#,
             r#"(?is)window\.location\s*=\s*["'](https?://[^"']+)["']"#,
             r#"(?is)document\.location\s*=\s*["'](https?://[^"']+)["']"#,
-        ];
-
-        patterns
-            .iter()
-            .find_map(|pattern| {
-                regex::Regex::new(pattern)
-                    .ok()
-                    .and_then(|re| re.captures(html))
-                    .map(|captures| captures[1].to_string())
-            })
-    }
-
-    async fn helper_start_download(source_url: &str, dest_path: &str) -> Result<String> {
-        let json = Self::proxy_action(json!({
-            "action": "brupload_download_file",
-            "url": source_url,
-            "destPath": dest_path,
-        }))
-        .await?;
-
-        json["jobId"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("Helper local do BRupload não retornou um jobId"))
-    }
-
-    async fn helper_job_status(job_id: &str) -> Result<HelperJobStatus> {
-        let json = Self::proxy_action(json!({
-            "action": "brupload_job_status",
-            "jobId": job_id,
-        }))
-        .await?;
-
-        Ok(serde_json::from_value::<HelperJobStatus>(json)?)
+        ]
+        .iter()
+        .find_map(|pattern| {
+            regex::Regex::new(pattern)
+                .ok()
+                .and_then(|re| re.captures(html))
+                .map(|captures| captures[1].to_string())
+        })
     }
 
     fn is_binary_download_response(response: &reqwest::Response) -> bool {
@@ -295,13 +243,19 @@ impl BruploadProvider {
         payload
     }
 
-    fn build_download2_payload(html: &str, referer: &str, captcha_token: Option<&str>) -> Vec<(String, String)> {
+    fn build_download2_payload(
+        html: &str,
+        referer: &str,
+        captcha_token: Option<&str>,
+    ) -> Vec<(String, String)> {
         let mut payload = Self::parse_hidden_inputs(html)
             .into_iter()
-            .filter(|(name, _)| matches!(
-                name.as_str(),
-                "op" | "id" | "rand" | "referer" | "method_free" | "method_premium" | "usr_login" | "fname"
-            ))
+            .filter(|(name, _)| {
+                matches!(
+                    name.as_str(),
+                    "op" | "id" | "rand" | "referer" | "method_free" | "method_premium" | "usr_login" | "fname"
+                )
+            })
             .collect::<Vec<_>>();
 
         if !payload.iter().any(|(name, _)| name == "referer") {
@@ -318,25 +272,10 @@ impl BruploadProvider {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct HelperJobStatus {
-    status: String,
-    #[serde(default, rename = "bytesDownloaded")]
-    bytes_downloaded: u64,
-    #[serde(default, rename = "totalBytes")]
-    total_bytes: u64,
-    #[serde(default, rename = "speedBps")]
-    speed_bps: u64,
-    #[serde(default, rename = "etaSecs")]
-    eta_secs: u64,
-    filename: Option<String>,
-    error: Option<String>,
-}
-
 impl ProviderDefaults for BruploadProvider {}
 
 impl Provider for BruploadProvider {
-    fn name(&self) -> &str { "BRupload" }
+    fn name(&self) -> &str { "BRUpload" }
 
     fn get_file_info<'a>(
         &'a self,
@@ -344,7 +283,7 @@ impl Provider for BruploadProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
         Box::pin(async move {
             let client = <Self as ProviderDefaults>::http_client()?;
-            let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRupload inválida"))?;
+            let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRUpload inválida"))?;
             let html = client.get(url).send().await?.error_for_status()?.text().await?;
             let mut filename = Self::extract_filename(&html)
                 .unwrap_or_else(|| "arquivo_brupload".to_string());
@@ -366,10 +305,7 @@ impl Provider for BruploadProvider {
                                     filename = parsed_name;
                                 }
                             }
-                            let parsed_size = Self::extract_size(&download1_html);
-                            if parsed_size > 0 {
-                                size = parsed_size;
-                            }
+                            size = size.max(Self::extract_size(&download1_html));
                         }
                     }
                 }
@@ -395,71 +331,12 @@ impl Provider for BruploadProvider {
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
         Box::pin(async move {
-            if Self::electron_proxy_port().is_some() {
-                let info = self.get_file_info(url).await?;
-
-                if let Some(parent) = std::path::Path::new(dest_path).parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-
-                let job_id = Self::helper_start_download(url, dest_path).await?;
-
-                loop {
-                    sleep(Duration::from_millis(500)).await;
-                    let status = Self::helper_job_status(&job_id).await?;
-
-                    let total_bytes = if info.size > 0 {
-                        info.size.max(status.total_bytes)
-                    } else {
-                        status.total_bytes
-                    };
-
-                    let _ = progress_tx
-                        .send(ProgressUpdate {
-                            bytes_downloaded: status.bytes_downloaded,
-                            total_bytes,
-                            child_path: None,
-                            child_filename: status.filename.clone(),
-                            child_bytes_downloaded: None,
-                            child_total_bytes: None,
-                            child_speed_bps: Some(status.speed_bps),
-                            child_eta_secs: Some(status.eta_secs),
-                        })
-                        .await;
-
-                    match status.status.as_str() {
-                        "pending" | "downloading" => continue,
-                        "complete" => return Ok(status.bytes_downloaded.max(total_bytes)),
-                        "cancelled" => {
-                            return Err(anyhow!(
-                                "O navegador integrado do BRupload cancelou este download."
-                            ));
-                        }
-                        "error" => {
-                            return Err(anyhow!(
-                                "{}",
-                                status.error.unwrap_or_else(|| {
-                                    "O navegador integrado do BRupload falhou ao iniciar o download."
-                                        .to_string()
-                                })
-                            ));
-                        }
-                        other => {
-                            return Err(anyhow!(
-                                "Status inesperado do helper do BRupload: {other}"
-                            ));
-                        }
-                    }
-                }
-            }
-
             let client = <Self as ProviderDefaults>::http_client()?;
-            let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRupload inválida"))?;
+            let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRUpload inválida"))?;
             let captcha_token = Self::extract_captcha_token(url);
 
             let initial_page = client.get(url).send().await?.error_for_status()?.text().await?;
             let expected_size = Self::extract_size(&initial_page);
-
             let download1_payload = Self::build_download1_payload(&initial_page, &code, url);
             let download1_html = client
                 .post(url)
@@ -472,7 +349,7 @@ impl Provider for BruploadProvider {
                 .await?;
 
             if let Some(message) = Self::extract_error(&download1_html) {
-                return Err(anyhow!("BRupload bloqueou o download gratuito: {message}"));
+                return Err(anyhow!("BRUpload bloqueou o download gratuito: {message}"));
             }
 
             if captcha_token.is_none() {
@@ -497,30 +374,6 @@ impl Provider for BruploadProvider {
                 .send()
                 .await?;
 
-            if response.status().is_redirection() {
-                if let Some(location) = response
-                    .headers()
-                    .get("Location")
-                    .and_then(|value| value.to_str().ok())
-                {
-                    let direct_url = if location.starts_with("http") {
-                        location.to_string()
-                    } else {
-                        format!("https://www.brupload.net{location}")
-                    };
-
-                    let resp = client.get(&direct_url).send().await?.error_for_status()?;
-                    return Self::stream_response_to_file(
-                        resp,
-                        dest_path,
-                        expected_size,
-                        speed_limit_bps,
-                        progress_tx,
-                    )
-                    .await;
-                }
-            }
-
             if Self::is_binary_download_response(&response) {
                 let response = response.error_for_status()?;
                 return Self::stream_response_to_file(
@@ -536,43 +389,7 @@ impl Provider for BruploadProvider {
             let download2_html = response.error_for_status()?.text().await?;
 
             if let Some(message) = Self::extract_error(&download2_html) {
-                if message.to_lowercase().contains("skipped countdown") {
-                    if let Some(wait) = Self::extract_wait_seconds(&download1_html) {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(wait.min(180).saturating_add(2))).await;
-                        let response = client
-                            .post(url)
-                            .header("Referer", url)
-                            .form(&download2_payload)
-                            .send()
-                            .await?;
-
-                        if Self::is_binary_download_response(&response) {
-                            let response = response.error_for_status()?;
-                            return Self::stream_response_to_file(
-                                response,
-                                dest_path,
-                                expected_size,
-                                speed_limit_bps,
-                                progress_tx,
-                            )
-                            .await;
-                        }
-
-                        let retried_html = response.error_for_status()?.text().await?;
-                        if let Some(direct_url) = Self::extract_direct_download_url(&retried_html) {
-                            let resp = client.get(&direct_url).send().await?.error_for_status()?;
-                            return Self::stream_response_to_file(
-                                resp,
-                                dest_path,
-                                expected_size,
-                                speed_limit_bps,
-                                progress_tx,
-                            )
-                            .await;
-                        }
-                    }
-                }
-                return Err(anyhow!("BRupload rejeitou o download: {message}"));
+                return Err(anyhow!("BRUpload rejeitou o download: {message}"));
             }
 
             if captcha_token.is_none() {
@@ -586,19 +403,12 @@ impl Provider for BruploadProvider {
 
             let direct_url = Self::extract_direct_download_url(&download2_html)
                 .ok_or_else(|| premium_required_error(
-                    "BRupload",
+                    "BRUpload",
                     "o host pode exigir premium, captcha adicional ou outro limite",
                 ))?;
 
             let resp = client.get(&direct_url).send().await?.error_for_status()?;
-            Self::stream_response_to_file(
-                resp,
-                dest_path,
-                expected_size,
-                speed_limit_bps,
-                progress_tx,
-            )
-            .await
+            Self::stream_response_to_file(resp, dest_path, expected_size, speed_limit_bps, progress_tx).await
         })
     }
 }
@@ -615,6 +425,18 @@ mod tests {
     }
 
     #[test]
+    fn extracts_filename_from_current_page() {
+        let html = r#"
+            <title>Download Familia Soprano S01E04 1080p Mini HMAX WEB DD2 264 DUAL Dinho mkv</title>
+            <input type="hidden" name="fname" value="Familia.Soprano.S01E04.1080p.mkv">
+        "#;
+        assert_eq!(
+            BruploadProvider::extract_filename(html).as_deref(),
+            Some("Familia.Soprano.S01E04.1080p.mkv")
+        );
+    }
+
+    #[test]
     fn detects_captcha_sitekeys_and_wait_time() {
         let html = r#"
             <div class="g-recaptcha" data-sitekey="sitekey-recaptcha"></div>
@@ -622,14 +444,8 @@ mod tests {
             <script>var seconds = 15;</script>
         "#;
 
-        assert_eq!(
-            BruploadProvider::detect_recaptcha_sitekey(html).as_deref(),
-            Some("sitekey-recaptcha")
-        );
-        assert_eq!(
-            BruploadProvider::detect_hcaptcha_sitekey(html).as_deref(),
-            Some("sitekey-hcaptcha")
-        );
+        assert_eq!(BruploadProvider::detect_recaptcha_sitekey(html).as_deref(), Some("sitekey-recaptcha"));
+        assert_eq!(BruploadProvider::detect_hcaptcha_sitekey(html).as_deref(), Some("sitekey-hcaptcha"));
         assert_eq!(BruploadProvider::extract_wait_seconds(html), Some(15));
     }
 }

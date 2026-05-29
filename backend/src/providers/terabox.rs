@@ -93,8 +93,15 @@ impl TeraboxProvider {
                 "www.1024tera.com",
                 "terabox.com",
                 "www.terabox.com",
+                "terabox.app",
+                "www.terabox.app",
             ],
-        ) && matches!(path_segments(url).as_slice(), [first, second, ..] if first == "sharing" && (second == "link" || second == "videoPlay"))
+        ) && {
+            let segments = path_segments(url);
+            segments
+                .windows(2)
+                .any(|parts| parts[0] == "sharing" && (parts[1] == "link" || parts[1] == "videoPlay"))
+        }
     }
 
     fn extract_query_value(url: &str, key: &str) -> Option<String> {
@@ -225,7 +232,7 @@ impl TeraboxProvider {
     }
 
     fn api_host(url: &str) -> &'static str {
-        if host_matches(url, &["terabox.com", "www.terabox.com"]) {
+        if host_matches(url, &["terabox.com", "www.terabox.com", "terabox.app", "www.terabox.app"]) {
             "https://www.terabox.com"
         } else {
             "https://www.1024tera.com"
@@ -238,46 +245,58 @@ impl TeraboxProvider {
         surl: &str,
         origin_url: &str,
     ) -> Result<Value> {
-        let logid = Self::make_logid();
         let host = Self::api_host(origin_url);
-        let json: Value = Self::with_saved_cookies(
-            client
-                .get(format!("{host}/api/shorturlinfo"))
-                .query(&[
-                    ("app_id", APP_ID),
-                    ("web", "1"),
-                    ("channel", CHANNEL),
-                    ("clienttype", "0"),
-                    ("jsToken", js_token),
-                    ("dp-logid", &logid),
-                    ("shorturl", &format!("1{surl}")),
-                    ("root", "1"),
-                    ("scene", ""),
-                ])
-        )
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let shorturl_candidates = if surl.starts_with('1') {
+            vec![surl.to_string(), surl.trim_start_matches('1').to_string()]
+        } else {
+            vec![format!("1{surl}"), surl.to_string()]
+        };
 
-        let errno = json["errno"].as_i64().unwrap_or(-1);
-        let errmsg = json["errmsg"].as_str().unwrap_or("");
-        if errno == 400210 || errmsg.contains("verify_v2") {
-            return Err(anyhow!(
-                "O compartilhamento público do TeraBox exigiu verificação adicional do host antes de liberar a leitura."
-            ));
-        }
+        let mut last_error = None;
+        for shorturl in shorturl_candidates {
+            if shorturl.is_empty() {
+                continue;
+            }
+            let logid = Self::make_logid();
+            let json: Value = Self::with_saved_cookies(
+                client
+                    .get(format!("{host}/api/shorturlinfo"))
+                    .query(&[
+                        ("app_id", APP_ID),
+                        ("web", "1"),
+                        ("channel", CHANNEL),
+                        ("clienttype", "0"),
+                        ("jsToken", js_token),
+                        ("dp-logid", &logid),
+                        ("shorturl", shorturl.as_str()),
+                        ("root", "1"),
+                        ("scene", ""),
+                    ])
+            )
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
 
-        if errno != 0 {
-            return Err(anyhow!(
+            let errno = json["errno"].as_i64().unwrap_or(-1);
+            let errmsg = json["errmsg"].as_str().unwrap_or("");
+            if errno == 0 {
+                return Ok(json);
+            }
+            if errno == 400210 || errmsg.contains("verify_v2") {
+                return Err(anyhow!(
+                    "O compartilhamento público do TeraBox exigiu verificação adicional do host antes de liberar a leitura."
+                ));
+            }
+            last_error = Some(format!(
                 "TeraBox falhou ao ler o compartilhamento (errno {errno}{}{})",
                 if errmsg.is_empty() { "" } else { ": " },
                 errmsg
             ));
         }
 
-        Ok(json)
+        Err(anyhow!(last_error.unwrap_or_else(|| "TeraBox não aceitou o código do compartilhamento".to_string())))
     }
 
     fn build_share_list_url(ctx: &ShareContext, dir: Option<&str>, fid: Option<&str>, page: usize, sekey: Option<&str>) -> String {
@@ -663,7 +682,7 @@ impl Provider for TeraboxProvider {
         url: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
         Box::pin(async move {
-            if url.contains("/sharing/link") && electron_proxy_port().is_some() {
+            if Self::matches(url) && path_segments(url).windows(2).any(|parts| parts[0] == "sharing" && parts[1] == "link") && electron_proxy_port().is_some() {
                 let mut info = Self::helper_file_info(url).await?;
                 let fallback = if info.is_folder {
                     "pasta_terabox"
@@ -875,7 +894,8 @@ mod tests {
 
     #[test]
     fn extracts_surl() {
-        let url = "https://www.1024tera.com/portuguese/sharing/link?surl=7ztIK8tA1cPr03ELh563Rg";
+        let url = "https://www.terabox.app/portuguese/sharing/link?surl=7ztIK8tA1cPr03ELh563Rg";
+        assert!(TeraboxProvider::matches(url));
         assert_eq!(
             TeraboxProvider::extract_surl(url).as_deref(),
             Some("7ztIK8tA1cPr03ELh563Rg")

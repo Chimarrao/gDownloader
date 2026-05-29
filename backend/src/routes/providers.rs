@@ -19,10 +19,6 @@ fn account_state_for_provider(
             connected: !account.cookies.is_empty() || account.verified_at.is_some(),
             verified_at: account.verified_at.clone(),
         }),
-        "BRupload" => secure.brupload_account.as_ref().map(|account| providers::ProviderAccountState {
-            connected: !account.cookies.is_empty() || account.verified_at.is_some(),
-            verified_at: account.verified_at.clone(),
-        }),
         _ => None,
     }
 }
@@ -84,7 +80,33 @@ pub async fn get_file_info(
         (StatusCode::BAD_REQUEST, Json(ApiError::new("URL não reconhecida")))
     })?;
 
-    let info: FileInfo = provider.get_file_info(&params.url).await.map_err(|e| {
+    let context = {
+        let settings = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| crate::db::load_public_settings(&db).ok())
+            .unwrap_or_default();
+        providers::DownloadContext {
+            db_path: state.db_path.clone(),
+            proxy_mode: settings.proxy_mode,
+            proxy_host: settings.proxy_host,
+            proxy_port: settings.proxy_port,
+            proxy_username: settings.proxy_username,
+            proxy_password: settings.proxy_password,
+            youtube_use_cookies: settings.youtube_use_cookies,
+            youtube_cookie_browser: settings.youtube_cookie_browser,
+            youtube_cookies_file: settings.youtube_cookies_file,
+            youtube_merge_format: settings.youtube_merge_format,
+            youtube_download_subs: settings.youtube_download_subs,
+            youtube_sub_langs: settings.youtube_sub_langs,
+            youtube_embed_subs: settings.youtube_embed_subs,
+            youtube_split_chapters: settings.youtube_split_chapters,
+            request_headers: std::collections::HashMap::new(),
+        }
+    };
+
+    let info: FileInfo = provider.get_file_info_with_context(&params.url, context).await.map_err(|e| {
         (StatusCode::BAD_REQUEST, Json(ApiError::new(e.to_string())))
     })?;
 
@@ -136,6 +158,47 @@ pub async fn get_cached_file_info(
     };
 
     Ok(Json(cached))
+}
+
+pub async fn file_info_cache_stats(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let Ok(db) = state.db.lock() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("Falha ao abrir o banco local")),
+        ));
+    };
+    let (entries, bytes) = crate::db::file_info_cache_stats(&db).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Falha ao medir o cache local: {error}"))),
+        )
+    })?;
+    Ok(Json(serde_json::json!({
+        "entries": entries,
+        "bytes": bytes,
+    })))
+}
+
+pub async fn clear_file_info_cache(
+    axum::extract::State(state): axum::extract::State<crate::ws::AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let Ok(db) = state.db.lock() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("Falha ao abrir o banco local")),
+        ));
+    };
+    let removed = crate::db::clear_file_info_cache(&db).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new(format!("Falha ao limpar o cache local: {error}"))),
+        )
+    })?;
+    Ok(Json(serde_json::json!({
+        "removed": removed,
+    })))
 }
 
 // GET /providers

@@ -57,3 +57,19 @@ async fn live_google_drive_folder_info_returns_children() {
     assert_eq!(info.children.as_ref().map(Vec::len), Some(5));
     assert!(info.size > 0);
 }
+
+#[tokio::test]
+#[ignore]
+async fn live_google_drive_large_folder_info_returns_children() {
+    let provider = GDriveProvider;
+    let info = provider
+        .get_file_info("https://drive.google.com/drive/folders/1BpXC0DFRgRdVUiHvrixr-X0FArFFw2Si")
+        .await
+        .expect("folder info");
+
+    assert!(info.is_folder);
+    let children = info.children.as_ref().expect("children");
+    assert!(children.iter().any(|child| child.filename.ends_with(".mkv")));
+    assert!(children.iter().any(|child| child.filename.ends_with(".txt")));
+    assert!(info.size > 20 * 1024 * 1024 * 1024);
+}

@@ -11,6 +11,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::time::{sleep, Duration, Instant};
 
+#[derive(Clone)]
 struct ProxyConfig {
     mode: String,
     host: String,
@@ -26,6 +27,10 @@ impl Default for ProxyConfig {
 }
 
 static GLOBAL_PROXY: OnceLock<RwLock<ProxyConfig>> = OnceLock::new();
+
+tokio::task_local! {
+    static TASK_PROXY: ProxyConfig;
+}
 
 pub fn update_global_proxy(mode: String, host: String, port: u16, username: Option<String>, password: Option<String>) {
     let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
@@ -52,6 +57,8 @@ pub mod mega;
 pub mod pixeldrain;
 pub mod sharepoint;
 pub mod terabox;
+pub mod transferit;
+pub mod youtube;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -242,12 +249,14 @@ pub fn all_provider_descriptors() -> Vec<ProviderDescriptor> {
         ("1Fichier", "#e67e22"),
         ("Drime", "#2ec4b6"),
         ("Rapidgator", "#23a2dc"),
-        ("BRupload", "#16a34a"),
+        ("BRUpload", "#f97316"),
         ("BRFiles", "#22c55e"),
         ("MoonDL", "#64748b"),
         ("AkiraBox", "#0f172a"),
         ("Katfile", "#2563eb"),
         ("Terabox", "#2a6df5"),
+        ("Transfer.it", "#1D81FF"),
+        ("YouTube", "#FF0000"),
         ("OneDrive", "#0a66d9"),
         ("Direct HTTP", "#0f766e"),
     ]
@@ -299,9 +308,8 @@ pub trait ProviderDefaults {
                 } else {
                     format!("http://{}:{}", proxy_host, proxy_port)
                 };
-                if let Ok(proxy) = reqwest::Proxy::http(&proxy_url) {
-                    builder = builder.proxy(proxy);
-                }
+                let proxy = reqwest::Proxy::http(&proxy_url)?;
+                builder = builder.proxy(proxy);
             }
             "socks5" => {
                 let proxy_url = if let (Some(username), Some(password)) = (proxy_username, proxy_password) {
@@ -309,16 +317,20 @@ pub trait ProviderDefaults {
                 } else {
                     format!("socks5://{}:{}", proxy_host, proxy_port)
                 };
-                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-                    builder = builder.proxy(proxy);
-                }
+                let proxy = reqwest::Proxy::all(&proxy_url)?;
+                builder = builder.proxy(proxy);
             }
             "tor" => {
-                // TOR uses SOCKS5 on localhost:9050
-                let proxy_url = "socks5://127.0.0.1:9050";
-                if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-                    builder = builder.proxy(proxy);
-                }
+                // socks5h faz a resolução DNS dentro do Tor e evita vazamento local.
+                let host = if proxy_host.trim().is_empty() { "127.0.0.1" } else { proxy_host };
+                let port = if proxy_port == 0 { 9050 } else { proxy_port };
+                let proxy_url = if let (Some(username), Some(password)) = (proxy_username, proxy_password) {
+                    format!("socks5h://{}:{}@{}:{}", username, password, host, port)
+                } else {
+                    format!("socks5h://{}:{}", host, port)
+                };
+                let proxy = reqwest::Proxy::all(proxy_url)?;
+                builder = builder.proxy(proxy);
             }
             _ => {} // none or invalid
         }
@@ -330,6 +342,15 @@ pub trait ProviderDefaults {
     where
         Self: Sized,
     {
+        if let Ok(proxy) = TASK_PROXY.try_with(Clone::clone) {
+            return Self::http_client_with_proxy(
+                &proxy.mode,
+                &proxy.host,
+                proxy.port,
+                proxy.username.as_deref(),
+                proxy.password.as_deref(),
+            );
+        }
         let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
         if let Ok(proxy) = lock.read() {
             Self::http_client_with_proxy(&proxy.mode, &proxy.host, proxy.port,
@@ -412,6 +433,14 @@ pub struct DownloadContext {
     pub proxy_port: u16,
     pub proxy_username: Option<String>,
     pub proxy_password: Option<String>,
+    pub youtube_use_cookies: bool,
+    pub youtube_cookie_browser: String,
+    pub youtube_cookies_file: String,
+    pub youtube_merge_format: String,
+    pub youtube_download_subs: bool,
+    pub youtube_sub_langs: String,
+    pub youtube_embed_subs: bool,
+    pub youtube_split_chapters: bool,
     pub request_headers: std::collections::HashMap<String, String>,
 }
 
@@ -618,17 +647,28 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
-        _context: DownloadContext,
+        context: DownloadContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
-        // For now, just call the regular download. Providers can override if needed.
-        self.download(
-            url,
-            dest_path,
-            speed_limit_bps,
-            parallel_parts,
-            selected_children,
-            progress_tx,
-        )
+        let proxy = ProxyConfig {
+            mode: context.proxy_mode,
+            host: context.proxy_host,
+            port: context.proxy_port,
+            username: context.proxy_username,
+            password: context.proxy_password,
+        };
+        Box::pin(async move {
+            TASK_PROXY.scope(
+                proxy,
+                self.download(
+                    url,
+                    dest_path,
+                    speed_limit_bps,
+                    parallel_parts,
+                    selected_children,
+                    progress_tx,
+                ),
+            ).await
+        })
     }
 }
 
@@ -646,13 +686,6 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         },
         "1Fichier" => ProviderCapabilities {
             free_cooldown_secs: Some(300),
-            ..ProviderCapabilities::default()
-        },
-        "BRupload" => ProviderCapabilities {
-            requires_browser_helper: true,
-            supports_manual_auth: true,
-            supports_auto_captcha: true,
-            requires_account_for_large_files: true,
             ..ProviderCapabilities::default()
         },
         "AkiraBox" => ProviderCapabilities {
@@ -681,9 +714,19 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
             supports_folder: true,
             ..ProviderCapabilities::default()
         },
+        "YouTube" => ProviderCapabilities {
+            supports_folder: true,
+            supports_parallel_parts: false,
+            ..ProviderCapabilities::default()
+        },
         "Rapidgator" => ProviderCapabilities {
             supports_auto_captcha: true,
             free_cooldown_secs: Some(3600),
+            ..ProviderCapabilities::default()
+        },
+        "BRUpload" => ProviderCapabilities {
+            supports_auto_captcha: true,
+            free_cooldown_secs: Some(60),
             ..ProviderCapabilities::default()
         },
         _ => ProviderCapabilities::default(),
@@ -699,12 +742,14 @@ pub fn provider_id_from_name(name: &str) -> &'static str {
         "1Fichier" => "fichier",
         "Drime" => "drime",
         "Rapidgator" => "rapidgator",
-        "BRupload" => "brupload",
+        "BRUpload" => "brupload",
         "BRFiles" => "brfiles",
         "MoonDL" => "moondl",
         "AkiraBox" => "akirabox",
         "Katfile" => "katfile",
         "Terabox" => "terabox",
+        "Transfer.it" => "transferit",
+        "YouTube" => "youtube",
         "OneDrive" => "onedrive",
         "Direct HTTP" => "direct_http",
         _ => "unknown",
@@ -732,6 +777,12 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if terabox::TeraboxProvider::matches(url) {
         return Some(Box::new(terabox::TeraboxProvider));
+    }
+    if transferit::TransferItProvider::matches(url) {
+        return Some(Box::new(transferit::TransferItProvider));
+    }
+    if youtube::YouTubeProvider::matches(url) {
+        return Some(Box::new(youtube::YouTubeProvider));
     }
     if sharepoint::SharePointProvider::matches(url) {
         return Some(Box::new(sharepoint::SharePointProvider));

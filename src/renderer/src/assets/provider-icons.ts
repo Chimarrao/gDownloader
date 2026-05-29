@@ -10,7 +10,8 @@ import akiraboxSvg from './provider-icons/akirabox.svg?raw'
 import brfilesSvg from './provider-icons/brfiles.svg?raw'
 import katfileSvg from './provider-icons/katfile.svg?raw'
 import pixeldrainSvg from './provider-icons/pixeldrain.svg?raw'
-import bruploadSvg from './provider-icons/brupload.svg?raw'
+import transferitSvg from './provider-icons/transferit.svg?raw'
+import youtubeSvg from './provider-icons/youtube.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -41,6 +42,14 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#23a2dc',
     svg: rapidgatorSvg,
   },
+  brupload: {
+    color: '#f97316',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#f97316"/>
+      <path d="M12 22.5h12M18 10.5v12M13.5 18l4.5 4.5L22.5 18" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11 26h14" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>`,
+  },
   googledrive: {
     color: '#4285F4',
     svg: googledriveSvg,
@@ -61,9 +70,13 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#ff7b00',
     svg: pixeldrainSvg,
   },
-  brupload: {
-    color: '#119b62',
-    svg: bruploadSvg,
+  transferit: {
+    color: '#1D81FF',
+    svg: transferitSvg,
+  },
+  youtube: {
+    color: '#FF0000',
+    svg: youtubeSvg,
   },
   brfiles: {
     color: '#22c55e',
@@ -113,6 +126,11 @@ function normalizeProviderKey(moduleId: string): string {
     mediafire: 'mediafire',
     mega: 'mega',
     pixeldrain: 'pixeldrain',
+    transferit: 'transferit',
+    transferitt: 'transferit',
+    youtube: 'youtube',
+    youtu: 'youtube',
+    youtubemusic: 'youtube',
     drime: 'drime',
     fichier: 'fichier',
   }
