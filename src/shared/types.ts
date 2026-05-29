@@ -83,10 +83,24 @@ export interface DownloadItem {
   packageId?: string
   parallelParts?: number
   sequential?: boolean
+  networkRoute?: DownloadNetworkRoute
   addedAt: number
   startedAt?: number
   completedAt?: number
   lastProgressAt?: number
+}
+
+export interface DownloadNetworkRoute {
+  mode: string
+  isolated?: boolean
+  proxyHost?: string
+  proxyPort?: number
+  proxyUsername?: string
+  exitIp?: string
+  exitCountry?: string
+  exitCountryCode?: string
+  circuitChanges?: number
+  lastCheckedAt?: number
 }
 
 export interface DownloadPackage {
@@ -147,6 +161,7 @@ export interface PersistedSettings {
   proxyUsername?: string
   proxyPassword?: string
   startTor?: boolean
+  reservedDiskMb?: number
   useReconnectOnRateLimit?: boolean
   reconnectMethod?: string
   reconnectCommand?: string
@@ -177,6 +192,14 @@ export interface PersistedSettings {
   interceptDomainBlocklist?: string[]
   interceptAskBeforeAdd?: boolean
   onboardingCompleted?: boolean
+  youtubeUseCookies?: boolean
+  youtubeCookieBrowser?: string
+  youtubeCookiesFile?: string
+  youtubeMergeFormat?: string
+  youtubeDownloadSubs?: boolean
+  youtubeSubLangs?: string
+  youtubeEmbedSubs?: boolean
+  youtubeSplitChapters?: boolean
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

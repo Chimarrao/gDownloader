@@ -26,6 +26,8 @@ pub async fn update_download_config(
 #[derive(serde::Serialize)]
 pub struct TestProxyResponse {
     pub ip: String,
+    #[serde(rename = "isTor")]
+    pub is_tor: bool,
 }
 
 pub async fn test_proxy(
@@ -51,7 +53,7 @@ pub async fn test_proxy(
         )
     })?;
     let response = client
-        .get("https://httpbin.org/ip")
+        .get("https://check.torproject.org/api/ip")
         .send()
         .await
         .map_err(|e| {
@@ -69,8 +71,13 @@ pub async fn test_proxy(
                 Json(ApiError::new(format!("Parse failed: {}", e))),
             )
         })?;
-    let ip = json["origin"].as_str().unwrap_or("unknown").to_string();
-    Ok(Json(TestProxyResponse { ip }))
+    let ip = json["IP"]
+        .as_str()
+        .or_else(|| json["origin"].as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let is_tor = json["IsTor"].as_bool().unwrap_or(false);
+    Ok(Json(TestProxyResponse { ip, is_tor }))
 }
 
 pub async fn get_secure_settings(

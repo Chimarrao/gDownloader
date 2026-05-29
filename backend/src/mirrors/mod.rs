@@ -15,7 +15,6 @@ pub static HOSTERS: &[&str] = &[
     "gofile.io",
     "katfile.com",
     "katfile.ws",
-    "brupload.net",
     "brfiles.com",
     "terabox.com",
     "1024tera.com",

@@ -84,6 +84,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "create_intercept_history_table",
         apply: migration_create_intercept_history_table,
     },
+    Migration {
+        version: 15,
+        name: "add_download_network_route",
+        apply: migration_add_download_network_route,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -164,6 +169,7 @@ fn migration_create_core_tables(conn: &Connection) -> Result<()> {
              started_at             INTEGER,
              completed_at           INTEGER,
              last_progress_at       INTEGER,
+             network_route_json     TEXT,
              updated_at             INTEGER NOT NULL
          );
          CREATE TABLE IF NOT EXISTS app_kv (
@@ -257,6 +263,10 @@ fn migration_ensure_download_columns(conn: &Connection) -> Result<()> {
             "last_progress_at",
             "ALTER TABLE downloads ADD COLUMN last_progress_at INTEGER",
         ),
+        (
+            "network_route_json",
+            "ALTER TABLE downloads ADD COLUMN network_route_json TEXT",
+        ),
     ];
 
     for (column, ddl) in columns {
@@ -264,6 +274,15 @@ fn migration_ensure_download_columns(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn migration_add_download_network_route(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "network_route_json",
+        "ALTER TABLE downloads ADD COLUMN network_route_json TEXT",
+    )
 }
 
 fn migration_create_download_indexes(conn: &Connection) -> Result<()> {
@@ -590,8 +609,8 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               parallel_parts, selected_children_json, expected_hash_json,
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
-              completed_at, last_progress_at, pinned, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)
+              completed_at, last_progress_at, pinned, network_route_json, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -620,6 +639,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              completed_at           = excluded.completed_at,
              last_progress_at       = excluded.last_progress_at,
              pinned                 = excluded.pinned,
+             network_route_json     = excluded.network_route_json,
              updated_at             = excluded.updated_at",
         params![
             d.id,
@@ -651,6 +671,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.completed_at.map(|value| value as i64),
             d.last_progress_at.map(|value| value as i64),
             if d.pinned { 1i64 } else { 0i64 },
+            to_json(&d.network_route),
             now_secs(),
         ],
     )?;
@@ -775,7 +796,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 parallel_parts, selected_children_json, expected_hash_json, retry_at,
                 captcha_type, captcha_sitekey, captcha_page_url, captcha_token,
                 error, priority, created_at, started_at, completed_at, last_progress_at,
-                COALESCE(pinned, 0) as pinned, package_id
+                COALESCE(pinned, 0) as pinned, package_id, network_route_json
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -784,6 +805,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
             let children_json: Option<String> = row.get(10)?;
             let selected_children_json: Option<String> = row.get(15)?;
             let expected_hash_json: Option<String> = row.get(16)?;
+            let network_route_json: Option<String> = row.get(30).ok().flatten();
 
             Ok(Download {
                 id: row.get(0)?,
@@ -825,6 +847,10 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 last_progress_at: row.get::<_, Option<i64>>(27)?.map(|value| value as u64),
                 pinned: row.get::<_, i64>(28)? != 0,
                 package_id: row.get(29).ok().flatten(),
+                network_route: network_route_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<Option<crate::models::DownloadNetworkRoute>>(raw).ok())
+                    .flatten(),
                 request_headers: None,
                 speed_bps: 0,
                 eta_secs: 0,
@@ -1436,6 +1462,21 @@ pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<Cach
     .map_err(Into::into)
 }
 
+pub fn file_info_cache_stats(conn: &Connection) -> Result<(u64, u64)> {
+    let (count, bytes): (i64, Option<i64>) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(url) + LENGTH(provider_id) + LENGTH(name) + COALESCE(LENGTH(mime_type), 0) + COALESCE(LENGTH(children_json), 0)), 0)
+         FROM file_info_cache",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((count.max(0) as u64, bytes.unwrap_or(0).max(0) as u64))
+}
+
+pub fn clear_file_info_cache(conn: &Connection) -> Result<u64> {
+    let removed = conn.execute("DELETE FROM file_info_cache", [])?;
+    Ok(removed as u64)
+}
+
 pub fn save_cached_file_info(
     conn: &Connection,
     url: &str,
@@ -1529,6 +1570,7 @@ mod tests {
             pinned: false,
             package_id: None,
             request_headers: None,
+            network_route: None,
         }
     }
 

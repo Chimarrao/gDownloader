@@ -82,6 +82,7 @@ type DownloadChannel =
 
 type ClipboardLinkPayload = {
   url: string
+  urls?: string[]
   provider: string
   providerName?: string
 }
@@ -292,7 +293,7 @@ const api = {
           dest_dir: destDir,
           max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0) - 1),
           speed_limit_kib: settings?.speedLimitKib ?? 0,
-          parallel_parts: settings?.parallelPartsPerDownload ?? 1,
+          parallel_parts: _moduleId === 'youtube' ? 1 : settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
           expected_hash: expectedHash,
           duplicate_action: duplicateActionOverride ?? settings?.duplicateAction ?? 'ask',
@@ -454,6 +455,31 @@ const api = {
     chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
   },
 
+  cache: {
+    stats: (): Promise<{
+      totalBytes: number
+      items: Array<{
+        id: string
+        label: string
+        description: string
+        bytes: number
+        entries?: number
+        clearable: boolean
+      }>
+    }> => ipcRenderer.invoke('cache:stats'),
+    clear: (ids: string[]): Promise<{
+      totalBytes: number
+      items: Array<{
+        id: string
+        label: string
+        description: string
+        bytes: number
+        entries?: number
+        clearable: boolean
+      }>
+    }> => ipcRenderer.invoke('cache:clear', ids),
+  },
+
   remoteAccess: {
     info: (): Promise<{
       enabled: boolean
@@ -465,14 +491,76 @@ const api = {
       url: string
       credentialUrl: string
       qrCodeDataUrl?: string
+      sessions: Array<{
+        id: string
+        ip: string
+        userAgent: string
+        createdAt: number
+        lastSeenAt: number
+        current?: boolean
+      }>
+      insecureCredentials: boolean
       error?: string
     }> => ipcRenderer.invoke('remote:info'),
     generateCredentials: (): Promise<NonNullable<AppSettingsSnapshot['remoteAccess']>> =>
       ipcRenderer.invoke('remote:generateCredentials'),
+    revokeSession: (id: string): Promise<boolean> => ipcRenderer.invoke('remote:revokeSession', id),
   },
 
   config: {
-    testProxy: (): Promise<{ ip: string }> => ipcRenderer.invoke('config:test-proxy'),
+    testProxy: (): Promise<{ ip: string; isTor: boolean }> => ipcRenderer.invoke('config:test-proxy'),
+  },
+  tor: {
+    status: (): Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }> => ipcRenderer.invoke('tor:status'),
+    connect: (): Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }> => ipcRenderer.invoke('tor:connect'),
+    disconnect: (): Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }> => ipcRenderer.invoke('tor:disconnect'),
+    testConnection: (): Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }> => ipcRenderer.invoke('tor:testConnection'),
+    newIdentity: (): Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }> => ipcRenderer.invoke('tor:newIdentity'),
   },
   intercept: {
     status: (): Promise<{
@@ -526,6 +614,8 @@ const api = {
   system: {
     notify: (title: string, body?: string): Promise<boolean> =>
       ipcRenderer.invoke('system:notify', title, body),
+    diskSpace: (path: string): Promise<{ path: string; freeBytes: number; totalBytes: number }> =>
+      ipcRenderer.invoke('system:disk-space', path),
   },
   logs: {
     tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> =>
@@ -878,8 +968,6 @@ function normalizeModuleId(provider: unknown): string {
       return 'drime'
     case 'rapidgator':
       return 'rapidgator'
-    case 'brupload':
-      return 'brupload'
     case 'brfiles':
       return 'brfiles'
     case 'moondl':
@@ -928,6 +1016,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     packageId: typeof d.package_id === 'string' ? d.package_id : undefined,
     parallelParts: Number(d.parallel_parts ?? 1),
     sequential: Boolean(d.sequential),
+    networkRoute: d.network_route ?? undefined,
     addedAt: ((d.created_at as number) ?? 0) * 1000,
     startedAt: d.started_at ? (d.started_at as number) * 1000 : undefined,
     completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,

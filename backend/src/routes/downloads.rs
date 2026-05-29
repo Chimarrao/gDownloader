@@ -13,8 +13,9 @@ use uuid::Uuid;
 use crate::{
     hash_verify,
     models::{
-        AddDownloadRequest, ApiError, Download, DownloadEvent, DownloadStatus, DuplicateDownload,
-        DuplicateGroup, ExpectedHash, FileChildInfo, HashAlgorithm, WsEvent,
+        AddDownloadRequest, ApiError, Download, DownloadEvent, DownloadNetworkRoute,
+        DownloadStatus, DuplicateDownload, DuplicateGroup, ExpectedHash, FileChildInfo,
+        HashAlgorithm, PublicSettings, WsEvent,
     },
     providers,
     ws::AppState,
@@ -28,6 +29,10 @@ struct QueueCandidate {
     provider: String,
     created_at: u64,
     priority: i32,
+}
+
+async fn cancel_provider_sidecar_download(provider: &str, url: &str, dest_path: &str) {
+    let _ = (provider, url, dest_path);
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,11 +197,11 @@ pub async fn add_download_internal(
              • Drime (drime.cloud)\n\
              • Rapidgator (rapidgator.net)\n\
              • AkiraBox (akirabox.to)\n\
-             • BRupload (brupload.net)\n\
              • BRFiles (brfiles.com)\n\
              • MoonDL (moondl.com)\n\
              • Katfile (katfile.com / katfile.ws)\n\
              • Terabox (terabox.com)\n\
+             • YouTube (youtube.com / youtu.be)\n\
              • OneDrive / SharePoint"
         };
 
@@ -219,6 +224,14 @@ pub async fn add_download_internal(
                 proxy_port: settings.proxy_port,
                 proxy_username: settings.proxy_username,
                 proxy_password: settings.proxy_password,
+                youtube_use_cookies: settings.youtube_use_cookies,
+                youtube_cookie_browser: settings.youtube_cookie_browser,
+                youtube_cookies_file: settings.youtube_cookies_file,
+                youtube_merge_format: settings.youtube_merge_format,
+                youtube_download_subs: settings.youtube_download_subs,
+                youtube_sub_langs: settings.youtube_sub_langs,
+                youtube_embed_subs: settings.youtube_embed_subs,
+                youtube_split_chapters: settings.youtube_split_chapters,
                 request_headers: req.request_headers.clone().unwrap_or_default(),
             }
         };
@@ -253,6 +266,21 @@ pub async fn add_download_internal(
             }
 
             file_info.size = children.iter().map(|child| child.size).sum();
+        }
+    } else if provider.name() == "YouTube" {
+        if let (Some(children), Some(selected)) = (file_info.children.as_mut(), selected_children.as_ref()) {
+            let selected_set = selected.iter().cloned().collect::<std::collections::HashSet<_>>();
+            children.retain(|child| {
+                child.source_url
+                    .as_ref()
+                    .map(|source_url| selected_set.contains(source_url))
+                    .unwrap_or(false)
+            });
+            if let Some(child) = children.first() {
+                if child.size > 0 {
+                    file_info.size = child.size;
+                }
+            }
         }
     }
 
@@ -391,6 +419,7 @@ pub async fn add_download_internal(
         pinned: false,
         package_id: None,
         request_headers: req.request_headers.clone(),
+        network_route: None,
     };
 
     {
@@ -475,6 +504,26 @@ pub async fn cancel_download(
     State(state): State<AppState>,
     Path(id): Path<String>, // Path extrai o :id da URL
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let sidecar_download = {
+        let map = state.downloads.lock().await;
+        map.get(&id).map(|download| {
+            (
+                download.provider.clone(),
+                download.url.clone(),
+                download.dest_path.clone(),
+            )
+        })
+    };
+
+    let Some((provider, url, dest_path)) = sidecar_download else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("Download não encontrado")),
+        ));
+    };
+
+    cancel_provider_sidecar_download(&provider, &url, &dest_path).await;
+
     if let Some(handle) = state.active_tasks.lock().await.remove(&id) {
         handle.abort();
     }
@@ -537,7 +586,6 @@ pub async fn remove_download(
             DownloadStatus::Pending
                 | DownloadStatus::Downloading
                 | DownloadStatus::Verifying
-                | DownloadStatus::Paused
                 | DownloadStatus::RateLimited
                 | DownloadStatus::WaitingCaptcha
         ) {
@@ -568,7 +616,7 @@ pub async fn remove_download_with_files(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let dest_path = {
+    let (download, preserve_root) = {
         let map = state.downloads.lock().await;
         let Some(download) = map.get(&id) else {
             return Err((
@@ -584,10 +632,13 @@ pub async fn remove_download_with_files(
             ));
         }
 
-        download.dest_path.clone()
+        let same_root_in_use = map
+            .iter()
+            .any(|(other_id, other)| other_id != &id && other.dest_path == download.dest_path);
+        (download.clone(), same_root_in_use)
     };
 
-    delete_download_artifacts(&dest_path).await.map_err(|error| {
+    delete_download_artifacts_for_download(&download, preserve_root).await.map_err(|error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new(format!("Falha ao apagar os arquivos físicos: {error}"))),
@@ -634,6 +685,26 @@ pub async fn pause_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let sidecar_download = {
+        let map = state.downloads.lock().await;
+        map.get(&id).map(|download| {
+            (
+                download.provider.clone(),
+                download.url.clone(),
+                download.dest_path.clone(),
+            )
+        })
+    };
+
+    let Some((provider, url, dest_path)) = sidecar_download else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("Download não encontrado")),
+        ));
+    };
+
+    cancel_provider_sidecar_download(&provider, &url, &dest_path).await;
+
     if let Some(handle) = state.active_tasks.lock().await.remove(&id) {
         handle.abort();
     }
@@ -880,6 +951,11 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
         };
         let provider_name = provider.name().to_string();
+        let effective_parallel_parts = if provider_name == "YouTube" {
+            1
+        } else {
+            parallel_parts as usize
+        };
         info!(
             target: "gdownloader_backend::downloads",
             "iniciando tentativa de download id={} provider={} attempt={} dest={}",
@@ -891,11 +967,6 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
         // Check disk space before starting
         {
-            let settings = state.db.lock().ok()
-                .and_then(|db| crate::db::load_public_settings(&db).ok())
-                .unwrap_or_default();
-            let reserved_bytes = settings.reserved_disk_mb * 1024 * 1024;
-
             let (file_size, dest_parent) = {
                 let map = state.downloads.lock().await;
                 let d = map.get(&id);
@@ -915,10 +986,10 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     .max()
                     .unwrap_or(u64::MAX);
 
-                if file_size > 0 && file_size + reserved_bytes > available {
+                if file_size > 0 && file_size > available {
                     let error_msg = format!(
                         "Espaço em disco insuficiente. Necessário: {}MB, Disponível: {}MB",
-                        (file_size + reserved_bytes) / 1_048_576,
+                        file_size / 1_048_576,
                         available / 1_048_576
                     );
                     {
@@ -955,13 +1026,29 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         };
         let download_context = {
             let settings = state.db.lock().ok().and_then(|db| crate::db::load_public_settings(&db).ok()).unwrap_or_default();
+            let route = ensure_download_network_route(&state, &id, &settings).await;
+            if let Some(route_for_test) = route.clone().filter(|route| route.mode == "tor" && route.exit_ip.is_none()) {
+                let state_for_test = state.clone();
+                let id_for_test = id.clone();
+                tokio::spawn(async move {
+                    refresh_download_tor_exit(state_for_test, id_for_test, route_for_test).await;
+                });
+            }
             providers::DownloadContext {
                 db_path: state.db_path.clone(),
-                proxy_mode: settings.proxy_mode,
-                proxy_host: settings.proxy_host,
-                proxy_port: settings.proxy_port,
-                proxy_username: settings.proxy_username,
-                proxy_password: settings.proxy_password,
+                proxy_mode: route.as_ref().map(|route| route.mode.clone()).unwrap_or(settings.proxy_mode),
+                proxy_host: route.as_ref().map(|route| route.proxy_host.clone()).unwrap_or(settings.proxy_host),
+                proxy_port: route.as_ref().map(|route| route.proxy_port).unwrap_or(settings.proxy_port),
+                proxy_username: route.as_ref().and_then(|route| route.proxy_username.clone()).or(settings.proxy_username),
+                proxy_password: route.as_ref().and_then(|route| route.proxy_password.clone()).or(settings.proxy_password),
+                youtube_use_cookies: settings.youtube_use_cookies,
+                youtube_cookie_browser: settings.youtube_cookie_browser,
+                youtube_cookies_file: settings.youtube_cookies_file,
+                youtube_merge_format: settings.youtube_merge_format,
+                youtube_download_subs: settings.youtube_download_subs,
+                youtube_sub_langs: settings.youtube_sub_langs,
+                youtube_embed_subs: settings.youtube_embed_subs,
+                youtube_split_chapters: settings.youtube_split_chapters,
                 request_headers,
             }
         };
@@ -971,7 +1058,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     &url_clone,
                     &dest_clone,
                     speed_limit_bps,
-                    parallel_parts as usize,
+                    effective_parallel_parts,
                     selected_children_clone,
                     progress_tx,
                     download_context,
@@ -1004,13 +1091,19 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 last_time = std::time::Instant::now();
             }
 
-            let speed = if update.bytes_downloaded == 0 { 0 } else { current_speed };
-
-            let eta = if speed > 0 && update.total_bytes > 0 {
-                update.total_bytes.saturating_sub(update.bytes_downloaded) / speed
-            } else {
+            let speed = if update.bytes_downloaded == 0 {
                 0
+            } else {
+                update.child_speed_bps.unwrap_or(current_speed)
             };
+
+            let eta = update.child_eta_secs.unwrap_or_else(|| {
+                if speed > 0 && update.total_bytes > 0 {
+                    update.total_bytes.saturating_sub(update.bytes_downloaded) / speed
+                } else {
+                    0
+                }
+            });
 
             {
                 let mut map = state.downloads.lock().await;
@@ -1082,7 +1175,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         }
 
         match download_task.await {
-            Ok(Ok(_bytes)) => {
+            Ok(Ok(bytes)) => {
                 let verification = {
                     let mut map = state.downloads.lock().await;
                     if let Some(d) = map.get_mut(&id) {
@@ -1112,6 +1205,9 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 {
                     let mut map = state.downloads.lock().await;
                     if let Some(d) = map.get_mut(&id) {
+                        if bytes > 0 {
+                            d.size = bytes;
+                        }
                         d.status = DownloadStatus::Complete;
                         d.bytes_downloaded = d.size;
                         d.speed_bps = 0;
@@ -1120,7 +1216,11 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         d.error = None;
                         d.completed_at = Some(current_unix_secs());
                         if let Some(children) = d.children.as_mut() {
+                            let single_child = children.len() == 1;
                             for child in children.iter_mut() {
+                                if bytes > 0 && single_child {
+                                    child.size = bytes;
+                                }
                                 child.bytes_downloaded = Some(child.size);
                                 child.speed_bps = Some(0);
                                 child.eta_secs = Some(0);
@@ -1221,9 +1321,19 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 let is_premium_required = err_str.starts_with("PREMIUM_REQUIRED:");
                 let should_retry = !is_premium_required && (is_rate_limit || attempt < max_retries);
                 if should_retry {
-                    let retry_delay_secs = retry_policy.retry_delay_secs;
+                    let settings = state.db.lock().ok()
+                        .and_then(|db| crate::db::load_public_settings(&db).ok())
+                        .unwrap_or_default();
+                    let isolated_tor_retry = is_rate_limit
+                        && settings.use_reconnect_on_rate_limit
+                        && settings.proxy_mode == "tor"
+                        && settings.start_tor;
+                    if isolated_tor_retry {
+                        let _ = rotate_download_tor_route(&state, &id, &settings).await;
+                    }
+                    let retry_delay_secs = if isolated_tor_retry { 3 } else { retry_policy.retry_delay_secs };
                     let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
-                    let wait_status = if is_rate_limit { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
+                    let wait_status = if is_rate_limit && !isolated_tor_retry { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
@@ -1266,17 +1376,12 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     reschedule_pending_downloads(state.clone());
 
                     // Try reconnect for rate-limited downloads before waiting
-                    if is_rate_limit {
-                        let reconnect_cfg = {
-                            let settings = state.db.lock().ok()
-                                .and_then(|db| crate::db::load_public_settings(&db).ok())
-                                .unwrap_or_default();
-                            (settings.use_reconnect_on_rate_limit, crate::reconnect::ReconnectConfig {
-                                method: settings.reconnect_method,
-                                command: settings.reconnect_command,
-                                router_ip: settings.router_ip,
-                            })
-                        };
+                    if is_rate_limit && !isolated_tor_retry {
+                        let reconnect_cfg = (settings.use_reconnect_on_rate_limit, crate::reconnect::ReconnectConfig {
+                            method: settings.reconnect_method,
+                            command: settings.reconnect_command,
+                            router_ip: settings.router_ip,
+                        });
                         if reconnect_cfg.0 {
                             match crate::reconnect::attempt_reconnect(&reconnect_cfg.1).await {
                                 Ok(true) => {
@@ -1362,6 +1467,144 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 return;
             }
         }
+    }
+}
+
+async fn ensure_download_network_route(
+    state: &AppState,
+    id: &str,
+    settings: &PublicSettings,
+) -> Option<DownloadNetworkRoute> {
+    if settings.proxy_mode != "tor" || !settings.start_tor {
+        return None;
+    }
+
+    let mut changed = false;
+    let route = {
+        let mut map = state.downloads.lock().await;
+        let Some(download) = map.get_mut(id) else {
+            return None;
+        };
+        let needs_new = download
+            .network_route
+            .as_ref()
+            .map(|route| route.mode != "tor" || route.proxy_username.is_none() || route.proxy_password.is_none())
+            .unwrap_or(true);
+        if needs_new {
+            download.network_route = Some(new_tor_route(id, settings, 0));
+            changed = true;
+        }
+        download.network_route.clone()
+    };
+
+    if changed {
+        persist_download_snapshot(state, id).await;
+        record_download_event(state, id, "network", "Circuito Tor isolado atribuído ao download");
+    }
+
+    route
+}
+
+async fn rotate_download_tor_route(
+    state: &AppState,
+    id: &str,
+    settings: &PublicSettings,
+) -> Option<DownloadNetworkRoute> {
+    if settings.proxy_mode != "tor" || !settings.start_tor {
+        return None;
+    }
+
+    let route = {
+        let mut map = state.downloads.lock().await;
+        let Some(download) = map.get_mut(id) else {
+            return None;
+        };
+        let next_generation = download
+            .network_route
+            .as_ref()
+            .map(|route| route.circuit_changes.saturating_add(1))
+            .unwrap_or(1);
+        download.network_route = Some(new_tor_route(id, settings, next_generation));
+        download.network_route.clone()
+    };
+
+    persist_download_snapshot(state, id).await;
+    record_download_event(
+        state,
+        id,
+        "network",
+        "Rate-limit detectado; circuito Tor isolado trocado para este download",
+    );
+    route
+}
+
+async fn refresh_download_tor_exit(state: AppState, id: String, route: DownloadNetworkRoute) {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let client = <crate::providers::direct_http::DirectHttpProvider as crate::providers::ProviderDefaults>::http_client_with_proxy(
+            &route.mode,
+            &route.proxy_host,
+            route.proxy_port,
+            route.proxy_username.as_deref(),
+            route.proxy_password.as_deref(),
+        )?;
+        let json = client
+            .get("https://check.torproject.org/api/ip")
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+        Ok::<(String, bool), anyhow::Error>((
+            json["IP"]
+                .as_str()
+                .or_else(|| json["origin"].as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            json["IsTor"].as_bool().unwrap_or(false),
+        ))
+    })
+    .await;
+
+    let Ok(Ok((ip, is_tor))) = result else {
+        return;
+    };
+    if !is_tor {
+        return;
+    }
+
+    {
+        let mut map = state.downloads.lock().await;
+        if let Some(download) = map.get_mut(&id) {
+            if let Some(current) = download.network_route.as_mut() {
+                if current.proxy_username == route.proxy_username {
+                    current.exit_ip = Some(ip.clone());
+                    current.last_checked_at = Some(current_unix_secs());
+                }
+            }
+        }
+    }
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "network", &format!("Saída Tor validada: {ip}"));
+}
+
+fn new_tor_route(id: &str, settings: &PublicSettings, circuit_changes: u32) -> DownloadNetworkRoute {
+    let nonce = Uuid::new_v4().simple().to_string();
+    let short_id = id.chars().take(8).collect::<String>();
+    DownloadNetworkRoute {
+        mode: "tor".to_string(),
+        isolated: true,
+        proxy_host: if settings.proxy_host.trim().is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            settings.proxy_host.clone()
+        },
+        proxy_port: if settings.proxy_port == 0 { 9150 } else { settings.proxy_port },
+        proxy_username: Some(format!("gdl-{short_id}-{circuit_changes}")),
+        proxy_password: Some(nonce),
+        exit_ip: None,
+        exit_country: None,
+        exit_country_code: None,
+        circuit_changes,
+        last_checked_at: Some(current_unix_secs()),
     }
 }
 
@@ -1537,12 +1780,13 @@ async fn persist_download_snapshot(state: &AppState, id: &str) {
 
 pub async fn schedule_pending_downloads(state: AppState) {
     let limit = *state.max_concurrent_downloads.lock().await;
+    let active_task_ids = {
+        let tasks = state.active_tasks.lock().await;
+        tasks.keys().cloned().collect::<std::collections::HashSet<_>>()
+    };
     let to_start = {
         let mut map = state.downloads.lock().await;
-        let active_count = map
-            .values()
-            .filter(|download| matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying))
-            .count();
+        let active_count = map.values().map(active_file_units).sum::<usize>();
         debug!(
             target: "gdownloader_backend::downloads",
             "scheduler tick active_count={} limit={} queue_size={}",
@@ -1563,18 +1807,19 @@ pub async fn schedule_pending_downloads(state: AppState) {
 
         let now = current_unix_secs();
         let mut active_by_provider = std::collections::HashMap::<String, usize>::new();
-        for download in map
-            .values()
-            .filter(|download| matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying))
-        {
-            *active_by_provider
-                .entry(download.provider.clone())
-                .or_insert(0) += 1;
+        for download in map.values() {
+            let units = active_file_units(download);
+            if units == 0 {
+                continue;
+            }
+            *active_by_provider.entry(download.provider.clone()).or_insert(0) += units;
         }
 
         let pending = map
             .values()
             .filter(|download| {
+                !active_task_ids.contains(&download.id)
+                    &&
                 matches!(download.status, DownloadStatus::Pending | DownloadStatus::RateLimited)
                     && download.retry_at.map(|retry_at| retry_at <= now).unwrap_or(true)
             })
@@ -1698,17 +1943,79 @@ async fn restart_download_internal(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_download_artifacts(dest_path: &str) -> Result<(), std::io::Error> {
-    let path = FsPath::new(dest_path);
-    if !path.exists() {
+async fn delete_download_artifacts_for_download(
+    download: &Download,
+    preserve_root: bool,
+) -> Result<(), std::io::Error> {
+    let root = FsPath::new(&download.dest_path);
+    if !root.exists() {
         return Ok(());
     }
 
-    if path.is_dir() {
-        tokio::fs::remove_dir_all(path).await
-    } else {
-        tokio::fs::remove_file(path).await
+    if download.is_folder {
+        if let Some(children) = download.children.as_ref() {
+            for child in children {
+                let path = child_artifact_path(root, child);
+                if !path.exists() {
+                    continue;
+                }
+                if path.is_dir() {
+                    tokio::fs::remove_dir_all(&path).await?;
+                } else {
+                    tokio::fs::remove_file(&path).await?;
+                }
+                remove_empty_parents_until(path.parent(), root).await?;
+            }
+            if !preserve_root && is_dir_empty(root).await? {
+                tokio::fs::remove_dir(root).await?;
+            }
+            return Ok(());
+        }
     }
+
+    if root.is_dir() {
+        if preserve_root {
+            return Ok(());
+        }
+        tokio::fs::remove_dir_all(root).await
+    } else if preserve_root {
+        Ok(())
+    } else {
+        tokio::fs::remove_file(root).await
+    }
+}
+
+fn child_artifact_path(root: &FsPath, child: &FileChildInfo) -> PathBuf {
+    let relative = child.path.as_deref().filter(|path| !path.is_empty()).unwrap_or(&child.filename);
+    let mut path = root.to_path_buf();
+    for component in FsPath::new(relative).components() {
+        if let std::path::Component::Normal(part) = component {
+            path.push(part);
+        }
+    }
+    path
+}
+
+async fn remove_empty_parents_until(
+    mut current: Option<&FsPath>,
+    stop: &FsPath,
+) -> Result<(), std::io::Error> {
+    while let Some(path) = current {
+        if path == stop {
+            break;
+        }
+        if !path.exists() || !path.is_dir() || !is_dir_empty(path).await? {
+            break;
+        }
+        tokio::fs::remove_dir(path).await?;
+        current = path.parent();
+    }
+    Ok(())
+}
+
+async fn is_dir_empty(path: &FsPath) -> Result<bool, std::io::Error> {
+    let mut entries = tokio::fs::read_dir(path).await?;
+    Ok(entries.next_entry().await?.is_none())
 }
 
 // Helper: atualiza status para Error e emite evento WebSocket
@@ -1753,16 +2060,15 @@ pub async fn recover_downloads_from_db(state: AppState) {
         download.eta_secs = 0;
 
         if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
-            download.status = DownloadStatus::Paused;
-            if download.error.is_none() {
-                download.error = Some("O app foi reiniciado antes do término. Retome ou reinicie o download.".to_string());
-            }
+            download.status = DownloadStatus::Pending;
+            download.error = None;
+            download.retry_at = None;
             if let Some(children) = download.children.as_mut() {
                 for child in children.iter_mut() {
                     child.speed_bps = Some(0);
                     child.eta_secs = Some(0);
                     if child.status == Some(DownloadStatus::Downloading) {
-                        child.status = Some(DownloadStatus::Paused);
+                        child.status = Some(DownloadStatus::Pending);
                     }
                 }
             }
@@ -1913,6 +2219,28 @@ fn select_downloads_to_start(
     }
 
     selected
+}
+
+fn active_file_units(download: &Download) -> usize {
+    if !matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
+        return 0;
+    }
+
+    if download.is_folder {
+        let child_active = download
+            .children
+            .as_ref()
+            .map(|children| {
+                children
+                    .iter()
+                    .filter(|child| child.status == Some(DownloadStatus::Downloading))
+                    .count()
+            })
+            .unwrap_or(0);
+        return child_active.max(1);
+    }
+
+    1
 }
 
 /// Retorna Some((type, sitekey, pageurl)) se o erro é um captcha.

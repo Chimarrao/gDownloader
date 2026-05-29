@@ -274,7 +274,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
               body > * {
                 display: none !important;
               }
-              /* Regular captcha pages (brupload, katfile, etc.) */
+              /* Regular captcha pages (katfile, rapidgator, etc.) */
               .main-wrapper,
               .main-content,
               #content,

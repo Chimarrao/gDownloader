@@ -90,6 +90,30 @@ interface RendererApi {
     save: (s: AppSettingsSnapshot) => Promise<AppSettingsSnapshot>
     chooseDirectory: () => Promise<string>
   }
+  cache: {
+    stats: () => Promise<{
+      totalBytes: number
+      items: Array<{
+        id: string
+        label: string
+        description: string
+        bytes: number
+        entries?: number
+        clearable: boolean
+      }>
+    }>
+    clear: (ids: string[]) => Promise<{
+      totalBytes: number
+      items: Array<{
+        id: string
+        label: string
+        description: string
+        bytes: number
+        entries?: number
+        clearable: boolean
+      }>
+    }>
+  }
   remoteAccess: {
     info: () => Promise<{
       enabled: boolean
@@ -101,9 +125,19 @@ interface RendererApi {
       url: string
       credentialUrl: string
       qrCodeDataUrl?: string
+      sessions: Array<{
+        id: string
+        ip: string
+        userAgent: string
+        createdAt: number
+        lastSeenAt: number
+        current?: boolean
+      }>
+      insecureCredentials: boolean
       error?: string
     }>
     generateCredentials: () => Promise<NonNullable<AppSettingsSnapshot['remoteAccess']>>
+    revokeSession: (id: string) => Promise<boolean>
   }
   modules: {
     list: () => Promise<ModuleSummary[]>
@@ -157,11 +191,12 @@ interface RendererApi {
   clipboard: {
     writeText: (text: string) => Promise<boolean>
     onLinkDetected: (
-      cb: (payload: { url: string; provider: string; providerName?: string }) => void,
+      cb: (payload: { url: string; urls?: string[]; provider: string; providerName?: string }) => void,
     ) => () => void
   }
   system: {
     notify: (title: string, body?: string) => Promise<boolean>
+    diskSpace: (path: string) => Promise<{ path: string; freeBytes: number; totalBytes: number }>
   }
   logs: {
     tail: (maxLines?: number) => Promise<{ path: string; lines: string[] }>
@@ -220,7 +255,59 @@ interface RendererApi {
     }>
   }>
   config: {
-    testProxy: () => Promise<{ ip: string }>
+    testProxy: () => Promise<{ ip: string; isTor: boolean }>
+  }
+  tor: {
+    status: () => Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }>
+    connect: () => Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }>
+    disconnect: () => Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }>
+    testConnection: () => Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }>
+    newIdentity: () => Promise<{
+      state: 'disconnected' | 'connected'
+      host: string
+      port: number
+      route: Array<{ role: string; country: string; code: string }>
+      ip?: string
+      country?: string
+      countryCode?: string
+      isTor?: boolean
+    }>
   }
   intercept: {
     status: () => Promise<{

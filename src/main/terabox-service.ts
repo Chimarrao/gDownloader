@@ -262,16 +262,27 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
   }
 
   async function waitForShareItems(timeoutMs = 25_000): Promise<void> {
-    const ready = await waitFor<boolean>(
+    const state = await waitFor<string>(
       `(() => {
         const hasItems = document.querySelectorAll('.common-file-item').length > 0
         const emptyState = /nenhum arquivo|no files/i.test(document.body.innerText || '')
-        return hasItems || emptyState
+        const body = document.body.innerText || ''
+        const needsExtractionCode =
+          /código de extração|codigo de extracao|extraction code|please enter the extraction code/i.test(body) ||
+          Boolean(document.querySelector('input[placeholder*="código"], input[placeholder*="code"], input[class*="extract"]'))
+        if (needsExtractionCode) return 'extraction-code'
+        if (hasItems) return 'items'
+        if (emptyState) return 'empty'
+        return ''
       })()`,
       timeoutMs
     )
 
-    if (!ready) {
+    if (state === 'extraction-code') {
+      throw new Error('Este link do TeraBox exige código de extração. Cole um link que já inclua o código ou abra o link no navegador integrado para liberar o compartilhamento.')
+    }
+
+    if (!state) {
       throw new Error('O TeraBox não carregou a lista desta pasta a tempo.')
     }
   }

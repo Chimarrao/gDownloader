@@ -12,9 +12,10 @@ import {
   session,
   Tray,
 } from 'electron'
-import { basename, dirname, extname, join } from 'path'
+import { basename, dirname, extname, join, resolve } from 'path'
 import { spawn } from 'child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, watch } from 'fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, watch } from 'fs'
+import { Socket } from 'net'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { AppSettingsSnapshot } from '../shared/types'
 import {
@@ -22,7 +23,6 @@ import {
   type HistorySearchFilters,
   type PersistedHistoryItem,
 } from './app-storage'
-import { createBruploadService, type BruploadStoredAccount } from './brupload-service'
 import { createAkiraboxService } from './akirabox-service'
 import { createBackendRuntime } from './backend-runtime'
 import { HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
@@ -40,6 +40,14 @@ const legacyHistoryPaths = [
   join(app.getPath('userData'), 'history.json'),
   join(app.getPath('userData'), 'download-history.json'),
 ]
+
+function getAppIconPath(): string {
+  if (is.dev) {
+    return join(process.cwd(), 'resources', 'icons', 'gdownloader-plus.png')
+  }
+  return join(process.resourcesPath, 'icons', 'gdownloader-plus.png')
+}
+
 function getDatabasePath(): string {
   if (is.dev) {
     return join(process.cwd(), 'backend', 'database', 'gdownloader.db')
@@ -67,6 +75,98 @@ function getBackendLogPath(): string {
   }
 
   return join(logDir, 'app.log')
+}
+
+function expandUserPath(path: string): string {
+  if (!path || path === '~') return app.getPath('home')
+  if (path.startsWith('~/')) return join(app.getPath('home'), path.slice(2))
+  return path
+}
+
+function directorySize(path: string): number {
+  if (!existsSync(path)) return 0
+  const stat = lstatSync(path)
+  if (!stat.isDirectory()) return stat.size
+  let total = 0
+  for (const entry of readdirSync(path)) {
+    total += directorySize(join(path, entry))
+  }
+  return total
+}
+
+function clearDirectoryContents(path: string): void {
+  if (!existsSync(path)) return
+  for (const entry of readdirSync(path)) {
+    rmSync(join(path, entry), { recursive: true, force: true })
+  }
+}
+
+function tmpCachePath(): string {
+  return join(process.cwd(), 'tmp')
+}
+
+function proxyCaPath(): string {
+  return join(process.cwd(), 'backend', 'database', 'proxy-ca')
+}
+
+async function localCacheStats(): Promise<{
+  totalBytes: number
+  items: Array<{ id: string; label: string; description: string; bytes: number; entries?: number; clearable: boolean }>
+}> {
+  const fileInfo = await fetchBackendConfig<{ entries: number; bytes: number }>('/file-info/cache/stats')
+    .catch(() => ({ entries: 0, bytes: 0 }))
+  const items = [
+    {
+      id: 'file-info',
+      label: 'Metadados de links',
+      description: 'Nomes, tamanhos e árvores de pastas já lidos no LinkGrabber.',
+      bytes: fileInfo.bytes,
+      entries: fileInfo.entries,
+      clearable: fileInfo.entries > 0,
+    },
+    {
+      id: 'tor-data',
+      label: 'Dados temporários do Tor',
+      description: 'Estado local do daemon Tor embutido. Será recriado ao conectar novamente.',
+      bytes: directorySize(join(app.getPath('userData'), 'tor-data')),
+      clearable: true,
+    },
+    {
+      id: 'proxy-ca',
+      label: 'Certificados/cache do proxy local',
+      description: 'Arquivos auxiliares do interceptor local de navegador.',
+      bytes: directorySize(proxyCaPath()),
+      clearable: true,
+    },
+    {
+      id: 'tmp',
+      label: 'Temporários do projeto',
+      description: 'Arquivos temporários gerados por importações, testes e integrações locais.',
+      bytes: directorySize(tmpCachePath()),
+      clearable: true,
+    },
+  ]
+  return {
+    totalBytes: items.reduce((sum, item) => sum + item.bytes, 0),
+    items,
+  }
+}
+
+async function clearLocalCache(ids: string[]): Promise<Awaited<ReturnType<typeof localCacheStats>>> {
+  for (const id of ids) {
+    if (id === 'file-info') {
+      await deleteBackend('/file-info/cache').catch((error) => {
+        logMain('cache', 'Falha ao limpar cache de metadados', error)
+      })
+    } else if (id === 'tor-data') {
+      clearDirectoryContents(join(app.getPath('userData'), 'tor-data'))
+    } else if (id === 'proxy-ca') {
+      clearDirectoryContents(proxyCaPath())
+    } else if (id === 'tmp') {
+      clearDirectoryContents(tmpCachePath())
+    }
+  }
+  return localCacheStats()
 }
 
 function tailLogFile(maxLines = 500): { path: string; lines: string[] } {
@@ -220,12 +320,6 @@ function persistTeraboxAccount(account: TeraboxStoredAccount | null): void {
   })
 }
 
-function persistBruploadAccount(account: BruploadStoredAccount | null): void {
-  void storage.persistBruploadAccount(account).catch((error) => {
-    logMain('auth', 'Falha ao persistir conta do BRupload no SQLite', error)
-  })
-}
-
 async function solveCaptchaWithNopecha(params: {
   type: string
   sitekey: string
@@ -295,13 +389,15 @@ async function solveCaptchaWithNopecha(params: {
 let rustPort: number | null = null
 let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
 let lastClipboardText = ''
-let lastClipboardUrl = ''
+let lastClipboardSignature = ''
+let managedTorProcess: ReturnType<typeof spawn> | null = null
+let managedTorBootstrap = 0
+let lastTorExit: { ip: string; country?: string; countryCode?: string; isTor: boolean } | null = null
 const backendRuntime = createBackendRuntime({
   dbPath: getDatabasePath(),
   createEnv: (dbPath) => ({
     ...process.env,
     TERABOX_PROXY_PORT: String(teraboxProxyPort),
-    BRUPLOAD_PROXY_PORT: String(teraboxProxyPort),
     AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
     KATFILE_PROXY_PORT: String(teraboxProxyPort),
     GDOWNLOADER_DB_PATH: dbPath,
@@ -324,11 +420,6 @@ const teraboxService = createTeraboxService({
   readAccount: () => storage.getTeraboxAccount(),
   saveAccount: persistTeraboxAccount,
 })
-const bruploadService = createBruploadService({
-  readAccount: () => storage.getBruploadAccount(),
-  saveAccount: persistBruploadAccount,
-})
-
 const akiraboxService = createAkiraboxService({
   solveCaptcha: solveCaptchaWithNopecha,
 })
@@ -598,6 +689,375 @@ async function syncBackendConfig(maxConcurrentDownloads: number): Promise<void> 
   })
 }
 
+function probeTcpPort(host: string, port: number, timeoutMs = 900): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new Socket()
+    let settled = false
+    const done = (ok: boolean): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false))
+    socket.once('error', () => done(false))
+    socket.connect(port, host)
+  })
+}
+
+async function detectTorEndpoint(): Promise<{ host: string; port: number } | null> {
+  for (const port of [9150, 9050]) {
+    if (await probeTcpPort('127.0.0.1', port)) {
+      return { host: '127.0.0.1', port }
+    }
+  }
+  return null
+}
+
+function findTorBinary(): string | null {
+  const platformCandidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\Tor\\tor.exe',
+          'C:\\Program Files (x86)\\Tor\\tor.exe',
+          join(app.getPath('home'), 'Desktop', 'Tor Browser', 'Browser', 'TorBrowser', 'Tor', 'tor.exe'),
+          join(app.getPath('home'), 'Downloads', 'Tor Browser', 'Browser', 'TorBrowser', 'Tor', 'tor.exe'),
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/opt/homebrew/bin/tor',
+            '/usr/local/bin/tor',
+            '/usr/bin/tor',
+            '/Applications/Tor Browser.app/Contents/MacOS/Tor/tor.real',
+            '/Applications/Tor Browser.app/Contents/MacOS/tor.real',
+          ]
+        : [
+            '/usr/bin/tor',
+            '/usr/local/bin/tor',
+            '/snap/bin/tor',
+          ]
+  const candidates = [
+    process.env.GDOWNLOADER_TOR_PATH,
+    bundledTorBinary(),
+    ...platformCandidates,
+  ].filter(Boolean) as string[]
+  return candidates.find((candidate) => existsSync(candidate)) ?? null
+}
+
+function bundledTorDir(): string {
+  const platform = process.platform === 'darwin'
+    ? process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64'
+    : process.platform === 'win32'
+      ? process.arch === 'ia32' ? 'win32-ia32' : 'win32-x64'
+      : process.arch === 'ia32'
+        ? 'linux-ia32'
+        : process.arch === 'arm64'
+          ? 'linux-arm64'
+          : 'linux-x64'
+  if (is.dev) {
+    return join(process.cwd(), 'resources', 'tor', platform)
+  }
+  return join(process.resourcesPath, 'tor', platform)
+}
+
+function bundledTorBinary(): string {
+  return join(bundledTorDir(), 'tor', process.platform === 'win32' ? 'tor.exe' : 'tor')
+}
+
+function torResourcePath(...parts: string[]): string {
+  return join(bundledTorDir(), ...parts)
+}
+
+function torDataDirectory(): string {
+  const path = join(app.getPath('userData'), 'tor-data')
+  mkdirSync(path, { recursive: true })
+  return path
+}
+
+function torArgs(): string[] {
+  const args = [
+    '--SocksPort',
+    '127.0.0.1:9150 IsolateSOCKSAuth',
+    '--ControlPort',
+    '127.0.0.1:9151',
+    '--DataDirectory',
+    torDataDirectory(),
+    '--AvoidDiskWrites',
+    '1',
+    '--CookieAuthentication',
+    '1',
+  ]
+  const geoIp = torResourcePath('data', 'geoip')
+  const geoIp6 = torResourcePath('data', 'geoip6')
+  const defaults = torResourcePath('data', 'torrc-defaults')
+  if (existsSync(geoIp)) args.push('--GeoIPFile', geoIp)
+  if (existsSync(geoIp6)) args.push('--GeoIPv6File', geoIp6)
+  if (existsSync(defaults)) args.push('--defaults-torrc', defaults)
+  return args
+}
+
+async function tryStartTor(): Promise<void> {
+  if (managedTorProcess && !managedTorProcess.killed) return
+  const torBinary = findTorBinary()
+  if (torBinary) {
+    if (process.platform !== 'win32') {
+      try {
+        chmodSync(torBinary, 0o755)
+      } catch {
+        // System Tor paths may not be writable; spawn will report a clear error if execution fails.
+      }
+    }
+    managedTorBootstrap = 0
+    managedTorProcess = spawn(torBinary, torArgs(), {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      cwd: dirname(torBinary),
+      env: {
+        ...process.env,
+        ...(process.platform === 'darwin' ? { DYLD_LIBRARY_PATH: dirname(torBinary) } : {}),
+        ...(process.platform === 'linux' ? { LD_LIBRARY_PATH: dirname(torBinary) } : {}),
+        ...(process.platform === 'win32' ? { PATH: `${dirname(torBinary)};${process.env.PATH ?? ''}` } : {}),
+      },
+    })
+    managedTorProcess.stderr?.on('data', (data: Buffer) => {
+      const message = data.toString()
+      const match = message.match(/Bootstrapped\s+(\d+)%/i)
+      if (match) {
+        managedTorBootstrap = Math.max(managedTorBootstrap, Number(match[1]) || 0)
+      }
+      logMain('tor', 'stderr', message)
+    })
+    managedTorProcess.once('exit', () => {
+      managedTorProcess = null
+      managedTorBootstrap = 0
+    })
+    return
+  }
+
+  const torBrowserApp = '/Applications/Tor Browser.app'
+  if (existsSync(torBrowserApp)) {
+    await shell.openPath(torBrowserApp).catch((error) => {
+      logMain('tor', 'Falha ao abrir Tor Browser', error)
+    })
+    return
+  }
+
+  throw new Error(
+    `Tor não foi encontrado para ${process.platform}/${process.arch}. Inclua o binário em ${bundledTorBinary()} ou configure GDOWNLOADER_TOR_PATH com o caminho do executável.`,
+  )
+}
+
+async function waitForManagedTorBootstrap(timeoutMs = 32_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (managedTorBootstrap >= 100) return true
+    if (!managedTorProcess || managedTorProcess.killed) return false
+    await new Promise((resolve) => setTimeout(resolve, 900))
+  }
+  return managedTorBootstrap >= 100
+}
+
+async function waitForTorEndpoint(timeoutMs = 18_000): Promise<{ host: string; port: number } | null> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const endpoint = await detectTorEndpoint()
+    if (endpoint) return endpoint
+    await new Promise((resolve) => setTimeout(resolve, 700))
+  }
+  return null
+}
+
+async function persistTorProxy(enabled: boolean, endpoint?: { host: string; port: number }): Promise<void> {
+  const current = storage.getPublicSettings()
+  const next = {
+    ...current,
+    proxyMode: enabled ? 'tor' : 'none',
+    proxyHost: enabled ? endpoint?.host ?? '127.0.0.1' : '',
+    proxyPort: enabled ? endpoint?.port ?? 9150 : 0,
+    startTor: enabled,
+  }
+  await storage.persistPublicSettings(next)
+  if (rustPort) {
+    await postBackend('/config/public', next).catch((error) => {
+      logMain('tor', 'Falha ao aplicar proxy Tor no backend', error)
+    })
+  }
+}
+
+async function clearStaleTorProxy(): Promise<void> {
+  const settings = storage.getPublicSettings()
+  if (settings.proxyMode !== 'tor') return
+  if (!settings.startTor) {
+    await persistTorProxy(false)
+    return
+  }
+  const endpoint = settings.proxyHost && settings.proxyPort
+    ? { host: settings.proxyHost, port: settings.proxyPort }
+    : null
+  if (endpoint && await probeTcpPort(endpoint.host, endpoint.port)) return
+  await persistTorProxy(false)
+}
+
+async function torStatusPayload(): Promise<{
+  state: 'disconnected' | 'connected'
+  host: string
+  port: number
+  route: Array<{ role: string; country: string; code: string }>
+  ip?: string
+  country?: string
+  countryCode?: string
+  isTor?: boolean
+}> {
+  const settings = storage.getPublicSettings()
+  if (settings.proxyMode !== 'tor' || !settings.startTor) {
+    return {
+      state: 'disconnected',
+      host: '127.0.0.1',
+      port: 9150,
+      route: [],
+    }
+  }
+  const endpoint = settings.proxyHost && settings.proxyPort
+    ? { host: settings.proxyHost, port: settings.proxyPort }
+    : await detectTorEndpoint()
+  const connected = Boolean(endpoint && await probeTcpPort(endpoint.host, endpoint.port))
+  const exit = connected ? lastTorExit : null
+  return {
+    state: connected ? 'connected' : 'disconnected',
+    host: endpoint?.host ?? '127.0.0.1',
+    port: endpoint?.port ?? 9150,
+    route: connected && exit
+      ? [
+          { role: 'Exit', country: exit.country || exit.ip, code: exit.countryCode || exit.ip },
+        ]
+      : [],
+    ip: exit?.ip,
+    country: exit?.country,
+    countryCode: exit?.countryCode,
+    isTor: exit?.isTor,
+  }
+}
+
+async function countryForIp(ip: string): Promise<{ country?: string; countryCode?: string }> {
+  if (!ip || ip === 'unknown') return {}
+  try {
+    const response = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`)
+    if (!response.ok) return {}
+    const json = await response.json() as Record<string, unknown>
+    return {
+      country: typeof json.country_name === 'string' ? json.country_name : undefined,
+      countryCode: typeof json.country_code === 'string' ? json.country_code : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+async function testTorConnection(): Promise<{ ip: string; country?: string; countryCode?: string; isTor: boolean }> {
+  const settings = storage.getPublicSettings()
+  if (settings.proxyMode !== 'tor' || !settings.startTor) {
+    throw new Error('Tor não está ativo no gDownloader.')
+  }
+  if (!rustPort) {
+    throw new Error('Backend Rust ainda não está disponível.')
+  }
+  const result = await fetchBackendConfig<{ ip: string; isTor?: boolean }>('/config/test-proxy')
+  const country = await countryForIp(result.ip)
+  lastTorExit = {
+    ip: result.ip,
+    isTor: Boolean(result.isTor),
+    ...country,
+  }
+  if (!lastTorExit.isTor) {
+    throw new Error(`A conexão saiu pelo IP ${result.ip}, mas o Tor Project não reconheceu como Tor.`)
+  }
+  return lastTorExit
+}
+
+function controlPortForEndpoint(endpoint: { port: number }): number {
+  if (endpoint.port === 9150) return 9151
+  if (endpoint.port === 9050) return 9051
+  return endpoint.port + 1
+}
+
+function torControlCookieHex(): string {
+  const cookiePath = join(torDataDirectory(), 'control_auth_cookie')
+  if (!existsSync(cookiePath)) {
+    throw new Error('Cookie de controle do Tor não encontrado. Conecte usando o Tor embutido do gDownloader.')
+  }
+  return readFileSync(cookiePath).toString('hex')
+}
+
+function sendTorControlCommands(port: number, commands: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = new Socket()
+    let output = ''
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error('Tempo esgotado falando com o ControlPort do Tor.'))
+    }, 5000)
+    socket.once('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    socket.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8')
+      if (output.toLowerCase().includes('250 closing connection')) {
+        clearTimeout(timer)
+        socket.end()
+        resolve(output)
+      }
+    })
+    socket.connect(port, '127.0.0.1', () => {
+      socket.write(commands.join('\r\n') + '\r\n')
+    })
+  })
+}
+
+async function signalTorNewIdentity(): Promise<void> {
+  const settings = storage.getPublicSettings()
+  const endpoint = settings.proxyHost && settings.proxyPort
+    ? { host: settings.proxyHost, port: settings.proxyPort }
+    : await detectTorEndpoint()
+  if (!endpoint) {
+    throw new Error('Tor não está ativo.')
+  }
+  const cookie = torControlCookieHex()
+  const response = await sendTorControlCommands(controlPortForEndpoint(endpoint), [
+    `AUTHENTICATE ${cookie}`,
+    'SIGNAL NEWNYM',
+    'QUIT',
+  ])
+  if (!response.includes('250 OK')) {
+    throw new Error(`Tor recusou nova identidade: ${response.trim()}`)
+  }
+  lastTorExit = null
+  await new Promise((resolve) => setTimeout(resolve, 3500))
+}
+
+async function pauseActiveDownloadsForNetworkSwitch(): Promise<string[]> {
+  if (!rustPort) return []
+  const downloads = await fetchBackendConfig<Array<{ id: string; status: string }>>('/downloads').catch(() => [])
+  const activeIds = downloads
+    .filter((download) => download.status === 'downloading' || download.status === 'verifying')
+    .map((download) => download.id)
+  for (const id of activeIds) {
+    await postBackend(`/downloads/${encodeURIComponent(id)}/pause`).catch((error) => {
+      logMain('tor', 'Falha ao pausar download antes de trocar rede', { id, error })
+    })
+  }
+  return activeIds
+}
+
+async function resumeDownloadsAfterNetworkSwitch(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await postBackend(`/downloads/${encodeURIComponent(id)}/resume`).catch((error) => {
+      logMain('tor', 'Falha ao retomar download após trocar rede', { id, error })
+    })
+  }
+}
+
 function extractClipboardUrls(text: string): string[] {
   const matches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? []
   const seen = new Set<string>()
@@ -634,28 +1094,37 @@ async function inspectClipboardForLinks(): Promise<void> {
   }
   lastClipboardText = text
 
+  const detected: Array<{ url: string; provider: { id?: string; name?: string } }> = []
   for (const url of extractClipboardUrls(text)) {
-    if (url === lastClipboardUrl) {
-      continue
-    }
     const provider = await detectClipboardUrl(url)
     if (!provider?.id) {
       continue
     }
+    detected.push({ url, provider })
+  }
 
-    lastClipboardUrl = url
+  if (detected.length > 0) {
+    const urls = detected.map((item) => item.url)
+    const signature = urls.join('\n')
+    if (signature === lastClipboardSignature) {
+      return
+    }
+    const first = detected[0]
+
+    lastClipboardSignature = signature
     logMain('clipboard', 'Link suportado detectado na área de transferência', {
-      provider: provider.id,
-      url,
+      provider: first.provider.id,
+      url: first.url,
+      count: urls.length,
     })
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send('clipboard:link-detected', {
-        url,
-        provider: provider.id,
-        providerName: provider.name ?? provider.id,
+        url: first.url,
+        urls,
+        provider: first.provider.id,
+        providerName: first.provider.name ?? first.provider.id,
       })
     }
-    return
   }
 }
 
@@ -672,10 +1141,12 @@ function configureClipboardMonitor(enabled: boolean): void {
     return
   }
 
-  lastClipboardText = clipboard.readText().trim()
+  lastClipboardText = ''
+  lastClipboardSignature = ''
   clipboardMonitorTimer = setInterval(() => {
     void inspectClipboardForLinks()
-  }, 800)
+  }, 350)
+  void inspectClipboardForLinks()
   logMain('clipboard', 'Monitor de clipboard ativado')
 }
 
@@ -684,7 +1155,7 @@ let mainWindow: BrowserWindow | null = null
 const logWatchers = new Map<number, ReturnType<typeof watch>>()
 
 function createTray(win: BrowserWindow): void {
-  const iconPath = join(__dirname, '../../resources/icon.png')
+  const iconPath = getAppIconPath()
   let icon: Electron.NativeImage
   try {
     icon = nativeImage.createFromPath(iconPath)
@@ -779,12 +1250,14 @@ function updateTrayMenu(
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
+    title: 'gDownloader',
     width: 1200,
     height: 750,
     minWidth: 900,
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
+    icon: nativeImage.createFromPath(getAppIconPath()),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -816,6 +1289,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  app.setName('gDownloader')
   electronApp.setAppUserModelId('com.gdownloader')
 
   app.on('browser-window-created', (_, window) => {
@@ -974,9 +1448,27 @@ app.whenReady().then(async () => {
     return storage.currentSettingsSnapshot()
   })
 
+  ipcMain.handle('system:disk-space', async (_event, rawPath: string) => {
+    let target = resolve(expandUserPath(rawPath || storage.getPublicSettings().outputDir || app.getPath('downloads')))
+    while (!existsSync(target) && dirname(target) !== target) {
+      target = dirname(target)
+    }
+    const stats = statfsSync(target)
+    return {
+      path: target,
+      freeBytes: Number(stats.bavail) * Number(stats.bsize),
+      totalBytes: Number(stats.blocks) * Number(stats.bsize),
+    }
+  })
+
+  ipcMain.handle('cache:stats', async () => localCacheStats())
+  ipcMain.handle('cache:clear', async (_event, ids: string[]) => clearLocalCache(ids))
+
   ipcMain.handle('remote:info', async () => {
     await loadPublicSettings().catch(() => null)
-    return remoteAccessServer.info(storage.getPublicSettings())
+    const settings = storage.getPublicSettings()
+    await remoteAccessServer.configure(settings).catch(() => null)
+    return remoteAccessServer.info(settings)
   })
 
   ipcMain.handle('remote:generateCredentials', () => {
@@ -985,6 +1477,74 @@ app.whenReady().then(async () => {
       ...generateRemoteAccessCredentials(),
       enabled: Boolean(current?.enabled),
       port: current?.port ?? 9786,
+    }
+  })
+  ipcMain.handle('remote:revokeSession', (_event, id: string) => {
+    return remoteAccessServer.revokeSession(id)
+  })
+
+  ipcMain.handle('tor:status', async () => {
+    return torStatusPayload()
+  })
+  ipcMain.handle('tor:connect', async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+    try {
+      let endpoint = await detectTorEndpoint()
+      if (!endpoint) {
+        await tryStartTor()
+        endpoint = await waitForTorEndpoint()
+        if (endpoint && managedTorProcess && managedTorBootstrap < 100) {
+          const bootstrapped = await waitForManagedTorBootstrap()
+          if (!bootstrapped) {
+            if (managedTorProcess && !managedTorProcess.killed) {
+              managedTorProcess.kill()
+              managedTorProcess = null
+            }
+            const percent = managedTorBootstrap
+            managedTorBootstrap = 0
+            throw new Error(`Tor iniciou em ${endpoint.host}:${endpoint.port}, mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`)
+          }
+        }
+      }
+      if (!endpoint) {
+        throw new Error('Tor embutido não iniciou em 127.0.0.1:9150.')
+      }
+      await persistTorProxy(true, endpoint)
+      await testTorConnection()
+      return torStatusPayload()
+    } catch (error) {
+      await persistTorProxy(false).catch(() => null)
+      throw error
+    } finally {
+      await resumeDownloadsAfterNetworkSwitch(pausedIds)
+    }
+  })
+  ipcMain.handle('tor:disconnect', async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+    try {
+      await persistTorProxy(false)
+      lastTorExit = null
+      if (managedTorProcess && !managedTorProcess.killed) {
+        managedTorProcess.kill()
+        managedTorProcess = null
+      }
+      return torStatusPayload()
+    } finally {
+      await resumeDownloadsAfterNetworkSwitch(pausedIds)
+    }
+  })
+  ipcMain.handle('tor:testConnection', async () => {
+    await testTorConnection()
+    return torStatusPayload()
+  })
+  ipcMain.handle('tor:newIdentity', async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+    try {
+      await signalTorNewIdentity()
+      await testTorConnection()
+      return torStatusPayload()
+    } finally {
+      await resumeDownloadsAfterNetworkSwitch(pausedIds)
     }
   })
 
@@ -1024,13 +1584,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('auth:isLoggedIn', (_e, moduleId: string) => {
     const normalized = moduleId.toLowerCase()
     if (normalized === 'terabox') return teraboxService.isLoggedIn()
-    if (normalized === 'brupload') return bruploadService.isLoggedIn()
     return false
   })
   ipcMain.handle('auth:accountInfo', (_e, moduleId: string) => {
     const normalized = moduleId.toLowerCase()
     if (normalized === 'terabox') return teraboxService.accountInfo()
-    if (normalized === 'brupload') return bruploadService.accountInfo()
     return null
   })
   ipcMain.handle('auth:login', async (_e, moduleId: string, params: Record<string, string>) => {
@@ -1038,15 +1596,11 @@ app.whenReady().then(async () => {
     if (normalized === 'terabox') {
       return teraboxService.login(params)
     }
-    if (normalized === 'brupload') {
-      return bruploadService.login()
-    }
     throw new Error('Módulo sem suporte a conta')
   })
   ipcMain.handle('auth:logout', (_e, moduleId: string) => {
     const normalized = moduleId.toLowerCase()
     if (normalized === 'terabox') return teraboxService.logout()
-    if (normalized === 'brupload') return bruploadService.logout()
     return false
   })
 
@@ -1136,17 +1690,15 @@ app.whenReady().then(async () => {
           }
           const result = body.action?.startsWith('terabox_')
             ? await teraboxService.handleAction(body)
-            : body.action?.startsWith('brupload_')
-              ? await bruploadService.handleAction(body)
-              : body.action?.startsWith('akirabox_')
-                ? await akiraboxService.handleAction(body)
-                : body.action?.startsWith('katfile_')
-                  ? await katfileService.handleAction(body)
-                  : await teraboxNetRequest({
-                      url: body.url ?? '',
-                      method: body.method,
-                      headers: body.headers,
-                    })
+            : body.action?.startsWith('akirabox_')
+              ? await akiraboxService.handleAction(body)
+              : body.action?.startsWith('katfile_')
+                ? await katfileService.handleAction(body)
+                : await teraboxNetRequest({
+                    url: body.url ?? '',
+                    method: body.method,
+                    headers: body.headers,
+                  })
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(result))
         } catch (e) {
@@ -1170,6 +1722,7 @@ app.whenReady().then(async () => {
     await loadSecureSettings()
     await migrateLegacySettings()
     await loadPublicSettings()
+    await clearStaleTorProxy()
     const settings = currentSettingsSnapshot()
     await syncBackendConfig(settings.maxConcurrentDownloads)
     configureClipboardMonitor(settings.clipboardMonitorEnabled)
@@ -1189,6 +1742,7 @@ app.whenReady().then(async () => {
           rustPort = await backendRuntime.start()
           await loadPublicSettings()
           await loadSecureSettings()
+          await clearStaleTorProxy()
           await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
           configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
           await remoteAccessServer.configure(storage.getPublicSettings())

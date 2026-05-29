@@ -6,7 +6,7 @@ const CAPTCHA_PARTITION = 'persist:captcha-helper'
 const KATFILE_PARTITION = 'persist:katfile'
 export const BROWSER_SESSION_READY_TOKEN = '__gdownloader_browser_session_ready__'
 
-type CaptchaProvider = 'brupload' | 'rapidgator' | 'katfile' | 'unknown'
+type CaptchaProvider = 'rapidgator' | 'katfile' | 'unknown'
 
 export interface ManualCaptchaRequest {
   provider?: string
@@ -22,8 +22,6 @@ interface CaptchaPageState {
 
 function normalizeProvider(raw: string | undefined): CaptchaProvider {
   switch ((raw ?? '').trim().toLowerCase()) {
-    case 'brupload':
-      return 'brupload'
     case 'rapidgator':
       return 'rapidgator'
     case 'katfile':
@@ -42,10 +40,10 @@ function createWindow(provider: CaptchaProvider): BrowserWindow {
     ?? undefined
 
   const win = new BrowserWindow({
-    width: 980,
-    height: 760,
-    minWidth: 820,
-    minHeight: 620,
+    width: 520,
+    height: 640,
+    minWidth: 420,
+    minHeight: 520,
     show: false,
     modal: Boolean(parent),
     parent,
@@ -74,8 +72,10 @@ async function readCaptchaState(win: BrowserWindow): Promise<CaptchaPageState> {
       const selectors = [
         'textarea[name="g-recaptcha-response"]',
         'textarea[name="h-captcha-response"]',
+        'textarea[name="cf-turnstile-response"]',
         'input[name="g-recaptcha-response"]',
-        'input[name="h-captcha-response"]'
+        'input[name="h-captcha-response"]',
+        'input[name="cf-turnstile-response"]'
       ]
 
       let token = ''
@@ -155,17 +155,74 @@ async function submitForm(win: BrowserWindow, selector: string): Promise<boolean
   )) as boolean
 }
 
-async function prepareBruploadPage(win: BrowserWindow): Promise<void> {
-  const state = await readCaptchaState(win).catch(() => null)
-  if (state?.hasCaptcha) {
-    return
-  }
+async function focusCaptchaSurface(win: BrowserWindow): Promise<void> {
+  await win.webContents.executeJavaScript(
+    `(() => {
+      const styleId = 'gdl-captcha-focus-style'
+      if (!document.getElementById(styleId)) {
+        const style = document.createElement('style')
+        style.id = styleId
+        style.textContent = \`
+          body.gdl-captcha-focus {
+            min-height: 100vh !important;
+            background: #f8fafc !important;
+          }
+          body.gdl-captcha-focus > *:not(.gdl-captcha-shell) {
+            display: none !important;
+          }
+          .gdl-captcha-shell {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 22px;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          .gdl-captcha-box {
+            max-width: 420px;
+            width: 100%;
+            display: grid;
+            justify-items: center;
+            gap: 12px;
+          }
+        \`
+        document.head.appendChild(style)
+      }
 
-  const clicked =
-    await clickLikeHuman(win, 'input[name="method_free"], button[name="method_free"], #downloadbtn').catch(() => false)
-  if (!clicked) {
-    await submitForm(win, 'form').catch(() => false)
-  }
+      const captcha =
+        document.querySelector('.cf-turnstile')
+        || document.querySelector('.g-recaptcha')
+        || document.querySelector('.h-captcha')
+        || document.querySelector('iframe[src*="turnstile"]')
+        || document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+        || document.querySelector('iframe[src*="recaptcha"]')
+        || document.querySelector('iframe[src*="hcaptcha"]')
+
+      if (!captcha) {
+        return false
+      }
+
+      let shell = document.querySelector('.gdl-captcha-shell')
+      if (!shell) {
+        shell = document.createElement('div')
+        shell.className = 'gdl-captcha-shell'
+        const box = document.createElement('div')
+        box.className = 'gdl-captcha-box'
+        shell.appendChild(box)
+        document.body.appendChild(shell)
+      }
+
+      const box = shell.querySelector('.gdl-captcha-box') || shell
+      const host = captcha.closest('.cf-turnstile, .g-recaptcha, .h-captcha') || captcha
+      if (host.parentElement !== box) {
+        box.appendChild(host)
+      }
+      document.body.classList.add('gdl-captcha-focus')
+      ;(host instanceof HTMLElement ? host : box).scrollIntoView({ block: 'center', inline: 'center' })
+      return true
+    })()`,
+    true,
+  ).catch(() => false)
 }
 
 async function prepareKatfilePage(win: BrowserWindow): Promise<void> {
@@ -180,7 +237,7 @@ async function advanceKatfileIfSolved(win: BrowserWindow): Promise<boolean> {
   return (await win.webContents.executeJavaScript(
     `(() => {
       const tokenNodes = Array.from(document.querySelectorAll(
-        'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]'
+        'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"], textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]'
       ))
       const token = tokenNodes
         .map((node) => (
@@ -194,16 +251,24 @@ async function advanceKatfileIfSolved(win: BrowserWindow): Promise<boolean> {
       }
 
       const form = document.querySelector('form#_mform') || document.querySelector('form[name="F1"]')
-      if (!(form instanceof HTMLFormElement)) {
-        return false
-      }
-
       const flag = '__gdlKatfileSubmitted'
       if ((window)[flag]) {
         return false
       }
       ;(window)[flag] = true
-      form.submit()
+      const submitButton =
+        document.querySelector('#freebtn')
+        || document.querySelector('#Send')
+        || document.querySelector('#downloadbtn')
+        || document.querySelector('button[type="submit"]')
+        || document.querySelector('input[type="submit"]')
+      if (submitButton instanceof HTMLElement) {
+        submitButton.click()
+      } else if (form instanceof HTMLFormElement) {
+        form.submit()
+      } else {
+        return false
+      }
       return true
     })()`,
     true
@@ -212,11 +277,6 @@ async function advanceKatfileIfSolved(win: BrowserWindow): Promise<boolean> {
 
 async function prepareProviderPage(win: BrowserWindow, request: ManualCaptchaRequest): Promise<void> {
   const provider = normalizeProvider(request.provider)
-  if (provider === 'brupload') {
-    await delay(700)
-    await prepareBruploadPage(win)
-    return
-  }
   if (provider === 'katfile') {
     await delay(700)
     await prepareKatfilePage(win)
@@ -247,6 +307,7 @@ export function createCaptchaWindowService() {
 
     await win.loadURL(startUrl)
     await prepareProviderPage(win, request).catch(() => undefined)
+    await focusCaptchaSurface(win).catch(() => undefined)
     win.show()
     win.focus()
 
@@ -255,7 +316,6 @@ export function createCaptchaWindowService() {
       if (provider === 'katfile') {
         await advanceKatfileIfSolved(win).catch(() => false)
       }
-
       const state = await readCaptchaState(win).catch(() => null)
       if (state?.token) {
         logMain('captcha-window', 'Token capturado manualmente', {

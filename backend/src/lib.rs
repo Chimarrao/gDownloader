@@ -79,34 +79,6 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         );
     }
 
-    // Start TOR if enabled
-    {
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            let settings = state_clone
-                .db
-                .lock()
-                .ok()
-                .and_then(|db| crate::db::load_public_settings(&db).ok())
-                .unwrap_or_default();
-            if settings.start_tor {
-                match tokio::process::Command::new("tor")
-                    .arg("--SocksPort")
-                    .arg("9050")
-                    .arg("--DataDirectory")
-                    .arg("/tmp/tor-data")
-                    .spawn() {
-                    Ok(child) => {
-                        tracing::info!("TOR process started with PID {}", child.id().unwrap_or(0));
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start TOR: {}", e);
-                    }
-                }
-            }
-        });
-    }
-
     // Stats tick: every 1s, collect speed from active downloads and broadcast
     {
         let state_clone = state.clone();
@@ -160,6 +132,8 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/detect",        get(routes::providers::detect_provider))
         .route("/file-info",     get(routes::providers::get_file_info))
         .route("/file-info/cache", get(routes::providers::get_cached_file_info))
+        .route("/file-info/cache/stats", get(routes::providers::file_info_cache_stats))
+        .route("/file-info/cache", delete(routes::providers::clear_file_info_cache))
         .route("/config/public", get(routes::config::get_public_settings))
         .route("/config/public", post(routes::config::update_public_settings))
         .route("/config/test-proxy", get(routes::config::test_proxy))

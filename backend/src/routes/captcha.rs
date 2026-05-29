@@ -156,6 +156,7 @@ mod tests {
             pinned: false,
             package_id: None,
             request_headers: None,
+            network_route: None,
         }
     }
 

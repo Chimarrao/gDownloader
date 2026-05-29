@@ -235,7 +235,7 @@ export function createKatfileService() {
     await win.webContents.executeJavaScript(
       `(() => {
         const tokenNodes = Array.from(document.querySelectorAll(
-          'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"]'
+          'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], textarea[name="h-captcha-response"], input[name="h-captcha-response"], textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]'
         ))
 
         const token = tokenNodes

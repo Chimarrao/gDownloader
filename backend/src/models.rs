@@ -68,6 +68,35 @@ pub struct Download {
     pub package_id: Option<String>, // ID do pacote ao qual este download pertence
     #[serde(default)]
     pub request_headers: Option<HashMap<String, String>>, // Headers capturados pelo interceptador local
+    #[serde(default)]
+    pub network_route: Option<DownloadNetworkRoute>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadNetworkRoute {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub isolated: bool,
+    #[serde(default)]
+    pub proxy_host: String,
+    #[serde(default)]
+    pub proxy_port: u16,
+    #[serde(default)]
+    pub proxy_username: Option<String>,
+    #[serde(default)]
+    pub proxy_password: Option<String>,
+    #[serde(default)]
+    pub exit_ip: Option<String>,
+    #[serde(default)]
+    pub exit_country: Option<String>,
+    #[serde(default)]
+    pub exit_country_code: Option<String>,
+    #[serde(default)]
+    pub circuit_changes: u32,
+    #[serde(default)]
+    pub last_checked_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,20 +173,9 @@ pub struct TeraboxAccountSecret {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BruploadAccountSecret {
-    pub email: String,
-    pub password: String,
-    #[serde(default)]
-    pub cookies: Vec<String>,
-    pub verified_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct SecureSettings {
     pub nopecha_api_key: Option<String>,
     pub terabox_account: Option<TeraboxAccountSecret>,
-    pub brupload_account: Option<BruploadAccountSecret>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +298,22 @@ pub struct PublicSettings {
     pub intercept_ask_before_add: bool,
     #[serde(default)]
     pub onboarding_completed: bool,
+    #[serde(default)]
+    pub youtube_use_cookies: bool,
+    #[serde(default)]
+    pub youtube_cookie_browser: String,
+    #[serde(default)]
+    pub youtube_cookies_file: String,
+    #[serde(default)]
+    pub youtube_merge_format: String,
+    #[serde(default)]
+    pub youtube_download_subs: bool,
+    #[serde(default)]
+    pub youtube_sub_langs: String,
+    #[serde(default)]
+    pub youtube_embed_subs: bool,
+    #[serde(default)]
+    pub youtube_split_chapters: bool,
 }
 
 impl Default for PublicSettings {
@@ -346,6 +380,14 @@ impl Default for PublicSettings {
             intercept_domain_blocklist: Vec::new(),
             intercept_ask_before_add: false,
             onboarding_completed: false,
+            youtube_use_cookies: true,
+            youtube_cookie_browser: "chrome".to_string(),
+            youtube_cookies_file: String::new(),
+            youtube_merge_format: "mp4".to_string(),
+            youtube_download_subs: false,
+            youtube_sub_langs: "pt,en".to_string(),
+            youtube_embed_subs: false,
+            youtube_split_chapters: false,
         }
     }
 }

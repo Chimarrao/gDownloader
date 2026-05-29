@@ -17,7 +17,18 @@ interface RemoteAccessInfo {
   url: string
   credentialUrl: string
   qrCodeDataUrl?: string
+  sessions: RemoteAccessSession[]
+  insecureCredentials: boolean
   error?: string
+}
+
+export interface RemoteAccessSession {
+  id: string
+  ip: string
+  userAgent: string
+  createdAt: number
+  lastSeenAt: number
+  current?: boolean
 }
 
 interface RemoteAccessServerOptions {
@@ -168,6 +179,10 @@ function buildCredentialUrl(settings: RemoteAccessSettings, lanIp: string): stri
   return `http://${username}:${password}@${lanIp}:${settings.port}/`
 }
 
+function buildTokenUrl(settings: RemoteAccessSettings, lanIp: string, token: string): string {
+  return `http://${lanIp}:${settings.port}/auth?t=${encodeURIComponent(token)}`
+}
+
 function buildUrl(settings: RemoteAccessSettings, lanIp: string): string {
   return `http://${lanIp}:${settings.port}/`
 }
@@ -188,6 +203,63 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
   let server: Server | null = null
   let activeSettings: RemoteAccessSettings = normalizeRemoteAccess(options.getSettings())
   let lastError = ''
+  const loginTokens = new Map<string, number>()
+  const sessions = new Map<string, RemoteAccessSession>()
+
+  function requestIp(req: IncomingMessage): string {
+    const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim()
+    return forwarded || req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'desconhecido'
+  }
+
+  function parseCookies(req: IncomingMessage): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const chunk of String(req.headers.cookie ?? '').split(';')) {
+      const [key, ...rest] = chunk.trim().split('=')
+      if (key) out[key] = decodeURIComponent(rest.join('=') || '')
+    }
+    return out
+  }
+
+  function createLoginToken(): string {
+    const token = randomBytes(24).toString('hex')
+    loginTokens.set(token, Date.now() + 5 * 60_000)
+    return token
+  }
+
+  function createSession(req: IncomingMessage): RemoteAccessSession {
+    const session: RemoteAccessSession = {
+      id: randomBytes(18).toString('hex'),
+      ip: requestIp(req),
+      userAgent: String(req.headers['user-agent'] ?? 'desconhecido'),
+      createdAt: Date.now(),
+      lastSeenAt: Date.now(),
+    }
+    sessions.set(session.id, session)
+    return session
+  }
+
+  function sessionFromRequest(req: IncomingMessage): RemoteAccessSession | null {
+    const id = parseCookies(req).gdl_remote_session
+    if (!id) return null
+    const session = sessions.get(id)
+    if (!session) return null
+    session.lastSeenAt = Date.now()
+    return session
+  }
+
+  function activeSessions(currentId?: string): RemoteAccessSession[] {
+    return [...sessions.values()]
+      .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
+      .map((session) => ({ ...session, current: session.id === currentId }))
+  }
+
+  function credentialsAreInsecure(settings: RemoteAccessSettings): boolean {
+    const username = settings.username.trim().toLowerCase()
+    return (
+      (username === 'admin' && settings.password === '123456')
+      || (username === 'gdownloader' && settings.password === 'gd-1234')
+    )
+  }
 
   async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
     const rustPort = options.getRustPort()
@@ -244,6 +316,24 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
       return
     }
 
+    if (req.method === 'GET' && pathname === '/api/sessions') {
+      jsonResponse(res, 200, activeSessions(sessionFromRequest(req)?.id))
+      return
+    }
+
+    const sessionMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/)
+    if (req.method === 'DELETE' && sessionMatch) {
+      const [, id] = sessionMatch
+      const current = sessionFromRequest(req)
+      if (current?.id === id) {
+        jsonResponse(res, 409, { error: 'Confirme no app principal antes de encerrar a sessão atual.' })
+        return
+      }
+      sessions.delete(id)
+      noContent(res)
+      return
+    }
+
     if (req.method === 'POST' && pathname === '/api/downloads') {
       const payload = await readBody(req) as { url?: string; destDir?: string; duplicateAction?: string }
       const current = options.getSettings()
@@ -267,8 +357,11 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     if (req.method === 'POST' && actionMatch) {
       const [, id, action] = actionMatch
       const method = action === 'remove' || action === 'remove-with-files' ? 'DELETE' : 'POST'
-      const suffix = action === 'pin' ? 'pin' : action
-      await proxyNoContent(`/downloads/${encodeURIComponent(id)}/${suffix}`, { method })
+      const backendPath =
+        action === 'remove'
+          ? `/downloads/${encodeURIComponent(id)}`
+          : `/downloads/${encodeURIComponent(id)}/${action === 'pin' ? 'pin' : action}`
+      await proxyNoContent(backendPath, { method })
       noContent(res)
       return
     }
@@ -278,12 +371,31 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const settings = activeSettings
-    if (!isAuthorized(req, settings)) {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+
+    if (req.method === 'GET' && url.pathname === '/auth') {
+      const token = url.searchParams.get('t') ?? ''
+      const expiresAt = loginTokens.get(token) ?? 0
+      loginTokens.delete(token)
+      if (!token || expiresAt < Date.now()) {
+        authRequired(res)
+        return
+      }
+      const session = createSession(req)
+      res.writeHead(302, {
+        Location: '/',
+        'Set-Cookie': `gdl_remote_session=${encodeURIComponent(session.id)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`,
+        'Cache-Control': 'no-store',
+      })
+      res.end()
+      return
+    }
+
+    if (!sessionFromRequest(req) && !isAuthorized(req, settings)) {
       authRequired(res)
       return
     }
 
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     try {
       if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url.pathname)
@@ -359,6 +471,7 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     const lanIp = getLanIp()
     const url = buildUrl(settings, lanIp)
     const credentialUrl = buildCredentialUrl(settings, lanIp)
+    const tokenUrl = buildTokenUrl(settings, lanIp, createLoginToken())
     const enabled = Boolean(settings.enabled)
     return {
       enabled,
@@ -369,15 +482,22 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
       password: settings.password,
       url,
       credentialUrl,
-      qrCodeDataUrl: enabled ? await qrCodeDataUrl(credentialUrl).catch(() => undefined) : undefined,
+      qrCodeDataUrl: enabled ? await qrCodeDataUrl(tokenUrl).catch(() => undefined) : undefined,
+      sessions: activeSessions(),
+      insecureCredentials: credentialsAreInsecure(settings),
       error: lastError || undefined,
     }
+  }
+
+  function revokeSession(id: string): boolean {
+    return sessions.delete(id)
   }
 
   return {
     configure,
     stop,
     info,
+    revokeSession,
   }
 }
 
@@ -420,6 +540,20 @@ function remoteHtml(): string {
     .empty { color:var(--muted); text-align:center; padding:26px; }
     .toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:var(--text); color:var(--surface); padding:10px 14px; border-radius:8px; opacity:0; pointer-events:none; transition:.2s; }
     .toast.show { opacity:1; }
+    @media (max-width: 720px) {
+      header { padding:12px; }
+      h1 { font-size:16px; }
+      main { padding:10px; gap:10px; }
+      .tabs { display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; }
+      .tabs button { padding:9px 6px; }
+      .card { padding:12px; }
+      .download { grid-template-columns:1fr; padding:11px; }
+      .actions { justify-content:flex-start; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); }
+      .actions button { width:100%; min-height:38px; }
+      .meta { gap:6px; }
+      .settings-grid { grid-template-columns:1fr; }
+      input, select, button { min-height:40px; }
+    }
   </style>
 </head>
 <body>

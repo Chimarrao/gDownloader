@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'fs'
 
 import type { AppSettingsSnapshot, PersistedSettings } from '../shared/types'
-import type { BruploadStoredAccount } from './brupload-service'
 import type { TeraboxStoredAccount } from './terabox-service'
 
 export const defaultPublicSettings: PersistedSettings = {
@@ -34,6 +33,14 @@ export const defaultPublicSettings: PersistedSettings = {
   interceptDomainBlocklist: [],
   interceptAskBeforeAdd: false,
   onboardingCompleted: false,
+  youtubeUseCookies: true,
+  youtubeCookieBrowser: 'chrome',
+  youtubeCookiesFile: '',
+  youtubeMergeFormat: 'mp4',
+  youtubeDownloadSubs: false,
+  youtubeSubLangs: 'pt,en',
+  youtubeEmbedSubs: false,
+  youtubeSplitChapters: false,
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -64,19 +71,12 @@ export interface LegacyRootSettings extends AppSettingsSnapshot {
       cookies?: string[]
       verifiedAt?: string
     }
-    brupload?: {
-      email: string
-      password: string
-      cookies?: string[]
-      verifiedAt?: string
-    }
   }
 }
 
 export interface SecureSettingsPayload {
   nopechaApiKey?: string
   teraboxAccount?: TeraboxStoredAccount | null
-  bruploadAccount?: BruploadStoredAccount | null
 }
 
 export interface PersistedHistoryItem {
@@ -116,7 +116,6 @@ interface CreateAppStorageOptions {
 interface AppStorageState {
   nopechaApiKey: string
   teraboxAccount: TeraboxStoredAccount | null
-  bruploadAccount: BruploadStoredAccount | null
 }
 
 function sanitizeForDisk(
@@ -136,31 +135,6 @@ function sanitizeForDisk(
 function normalizeTeraboxAccount(
   account: TeraboxStoredAccount | null | undefined,
 ): TeraboxStoredAccount | null {
-  if (!account) {
-    return null
-  }
-
-  const email = account.email?.trim() ?? ''
-  const password = account.password ?? ''
-  const cookies = Array.isArray(account.cookies)
-    ? account.cookies.map((cookie) => String(cookie).trim()).filter(Boolean)
-    : []
-
-  if (!email && !password && cookies.length === 0 && !account.verifiedAt) {
-    return null
-  }
-
-  return {
-    email,
-    password,
-    cookies,
-    verifiedAt: account.verifiedAt,
-  }
-}
-
-function normalizeBruploadAccount(
-  account: BruploadStoredAccount | null | undefined,
-): BruploadStoredAccount | null {
   if (!account) {
     return null
   }
@@ -252,21 +226,18 @@ export function createAppStorage(options: CreateAppStorageOptions) {
   const secureState: AppStorageState = {
     nopechaApiKey: '',
     teraboxAccount: null,
-    bruploadAccount: null,
   }
   let cachedPublicSettings: PersistedSettings = { ...defaultPublicSettings }
 
   function applySecureSettingsPayload(payload: SecureSettingsPayload | null | undefined): void {
     secureState.nopechaApiKey = payload?.nopechaApiKey?.trim() ?? ''
     secureState.teraboxAccount = normalizeTeraboxAccount(payload?.teraboxAccount)
-    secureState.bruploadAccount = normalizeBruploadAccount(payload?.bruploadAccount)
   }
 
   function currentSecureSettingsPayload(): SecureSettingsPayload {
     return {
       nopechaApiKey: secureState.nopechaApiKey || undefined,
       teraboxAccount: secureState.teraboxAccount,
-      bruploadAccount: secureState.bruploadAccount,
     }
   }
 
@@ -360,7 +331,6 @@ export function createAppStorage(options: CreateAppStorageOptions) {
       if (parsed) {
         const legacyNopechaApiKey = parsed.nopechaApiKey?.trim()
         const legacyTeraboxAccount = normalizeTeraboxAccount(parsed.accounts?.terabox)
-        const legacyBruploadAccount = normalizeBruploadAccount(parsed.accounts?.brupload)
         const legacyPublicSettings = sanitizeForDisk(parsed)
 
         if (!secureState.nopechaApiKey && legacyNopechaApiKey) {
@@ -368,9 +338,6 @@ export function createAppStorage(options: CreateAppStorageOptions) {
         }
         if (!secureState.teraboxAccount && legacyTeraboxAccount) {
           secureState.teraboxAccount = legacyTeraboxAccount
-        }
-        if (!secureState.bruploadAccount && legacyBruploadAccount) {
-          secureState.bruploadAccount = legacyBruploadAccount
         }
 
         cachedPublicSettings = mergeLegacyPublicSettings(cachedPublicSettings, legacyPublicSettings)
@@ -403,15 +370,6 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     return persistSecureSettings()
   }
 
-  function persistBruploadAccount(account: BruploadStoredAccount | null): Promise<void> {
-    secureState.bruploadAccount = normalizeBruploadAccount(account)
-    return persistSecureSettings()
-  }
-
-  function getBruploadAccount(): BruploadStoredAccount | null {
-    return secureState.bruploadAccount
-  }
-
   function getTeraboxAccount(): TeraboxStoredAccount | null {
     return secureState.teraboxAccount
   }
@@ -431,7 +389,6 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     applySecureSettingsPayload,
     currentSecureSettingsPayload,
     currentSettingsSnapshot,
-    getBruploadAccount,
     getNopechaApiKey,
     getPublicSettings,
     getTeraboxAccount,
@@ -441,7 +398,6 @@ export function createAppStorage(options: CreateAppStorageOptions) {
     loadPublicSettings,
     loadSecureSettings,
     migrateLegacySettingsIfNeeded,
-    persistBruploadAccount,
     persistPublicSettings,
     persistSecureSettings,
     persistTeraboxAccount,
