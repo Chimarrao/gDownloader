@@ -443,16 +443,18 @@ impl YouTubeProvider {
             duration_secs,
         );
 
-        // Fetch channel avatar in parallel (non-fatal on failure)
-        let channel_id = info.channel_id.clone();
-        let channel_future = async move {
-            if let Some(cid) = channel_id {
-                Self::read_channel_info(&cid).await
-            } else {
-                None
-            }
+        // Avatar do canal: reaproveita o que já está em cache para evitar a
+        // chamada extra (cara) do yt-dlp. Só busca quando não há cache.
+        let cached_channel_thumb = context
+            .and_then(|context| context.cached_channel_thumbnail_url.clone())
+            .filter(|value| !value.is_empty());
+        let channel_thumbnail_url = if cached_channel_thumb.is_some() {
+            cached_channel_thumb
+        } else if let Some(cid) = info.channel_id.clone() {
+            Self::read_channel_info(&cid).await.and_then(|c| c.thumbnail)
+        } else {
+            None
         };
-        let channel_info = channel_future.await;
 
         Ok(FileInfo {
             filename,
@@ -462,7 +464,7 @@ impl YouTubeProvider {
             children: Some(children),
             thumbnail_url: info.thumbnail.clone(),
             channel_name: info.uploader.clone(),
-            channel_thumbnail_url: channel_info.and_then(|c| c.thumbnail),
+            channel_thumbnail_url,
         })
     }
 
@@ -548,7 +550,7 @@ impl YouTubeProvider {
     }
 
     fn parse_progress(line: &str) -> Option<(u64, u64, u64, u64)> {
-        let re = Regex::new(r#"download:\s*([0-9.]+)%\s+(.+?)\s+(\S+)\s*$"#).ok()?;
+        let re = Regex::new(r#"GDLPROG\s*([0-9.]+)%\s+(.+?)\s+(\S+)\s*$"#).ok()?;
         let captures = re.captures(line)?;
         let percent = captures.get(1)?.as_str().parse::<f64>().unwrap_or(0.0).clamp(0.0, 100.0);
         let speed = Self::parse_speed_bps(captures.get(2)?.as_str());
@@ -749,7 +751,7 @@ impl Provider for YouTubeProvider {
                     merge_format,
                     "--newline".to_string(),
                     "--progress-template".to_string(),
-                    "download:%(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s".to_string(),
+                    "download:GDLPROG %(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s".to_string(),
                     "--retries".to_string(),
                     "3".to_string(),
                     "--fragment-retries".to_string(),
@@ -939,7 +941,7 @@ mod tests {
     #[test]
     fn parses_ytdlp_progress_with_real_total() {
         let (downloaded, total, speed, eta) =
-            YouTubeProvider::parse_progress("download: 42.5% 1.5MiB/s 00:09").unwrap();
+            YouTubeProvider::parse_progress("GDLPROG  42.5% 1.5MiB/s 00:09").unwrap();
         assert_eq!(downloaded, 4250);
         assert_eq!(total, SYNTHETIC_PROGRESS_TOTAL);
         assert_eq!(speed, 1_572_864);
@@ -949,7 +951,7 @@ mod tests {
     #[test]
     fn parses_ytdlp_progress_with_synthetic_total_when_total_is_na() {
         let (downloaded, total, _, _) =
-            YouTubeProvider::parse_progress("download: 25.0% N/A 00:00").unwrap();
+            YouTubeProvider::parse_progress("GDLPROG  25.0% N/A 00:00").unwrap();
         assert_eq!(downloaded, SYNTHETIC_PROGRESS_TOTAL / 4);
         assert_eq!(total, SYNTHETIC_PROGRESS_TOTAL);
     }

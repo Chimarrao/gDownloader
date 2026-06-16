@@ -80,6 +80,16 @@ pub async fn get_file_info(
         (StatusCode::BAD_REQUEST, Json(ApiError::new("URL não reconhecida")))
     })?;
 
+    // Reaproveita o avatar do canal já em cache para evitar a chamada extra
+    // (cara) do yt-dlp ao recarregar o mesmo link.
+    let cached_channel_thumbnail_url = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::db::load_cached_file_info(&db, &params.url).ok())
+        .flatten()
+        .and_then(|cached| cached.channel_thumbnail_url);
+
     let context = {
         let settings = state
             .db
@@ -103,6 +113,7 @@ pub async fn get_file_info(
             youtube_embed_subs: settings.youtube_embed_subs,
             youtube_split_chapters: settings.youtube_split_chapters,
             request_headers: std::collections::HashMap::new(),
+            cached_channel_thumbnail_url,
         }
     };
 
@@ -120,6 +131,9 @@ pub async fn get_file_info(
             info.mime_type.as_deref(),
             info.is_folder,
             &info.children,
+            info.thumbnail_url.as_deref(),
+            info.channel_name.as_deref(),
+            info.channel_thumbnail_url.as_deref(),
         );
     }
 

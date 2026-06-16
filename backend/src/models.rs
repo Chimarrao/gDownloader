@@ -500,6 +500,12 @@ pub struct CachedFileInfo {
     pub mime_type: Option<String>,
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub channel_name: Option<String>,
+    #[serde(default)]
+    pub channel_thumbnail_url: Option<String>,
     pub cached_at: u64,
     pub last_checked_at: Option<u64>,
 }

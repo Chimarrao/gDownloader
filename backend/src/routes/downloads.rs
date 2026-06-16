@@ -284,6 +284,7 @@ pub async fn add_download_internal(
                 youtube_embed_subs: settings.youtube_embed_subs,
                 youtube_split_chapters: settings.youtube_split_chapters,
                 request_headers: req.request_headers.clone().unwrap_or_default(),
+                cached_channel_thumbnail_url: None,
             }
         };
         provider.get_file_info_with_context(&req.url, context).await
@@ -1116,6 +1117,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 youtube_embed_subs: settings.youtube_embed_subs,
                 youtube_split_chapters: settings.youtube_split_chapters,
                 request_headers,
+                cached_channel_thumbnail_url: None,
             }
         };
         let download_task = tokio::spawn(async move {

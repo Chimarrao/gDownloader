@@ -89,6 +89,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_download_network_route",
         apply: migration_add_download_network_route,
     },
+    Migration {
+        version: 16,
+        name: "add_file_cache_media_columns",
+        apply: migration_add_file_cache_media_columns,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -332,6 +337,28 @@ fn migration_create_file_cache_table(conn: &Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_file_info_cache_cached_at
              ON file_info_cache(cached_at DESC);",
+    )?;
+    Ok(())
+}
+
+fn migration_add_file_cache_media_columns(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "file_info_cache",
+        "thumbnail_url",
+        "ALTER TABLE file_info_cache ADD COLUMN thumbnail_url TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "file_info_cache",
+        "channel_name",
+        "ALTER TABLE file_info_cache ADD COLUMN channel_name TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "file_info_cache",
+        "channel_thumbnail_url",
+        "ALTER TABLE file_info_cache ADD COLUMN channel_thumbnail_url TEXT",
     )?;
     Ok(())
 }
@@ -1439,7 +1466,7 @@ pub fn clear_direct_http_parts(conn: &Connection, download_key: &str) -> Result<
 
 pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<CachedFileInfo>> {
     conn.query_row(
-        "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, cached_at, last_checked_at
+        "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at
          FROM file_info_cache
          WHERE url = ?1",
         params![url],
@@ -1456,8 +1483,11 @@ pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<Cach
                     .as_deref()
                     .and_then(|raw| serde_json::from_str::<Option<Vec<FileChildInfo>>>(raw).ok())
                     .flatten(),
-                cached_at: row.get::<_, i64>(7)? as u64,
-                last_checked_at: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+                thumbnail_url: row.get(7)?,
+                channel_name: row.get(8)?,
+                channel_thumbnail_url: row.get(9)?,
+                cached_at: row.get::<_, i64>(10)? as u64,
+                last_checked_at: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
             })
         },
     )
@@ -1480,6 +1510,7 @@ pub fn clear_file_info_cache(conn: &Connection) -> Result<u64> {
     Ok(removed as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn save_cached_file_info(
     conn: &Connection,
     url: &str,
@@ -1489,12 +1520,15 @@ pub fn save_cached_file_info(
     mime_type: Option<&str>,
     is_folder: bool,
     children: &Option<Vec<FileChildInfo>>,
+    thumbnail_url: Option<&str>,
+    channel_name: Option<&str>,
+    channel_thumbnail_url: Option<&str>,
 ) -> Result<()> {
     let now = now_secs();
     conn.execute(
         "INSERT INTO file_info_cache
-             (url, provider_id, name, size, mime_type, is_folder, children_json, cached_at, last_checked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+             (url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
          ON CONFLICT(url) DO UPDATE SET
              provider_id = excluded.provider_id,
              name = excluded.name,
@@ -1502,6 +1536,9 @@ pub fn save_cached_file_info(
              mime_type = excluded.mime_type,
              is_folder = excluded.is_folder,
              children_json = excluded.children_json,
+             thumbnail_url = excluded.thumbnail_url,
+             channel_name = excluded.channel_name,
+             channel_thumbnail_url = excluded.channel_thumbnail_url,
              cached_at = excluded.cached_at,
              last_checked_at = excluded.last_checked_at",
         params![
@@ -1512,6 +1549,9 @@ pub fn save_cached_file_info(
             mime_type,
             if is_folder { 1 } else { 0 },
             to_json(children),
+            thumbnail_url,
+            channel_name,
+            channel_thumbnail_url,
             now,
         ],
     )?;

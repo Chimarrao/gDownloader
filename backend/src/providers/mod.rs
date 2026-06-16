@@ -442,6 +442,9 @@ pub struct DownloadContext {
     pub youtube_embed_subs: bool,
     pub youtube_split_chapters: bool,
     pub request_headers: std::collections::HashMap<String, String>,
+    /// Avatar do canal já em cache: quando presente, evita a chamada extra
+    /// (cara) do yt-dlp para buscar o thumbnail do canal novamente.
+    pub cached_channel_thumbnail_url: Option<String>,
 }
 
 pub async fn apply_speed_limit(
