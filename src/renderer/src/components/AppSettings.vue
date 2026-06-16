@@ -110,7 +110,7 @@
       </div>
     </div>
 
-    <div class="settings-section">
+    <div class="settings-section" data-tour="youtube-settings">
       <h3 class="section-title">YouTube</h3>
 
       <div class="setting-row">
@@ -1096,9 +1096,9 @@ async function clearCache(ids?: string[]): Promise<void> {
   flex-direction: column;
   gap: 2px;
   padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 68%, transparent);
+  border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+  background: var(--bg-card);
 }
 
 .section-title {
@@ -1107,7 +1107,7 @@ async function clearCache(ids?: string[]): Promise<void> {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-color);
 }
@@ -1135,19 +1135,19 @@ async function clearCache(ids?: string[]): Promise<void> {
 
 .setting-label {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 650;
   color: var(--text-primary);
 }
 
 .setting-desc {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
 /* Inputs */
 .setting-input,
 .setting-select {
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   color: var(--text-primary);
@@ -1167,7 +1167,7 @@ async function clearCache(ids?: string[]): Promise<void> {
 
 .browse-btn {
   border: 1px solid var(--border-color);
-  background: var(--bg-card);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   border-radius: 8px;
   padding: 8px 12px;
@@ -1248,7 +1248,7 @@ async function clearCache(ids?: string[]): Promise<void> {
 
 .speed-limit-value {
   min-width: 84px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
 }

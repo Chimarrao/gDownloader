@@ -49,7 +49,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 
-type TourTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'speed-history' | 'logs'
+type TourTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
 
 interface TourStep {
   tab: TourTab
@@ -70,39 +70,46 @@ const emit = defineEmits<{
 
 const steps: TourStep[] = [
   {
-    tab: 'settings',
-    selector: '[data-tour="download-folder"]',
-    title: 'Escolha a pasta de download',
-    body: 'Defina a pasta padrão antes de enfileirar arquivos. Ela vira o destino inicial para links capturados, containers e downloads interceptados pelo proxy local.',
-    checklist: ['Use uma pasta com espaço livre', 'Você pode trocar por download quando precisar'],
+    tab: 'downloads',
+    selector: '[data-tour="download-queue"]',
+    title: 'Acompanhe a fila',
+    body: 'A fila mostra progresso, velocidade suavizada, próximos itens e ações rápidas por download. No YouTube, as etapas de vídeo, áudio e mesclagem aparecem separadas.',
+    checklist: ['Clique com o botão direito para ações rápidas', 'Use Q para alternar o painel lateral'],
   },
   {
     tab: 'grabber',
     selector: '[data-tour="link-input"]',
-    title: 'Cole links no LinkGrabber',
-    body: 'Cole uma URL ou uma lista inteira. O app detecta provider, tamanho, pastas e duplicatas antes de enviar para a fila.',
-    checklist: ['Aceita vários links por linha', 'Containers DLC/CCF/RSDF entram pelo botão de importação'],
+    title: 'Capture links',
+    body: 'Cole uma URL ou uma lista inteira. O capturador detecta arquivos, pastas, playlists e canais públicos do YouTube antes de enviar para a fila.',
+    checklist: ['Aceita vários links por linha', 'Canais grandes podem usar limite opcional'],
+  },
+  {
+    tab: 'settings',
+    selector: '[data-tour="youtube-settings"]',
+    title: 'Ajuste o YouTube',
+    body: 'Configure cookies, container final, legendas, múltiplos áudios e capítulos. O capturador reutiliza metadados em cache para iniciar downloads com menos espera.',
+    checklist: ['Cookies ajudam vídeos restritos', 'O formato escolhido vale para o arquivo final'],
   },
   {
     tab: 'downloads',
-    selector: '[data-tour="download-queue"]',
-    title: 'Acompanhe e controle a fila',
-    body: 'Aqui ficam progresso, pacotes, detalhes expansíveis, menu de contexto, rate-limit e o painel lateral com próximos itens.',
-    checklist: ['Clique com o botão direito para ações rápidas', 'Use Q para alternar o painel lateral'],
+    selector: '[data-tour="tor-widget"]',
+    title: 'Use Tor quando precisar',
+    body: 'O painel Tor conecta, testa a rota e troca identidade sem sair da tela principal. Downloads configurados para Tor mostram o indicador na própria linha.',
+    checklist: ['Teste a saída antes de baixar', 'Nova identidade troca a rota'],
   },
   {
     tab: 'settings',
-    selector: '[data-tour="captcha-solver"]',
-    title: 'Configure o resolvedor de captcha',
-    body: 'Adicione sua chave NoPecha para resolver captchas automaticamente. Quando não houver token, o app abre a janela manual do próprio host.',
-    checklist: ['A chave fica no SQLite local', 'Você pode deixar vazio e resolver manualmente'],
+    selector: '[data-tour="download-folder"]',
+    title: 'Defina o destino padrão',
+    body: 'Escolha a pasta inicial para downloads capturados, importados ou adicionados manualmente. Cada item ainda pode receber destino próprio no capturador.',
+    checklist: ['Use uma pasta com espaço livre', 'Você pode trocar por download quando precisar'],
   },
   {
-    tab: 'settings',
-    selector: '[data-tour="browser-capture"]',
-    title: 'Ative a captura local do navegador',
-    body: 'A extensão antiga foi substituída pela captura local via proxy. Ative o proxy, instale a CA se for usar HTTPS e configure apps/navegador para 127.0.0.1:9667.',
-    checklist: ['Tudo fica na rede local da máquina', 'Domínios sensíveis podem ficar na lista de ignorados'],
+    tab: 'logs',
+    selector: '[data-tour="logs-panel"]',
+    title: 'Leia os logs',
+    body: 'A tela de logs agrupa nível, módulo e mensagem amigável. O detalhe técnico continua disponível para copiar ou inspecionar quando houver erro.',
+    checklist: ['Filtre por Info, Aviso ou Erro', 'Use a busca para achar um download'],
   },
 ]
 
@@ -346,7 +353,7 @@ function clamp(value: number, min: number, max: number): number {
 
 .tour-progress {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(18px, 1fr));
   gap: 5px;
   margin: 16px 0;
 }

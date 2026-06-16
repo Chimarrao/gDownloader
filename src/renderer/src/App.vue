@@ -33,7 +33,7 @@
           <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
           <span>{{ formatSpeed(currentSpeed) }}</span>
         </div>
-        <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]">
+        <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
           <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
             <span class="tor-icon" aria-hidden="true" v-html="torIconSvg"></span>
             <strong>Tor</strong>
@@ -141,15 +141,7 @@
         <i class="pi pi-user"></i>
         <span>{{ t('account') }}</span>
       </button>
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'speed-history' }"
-        @click="activeTab = 'speed-history'"
-      >
-        <i class="pi pi-chart-line"></i>
-        <span>Histórico de Velocidade</span>
-      </button>
-      <button class="tab-btn" :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'">
+      <button class="tab-btn" :class="{ active: activeTab === 'logs' }" data-tour="logs-tab" @click="activeTab = 'logs'">
         <i class="pi pi-list"></i>
         <span>Logs</span>
       </button>
@@ -183,24 +175,7 @@
         <AccountSettings />
       </section>
 
-      <section v-show="activeTab === 'speed-history'" class="panel speed-history-panel">
-        <div class="speed-history-header">
-          <div>
-            <h2>Histórico de Velocidade</h2>
-            <span>Velocidade global agregada de todos os downloads</span>
-          </div>
-          <strong>{{ formatSpeed(currentSpeed) }}</strong>
-        </div>
-        <canvas
-          ref="speedHistoryCanvasRef"
-          class="speed-history-canvas"
-          width="1120"
-          height="320"
-          aria-label="Histórico de velocidade global"
-        ></canvas>
-      </section>
-
-      <section v-show="activeTab === 'logs'" class="panel">
+      <section v-show="activeTab === 'logs'" class="panel" data-tour="logs-panel">
         <LogsView />
       </section>
     </main>
@@ -227,7 +202,7 @@ import { applyUiPreferences, useTheme, type ThemeId } from './themes'
 import { pushRingBuffer } from './utils/ring-buffer'
 import torIconSvg from './assets/tor.svg?raw'
 
-type AppTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'speed-history' | 'logs'
+type AppTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
 
 interface DownloadCompletePayload {
   id: string
@@ -253,7 +228,6 @@ const skeletonTargetCount = ref(0)
 const speedHistory = ref<number[]>(new Array(600).fill(0))
 const currentSpeed = ref(0)
 const topSpeedCanvasRef = ref<HTMLCanvasElement | null>(null)
-const speedHistoryCanvasRef = ref<HTMLCanvasElement | null>(null)
 const clipboardIncomingUrl = ref('')
 const showOnboarding = ref(false)
 const helpMenuOpen = ref(false)
@@ -361,7 +335,6 @@ onMounted(async () => {
     if (!appMounted) return
     speedHistory.value = pushRingBuffer(speedHistory.value, currentSpeed.value, 600)
     drawTopSpeedChart()
-    drawSpeedHistoryChart()
   }, 120)
   torPulseTimer = setInterval(() => {
     if (!appMounted) return
@@ -405,7 +378,6 @@ onMounted(async () => {
 
 watch(speedHistory, () => {
   void nextTick(drawTopSpeedChart)
-  void nextTick(drawSpeedHistoryChart)
 })
 
 function formatSpeed(bps: number): string {
@@ -430,52 +402,6 @@ function drawTopSpeedChart(): void {
   values.forEach((value, index) => {
     const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * width
     const y = height - (value / max) * (height - 4) - 2
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
-  ctx.stroke()
-}
-
-function drawSpeedHistoryChart(): void {
-  const canvas = speedHistoryCanvasRef.value
-  if (!canvas) return
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  const width = canvas.width
-  const height = canvas.height
-  const values = speedHistory.value
-  const max = Math.max(...values, 1)
-  ctx.clearRect(0, 0, width, height)
-  ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)'
-  ctx.lineWidth = 1
-  for (let i = 1; i < 5; i += 1) {
-    const y = (height / 5) * i
-    ctx.beginPath()
-    ctx.moveTo(0, y)
-    ctx.lineTo(width, y)
-    ctx.stroke()
-  }
-  const gradient = ctx.createLinearGradient(0, 0, 0, height)
-  gradient.addColorStop(0, 'rgba(91, 108, 255, 0.26)')
-  gradient.addColorStop(1, 'rgba(91, 108, 255, 0.02)')
-  ctx.beginPath()
-  values.forEach((value, index) => {
-    const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * width
-    const y = height - (value / max) * (height - 24) - 12
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
-  ctx.lineTo(width, height)
-  ctx.lineTo(0, height)
-  ctx.closePath()
-  ctx.fillStyle = gradient
-  ctx.fill()
-  ctx.strokeStyle = '#5b6cff'
-  ctx.lineWidth = 2.4
-  ctx.beginPath()
-  values.forEach((value, index) => {
-    const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * width
-    const y = height - (value / max) * (height - 24) - 12
     if (index === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   })
@@ -1214,42 +1140,4 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   flex-direction: column;
 }
 
-.speed-history-panel {
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px;
-  overflow: hidden;
-}
-
-.speed-history-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.speed-history-header h2 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 18px;
-}
-
-.speed-history-header span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.speed-history-header strong {
-  color: var(--accent-color);
-  font-size: 18px;
-}
-
-.speed-history-canvas {
-  width: 100%;
-  flex: 1;
-  min-height: 260px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-card);
-}
 </style>

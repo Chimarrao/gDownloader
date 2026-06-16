@@ -38,16 +38,16 @@
 
 /* ---------- Dark Purple ---------- */
 .theme-dark-purple {
-  --bg-primary: #0d0d1a;
-  --bg-secondary: #16162a;
-  --bg-card: #16162a;
-  --bg-hover: #1f1f3a;
-  --border-color: #2a2a4a;
-  --border: #2a2a4a;
-  --text-primary: #e0e0f0;
-  --text: #e0e0f0;
-  --text-secondary: #8888aa;
-  --text-muted: #8888aa;
+  --bg-primary: #0c1020;
+  --bg-secondary: #171c32;
+  --bg-card: #171c32;
+  --bg-hover: #232a45;
+  --border-color: #3a4263;
+  --border: #3a4263;
+  --text-primary: #f5f7ff;
+  --text: #f5f7ff;
+  --text-secondary: #c8cce4;
+  --text-muted: #aeb5d1;
   --accent-color: #7c6fff;
   --accent: #7c6fff;
   --accent-light: #a78bfa;
@@ -68,16 +68,16 @@
 
 /* ---------- Dark Monokai ---------- */
 .theme-dark-monokai {
-  --bg-primary: #1a1a1a;
-  --bg-secondary: #272822;
-  --bg-card: #272822;
-  --bg-hover: #3e3d32;
-  --border-color: #3e3d32;
-  --border: #3e3d32;
+  --bg-primary: #181914;
+  --bg-secondary: #282a22;
+  --bg-card: #282a22;
+  --bg-hover: #3c3f32;
+  --border-color: #555846;
+  --border: #555846;
   --text-primary: #f8f8f2;
   --text: #f8f8f2;
-  --text-secondary: #75715e;
-  --text-muted: #75715e;
+  --text-secondary: #d2ccb0;
+  --text-muted: #b5ad8e;
   --accent-color: #a6e22e;
   --accent: #a6e22e;
   --accent-light: #e6db74;
@@ -98,16 +98,16 @@
 
 /* ---------- Dark Default (VSCode-like) ---------- */
 .theme-dark-default {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-card: #252526;
-  --bg-hover: #2a2d2e;
-  --border-color: #3c3c3c;
-  --border: #3c3c3c;
-  --text-primary: #d4d4d4;
-  --text: #d4d4d4;
-  --text-secondary: #808080;
-  --text-muted: #808080;
+  --bg-primary: #17191d;
+  --bg-secondary: #22262c;
+  --bg-card: #242932;
+  --bg-hover: #303742;
+  --border-color: #4b5563;
+  --border: #4b5563;
+  --text-primary: #f3f4f6;
+  --text: #f3f4f6;
+  --text-secondary: #c4c9d4;
+  --text-muted: #aab2c0;
   --accent-color: #569cd6;
   --accent: #569cd6;
   --accent-light: #9cdcfe;
