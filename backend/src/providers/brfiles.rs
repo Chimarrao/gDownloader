@@ -479,6 +479,7 @@ impl Provider for BrfilesProvider {
                             })
                             .collect(),
                     ),
+                    ..Default::default()
                 });
             }
 
@@ -492,6 +493,7 @@ impl Provider for BrfilesProvider {
                 mime_type: None,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

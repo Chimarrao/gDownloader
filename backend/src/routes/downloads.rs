@@ -118,6 +118,57 @@ fn suffix_filename(filename: &str, suffix: &str) -> String {
     }
 }
 
+fn replace_filename_extension(filename: &str, extension: &str) -> String {
+    let clean_extension = extension.trim().trim_start_matches('.');
+    if clean_extension.is_empty() {
+        return filename.to_string();
+    }
+
+    let path = FsPath::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(filename);
+    format!("{stem}.{clean_extension}")
+}
+
+fn fragment_value(url: &str, key: &str) -> Option<String> {
+    let fragment = url.split('#').nth(1)?;
+    for part in fragment.split('&') {
+        let (name, value) = part.split_once('=')?;
+        if name == key {
+            return urlencoding::decode(value).ok().map(|value| value.into_owned());
+        }
+    }
+    None
+}
+
+fn selected_fragment_value(selected_children: &Option<Vec<String>>, key: &str) -> Option<String> {
+    selected_children.as_ref().and_then(|children| {
+        children
+            .iter()
+            .find_map(|child| fragment_value(child, key))
+    })
+}
+
+fn normalize_youtube_merge_format(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_start_matches('.').to_ascii_lowercase();
+    match normalized.as_str() {
+        "mp4" | "mkv" | "webm" => Some(normalized),
+        _ => None,
+    }
+}
+
+fn selected_youtube_child_matches(child_url: &str, selected: &[String]) -> bool {
+    selected.iter().any(|selected_url| {
+        selected_url == child_url
+            || fragment_value(selected_url, "ytdlp_format")
+                .zip(fragment_value(child_url, "ytdlp_format"))
+                .map(|(left, right)| left == right)
+                .unwrap_or(false)
+    })
+}
+
 fn unique_destination(dest_dir: &str, filename: &str) -> (String, String) {
     let mut candidate_name = filename.to_string();
     let mut candidate_path = PathBuf::from(dest_dir);
@@ -268,12 +319,17 @@ pub async fn add_download_internal(
             file_info.size = children.iter().map(|child| child.size).sum();
         }
     } else if provider.name() == "YouTube" {
+        if let Some(merge_format) = selected_fragment_value(&selected_children, "ytdlp_merge_format")
+            .and_then(|value| normalize_youtube_merge_format(&value))
+        {
+            file_info.filename = replace_filename_extension(&file_info.filename, &merge_format);
+        }
+
         if let (Some(children), Some(selected)) = (file_info.children.as_mut(), selected_children.as_ref()) {
-            let selected_set = selected.iter().cloned().collect::<std::collections::HashSet<_>>();
             children.retain(|child| {
                 child.source_url
                     .as_ref()
-                    .map(|source_url| selected_set.contains(source_url))
+                    .map(|source_url| selected_youtube_child_matches(source_url, selected))
                     .unwrap_or(false)
             });
             if let Some(child) = children.first() {
@@ -420,6 +476,9 @@ pub async fn add_download_internal(
         package_id: None,
         request_headers: req.request_headers.clone(),
         network_route: None,
+        thumbnail_url: file_info.thumbnail_url,
+        channel_name: file_info.channel_name,
+        channel_thumbnail_url: file_info.channel_thumbnail_url,
     };
 
     {
@@ -915,7 +974,14 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
     persist_download_snapshot(&state, &id).await;
 
+    // Stall watchdog: if a running download produces no progress for this long,
+    // the underlying process is considered hung. It is aborted and retried
+    // automatically, independently of the normal error-retry budget.
+    const STALL_TIMEOUT_SECS: u64 = 90;
+    const STALL_MAX_RETRIES: u32 = 3;
+
     let mut attempt = 0u32;
+    let mut stall_retries = 0u32;
     loop {
         {
             let mut map = state.downloads.lock().await;
@@ -1078,8 +1144,41 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         let mut last_progress_broadcast = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_millis(500))
             .unwrap_or_else(std::time::Instant::now);
+        let mut stalled = false;
 
-        while let Some(update) = progress_rx.recv().await {
+        loop {
+            let update = match tokio::time::timeout(
+                std::time::Duration::from_secs(STALL_TIMEOUT_SECS),
+                progress_rx.recv(),
+            )
+            .await
+            {
+                Ok(Some(update)) => update,
+                // Channel closed: the download task finished (success or failure).
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    // No progress update arrived within the stall window. Only
+                    // treat it as a hang if the download is still meant to be
+                    // running (ignore paused/captcha/waiting states).
+                    let status = {
+                        let map = state.downloads.lock().await;
+                        map.get(&id).map(|d| d.status.clone())
+                    };
+                    if matches!(status, Some(DownloadStatus::Downloading)) {
+                        warn!(
+                            target: "gdownloader_backend::downloads",
+                            "download travado sem progresso por {}s id={} provider={}",
+                            STALL_TIMEOUT_SECS,
+                            id,
+                            provider_name
+                        );
+                        stalled = true;
+                        download_task.abort();
+                        break;
+                    }
+                    continue;
+                }
+            };
             let should_persist_snapshot = last_db_write.elapsed().as_secs() >= 5;
             let elapsed = last_time.elapsed().as_secs_f64();
             if elapsed >= 0.5 {
@@ -1121,7 +1220,15 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                             let child_path = update.child_path.as_deref();
                             for child in children.iter_mut() {
                                 let matches = child_path
-                                    .map(|path| child.path.as_deref() == Some(path))
+                                    .map(|path| {
+                                        child.path.as_deref() == Some(path)
+                                            || child.source_url.as_deref() == Some(path)
+                                            || child
+                                                .source_url
+                                                .as_deref()
+                                                .map(|source_url| selected_youtube_child_matches(source_url, &[path.to_string()]))
+                                                .unwrap_or(false)
+                                    })
                                     .unwrap_or_else(|| child.filename == child_filename);
 
                                 if matches {
@@ -1444,6 +1551,55 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     reschedule_pending_downloads(state.clone());
                     return;
                 }
+                // Hung download detected by the stall watchdog: retry automatically
+                // up to STALL_MAX_RETRIES, regardless of the normal retry budget.
+                if stalled && stall_retries < STALL_MAX_RETRIES {
+                    stall_retries = stall_retries.saturating_add(1);
+                    let retry_message = format!(
+                        "Download travou — tentando novamente ({}/{})",
+                        stall_retries, STALL_MAX_RETRIES
+                    );
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "download travado reagendado id={} provider={} stall_retry={}",
+                        id,
+                        provider_name,
+                        stall_retries
+                    );
+                    let retry_at = current_unix_secs().saturating_add(3);
+                    {
+                        let mut map = state.downloads.lock().await;
+                        if let Some(d) = map.get_mut(&id) {
+                            d.status = DownloadStatus::Pending;
+                            d.speed_bps = 0;
+                            d.eta_secs = 0;
+                            d.retry_at = Some(retry_at);
+                            d.error = Some(retry_message.clone());
+                            d.completed_at = None;
+                            if let Some(children) = d.children.as_mut() {
+                                for child in children.iter_mut() {
+                                    child.speed_bps = Some(0);
+                                    child.eta_secs = Some(0);
+                                    if child.status == Some(DownloadStatus::Downloading) {
+                                        child.status = Some(DownloadStatus::Pending);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    persist_download_snapshot(&state, &id).await;
+                    state.broadcast(WsEvent::StatusChanged {
+                        id: id.clone(),
+                        status: DownloadStatus::Pending,
+                        error: Some(retry_message),
+                        retry_at: Some(retry_at),
+                        captcha_type: None,
+                        captcha_sitekey: None,
+                        captcha_page_url: None,
+                    });
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
                 if attempt < max_retries {
                     warn!(
                         target: "gdownloader_backend::downloads",
@@ -1462,7 +1618,16 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     id,
                     provider_name
                 );
-                update_error(&state, &id, "Download interrompido").await;
+                update_error(
+                    &state,
+                    &id,
+                    if stalled {
+                        "Download travou repetidamente sem progresso"
+                    } else {
+                        "Download interrompido"
+                    },
+                )
+                .await;
                 reschedule_pending_downloads(state.clone());
                 return;
             }

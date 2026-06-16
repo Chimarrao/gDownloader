@@ -703,6 +703,7 @@ impl Provider for TeraboxProvider {
                     mime_type: None,
                     is_folder: false,
                     children: None,
+                    ..Default::default()
                 });
             }
 
@@ -717,6 +718,7 @@ impl Provider for TeraboxProvider {
                     mime_type: None,
                     is_folder: false,
                     children: None,
+                    ..Default::default()
                 });
             }
 
@@ -766,6 +768,7 @@ impl Provider for TeraboxProvider {
                 mime_type: None,
                 is_folder: true,
                 children: Some(children),
+                ..Default::default()
             })
         })
     }

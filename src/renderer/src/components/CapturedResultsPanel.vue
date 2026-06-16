@@ -125,12 +125,25 @@
           </label>
 
           <span
-            v-if="row.module?.id === 'youtube'"
+            v-if="row.module?.id === 'youtube' && row.info?.thumbnailUrl"
+            class="row-icon row-thumb"
+            aria-label="YouTube thumbnail"
+            role="img"
+          >
+            <img :src="row.info.thumbnailUrl" class="row-thumb-img" />
+          </span>
+          <span
+            v-else-if="row.module?.id === 'youtube'"
             class="row-icon provider-row-icon"
             :style="{ color: getProviderIcon(row.module.id).color }"
             aria-label="YouTube"
             role="img"
             v-html="getProviderIcon(row.module.id).svg"
+          ></span>
+          <span
+            v-else-if="row.loading"
+            class="row-icon row-thumb-loading"
+            aria-hidden="true"
           ></span>
           <span
             v-else
@@ -157,6 +170,13 @@
             </div>
             <div class="row-sub">
               <span>{{ row.module?.name ?? t('linkGrabberUnsupported') }}</span>
+              <template v-if="row.info?.channelName">
+                <span>·</span>
+                <span class="row-channel">
+                  <img v-if="row.info.channelThumbnailUrl" :src="row.info.channelThumbnailUrl" class="row-channel-avatar" />
+                  <span>{{ row.info.channelName }}</span>
+                </span>
+              </template>
               <span>·</span>
               <span>{{ availabilityLabel(row) }}</span>
               <template v-if="row.sourceLabels.length > 1">
@@ -227,7 +247,81 @@
             </div>
           </div>
 
-          <div v-if="supportsChildSelection(row) && row.info?.children?.length" class="children-list">
+          <div v-if="isYouTubeFormatRow(row) && row.info?.children?.length" class="youtube-options">
+            <div class="youtube-option-grid">
+              <label class="youtube-field">
+                <span>Vídeo</span>
+                <select
+                  class="youtube-select"
+                  :value="selectedYouTubeSourceUrl(row)"
+                  :title="selectedYouTubeFormatDetail(row)"
+                  @change="onSelectYouTubeFormat(row, $event)"
+                >
+                  <option
+                    v-for="child in youtubeSelectableChildren(row)"
+                    :key="child.sourceUrl"
+                    :value="child.sourceUrl"
+                    :title="youtubeFormatDetail(child)"
+                  >
+                    {{ youtubeFormatLabel(child) }}
+                  </option>
+                </select>
+              </label>
+
+              <label class="youtube-field">
+                <span>Container</span>
+                <select
+                  class="youtube-select"
+                  :value="row.youtubeOutputFormat ?? 'mp4'"
+                  @change="onUpdateYouTubeString(row, 'youtubeOutputFormat', $event)"
+                >
+                  <option v-for="format in youtubeOutputFormats" :key="format.value" :value="format.value">
+                    {{ format.label }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <div v-if="selectedYouTubeFormatDetail(row)" class="youtube-detail" :title="selectedYouTubeFormatDetail(row)">
+              {{ selectedYouTubeFormatDetail(row) }}
+            </div>
+
+            <div class="youtube-extra-groups">
+              <div class="youtube-extra-group">
+                <span>Áudio</span>
+                <label class="youtube-check-option" title="Inclui múltiplas faixas de áudio quando o YouTube oferece mais de um idioma.">
+                  <input
+                    type="checkbox"
+                    :checked="!!row.youtubeMultiAudio"
+                    @change="onUpdateYouTubeBoolean(row, 'youtubeMultiAudio', $event)"
+                  />
+                  <span>Múltiplos idiomas</span>
+                </label>
+              </div>
+
+              <div class="youtube-extra-group">
+                <span>Descrição</span>
+                <label class="youtube-check-option">
+                  <input
+                    type="checkbox"
+                    :checked="!!row.youtubeDownloadThumbnail"
+                    @change="onUpdateYouTubeBoolean(row, 'youtubeDownloadThumbnail', $event)"
+                  />
+                  <span>Thumbnail</span>
+                </label>
+                <label class="youtube-check-option">
+                  <input
+                    type="checkbox"
+                    :checked="!!row.youtubeDownloadSubtitles"
+                    @change="onUpdateYouTubeBoolean(row, 'youtubeDownloadSubtitles', $event)"
+                  />
+                  <span>Legendas</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="supportsChildSelection(row) && row.info?.children?.length" class="children-list">
             <div v-if="supportsChildSelection(row)" class="children-toolbar">
               <label class="tree-master-check">
                   <input
@@ -420,6 +514,8 @@ const emit = defineEmits<{
   (e: 'toggle-child', payload: { row: CapturedRow; child: SelectableChild; checked: boolean }): void
   (e: 'toggle-folder-node', payload: { row: CapturedRow; node: DerivedChildNode<SelectableChild>; checked: boolean }): void
   (e: 'set-row-selection', payload: { row: CapturedRow; checked: boolean }): void
+  (e: 'select-youtube-format', payload: { row: CapturedRow; sourceUrl: string }): void
+  (e: 'update-youtube-option', payload: { row: CapturedRow; key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio'; value: string | boolean }): void
   (e: 'toggle-expanded', row: CapturedRow): void
   (e: 'open-mirrors', row: CapturedRow): void
   (e: 'choose-destination', row: CapturedRow): void
@@ -427,6 +523,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const youtubeOutputFormats = [
+  { value: 'mp4', label: 'MP4' },
+  { value: 'mkv', label: 'MKV' },
+  { value: 'webm', label: 'WebM' },
+]
 
 // ── Filter state ──────────────────────────────────────────────────────────────
 const searchQuery = ref('')
@@ -533,12 +635,9 @@ function childSelectionLabel(row: CapturedRow): string {
 
 function selectedQualityLabel(row: CapturedRow): string {
   if (row.module?.id !== 'youtube') return ''
-  const child = row.info?.children?.find((item) => item.selected !== false && !item.isFolder)
-    ?? row.info?.children?.find((item) => !item.isFolder)
+  const child = selectedYouTubeChild(row)
   if (!child) return ''
-  return child.filename
-    .replace(/^Melhor qualidade\s*-\s*/i, 'Best: ')
-    .replace(/\s+#\S+$/i, '')
+  return youtubeFormatLabel(child)
 }
 
 function availabilityLabel(row: CapturedRow): string {
@@ -566,6 +665,114 @@ function onToggleChild(row: CapturedRow, child: SelectableChild, event: Event): 
 
 function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableChild>, event: Event): void {
   emit('toggle-folder-node', { row, node, checked: checkboxValue(event) })
+}
+
+function isYouTubeFormatRow(row: CapturedRow): boolean {
+  return row.module?.id === 'youtube' && !row.info?.isFolder
+}
+
+function youtubeSelectableChildren(row: CapturedRow): SelectableChild[] {
+  return row.info?.children?.filter((child) => !!child.sourceUrl && !child.isFolder) ?? []
+}
+
+function selectedYouTubeChild(row: CapturedRow): SelectableChild | undefined {
+  return youtubeSelectableChildren(row).find((child) => child.selected !== false)
+    ?? youtubeSelectableChildren(row)[0]
+}
+
+function selectedYouTubeSourceUrl(row: CapturedRow): string {
+  return selectedYouTubeChild(row)?.sourceUrl ?? ''
+}
+
+function selectedYouTubeFormatDetail(row: CapturedRow): string {
+  const child = selectedYouTubeChild(row)
+  return child ? youtubeFormatDetail(child) : ''
+}
+
+function onSelectYouTubeFormat(row: CapturedRow, event: Event): void {
+  emit('select-youtube-format', {
+    row,
+    sourceUrl: (event.target as HTMLSelectElement).value,
+  })
+}
+
+function onUpdateYouTubeBoolean(
+  row: CapturedRow,
+  key: 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio',
+  event: Event,
+): void {
+  emit('update-youtube-option', {
+    row,
+    key,
+    value: checkboxValue(event),
+  })
+}
+
+function onUpdateYouTubeString(row: CapturedRow, key: 'youtubeOutputFormat', event: Event): void {
+  emit('update-youtube-option', {
+    row,
+    key,
+    value: (event.target as HTMLSelectElement).value,
+  })
+}
+
+function youtubeFormatLabel(child: SelectableChild): string {
+  const cleaned = child.filename
+    .replace(/\s+#\S+$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (/^melhor qualidade/i.test(cleaned)) {
+    const raw = cleaned.replace(/^Melhor qualidade\s*-\s*/i, '')
+    return `Melhor qualidade: ${friendlyResolution(raw) || 'melhor disponível'}`
+  }
+
+  const parts = cleaned.split(' · ').map((part) => part.trim()).filter(Boolean)
+  const rawResolution = parts.find((part) => /(\d{3,5}x\d{3,5}|\d{3,4}p|audio)/i.test(part)) ?? parts[0] ?? ''
+  const resolution = friendlyResolution(rawResolution)
+  const fps = parts.find((part) => /\d+\s*fps/i.test(part)) ?? ''
+  const ext = parts.find((part) => /^(mp4|mkv|webm|m4a|opus|aac)$/i.test(part)) ?? ''
+  const mediaKind = parts.some((part) => /^audio$/i.test(part) || /audio only/i.test(part))
+    ? 'Áudio'
+    : 'Vídeo'
+  const displayResolution = mediaKind === 'Áudio' && resolution === 'somente áudio' ? '' : resolution
+  return [mediaKind, displayResolution, fps, ext.toUpperCase()]
+    .filter((part) => part.trim().length > 0)
+    .join(' · ')
+}
+
+function youtubeFormatDetail(child: SelectableChild): string {
+  return child.filename
+    .replace(/\s+#\S+$/i, '')
+    .replace(/\bvideo\+audio\b/i, 'vídeo + áudio')
+    .replace(/\bvideo\b/i, 'vídeo')
+    .replace(/\baudio\b/i, 'áudio')
+    .trim()
+}
+
+function friendlyResolution(value: string): string {
+  const trimmed = value.trim()
+  const dimensions = trimmed.match(/(\d{3,5})x(\d{3,5})/)
+  if (dimensions) {
+    const width = Number(dimensions[1])
+    const height = Number(dimensions[2])
+    if (height >= 2160 || width >= 3840) return suffixFps(trimmed, '4K')
+    if (height > 0) return suffixFps(trimmed, `${height}p`)
+  }
+
+  const progressive = trimmed.match(/\b(\d{3,4})p\b/i)
+  if (progressive) {
+    const height = Number(progressive[1])
+    return suffixFps(trimmed, height >= 2160 ? '4K' : `${height}p`)
+  }
+
+  if (/audio/i.test(trimmed)) return 'somente áudio'
+  return trimmed
+}
+
+function suffixFps(source: string, label: string): string {
+  const fps = source.match(/\b(\d+)\s*fps\b/i)?.[1]
+  return fps ? `${label} ${fps}fps` : label
 }
 </script>
 
@@ -690,6 +897,46 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
 .provider-row-icon :deep(svg) {
   width: 24px;
   height: 24px;
+  display: block;
+}
+
+.row-thumb {
+  width: 40px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 3px;
+}
+
+.row-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.row-thumb-loading {
+  width: 26px;
+  height: 26px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--color-bg-3) 25%, var(--color-bg-2) 50%, var(--color-bg-3) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+}
+
+.row-channel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.row-channel-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
   display: block;
 }
 
@@ -897,6 +1144,95 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
   border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+}
+
+.youtube-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, #ff0000 18%, var(--border-color));
+  border-radius: 12px;
+  background: color-mix(in srgb, #ff0000 4%, var(--bg-primary));
+}
+
+.youtube-option-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(120px, 180px);
+  gap: 10px;
+}
+
+.youtube-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.youtube-field > span,
+.youtube-extra-group > span {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.youtube-select {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 0 9px;
+  outline: none;
+}
+
+.youtube-select:focus {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 16%, transparent);
+}
+
+.youtube-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.youtube-extra-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.youtube-extra-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.youtube-check-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.youtube-check-option input {
+  accent-color: var(--accent-color);
 }
 
 .children-toolbar {
@@ -1195,5 +1531,11 @@ function onToggleFolderNode(row: CapturedRow, node: DerivedChildNode<SelectableC
 
 .host-filter-item input[type="checkbox"] {
   accent-color: var(--accent-color);
+}
+
+@media (max-width: 760px) {
+  .youtube-option-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

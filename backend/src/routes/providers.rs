@@ -129,6 +129,9 @@ pub async fn get_file_info(
         "mimeType": info.mime_type,
         "isFolder": info.is_folder,
         "children": info.children,
+        "thumbnailUrl": info.thumbnail_url,
+        "channelName": info.channel_name,
+        "channelThumbnailUrl": info.channel_thumbnail_url,
     })))
 }
 

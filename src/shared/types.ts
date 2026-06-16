@@ -18,6 +18,9 @@ export interface FileInfo {
   mimeType?: string
   isFolder?: boolean
   children?: DownloadChild[]
+  thumbnailUrl?: string
+  channelName?: string
+  channelThumbnailUrl?: string
 }
 
 export interface DownloadChild {
@@ -88,6 +91,9 @@ export interface DownloadItem {
   startedAt?: number
   completedAt?: number
   lastProgressAt?: number
+  thumbnailUrl?: string
+  channelName?: string
+  channelThumbnailUrl?: string
 }
 
 export interface DownloadNetworkRoute {

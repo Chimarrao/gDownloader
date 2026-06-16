@@ -854,6 +854,9 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 request_headers: None,
                 speed_bps: 0,
                 eta_secs: 0,
+                thumbnail_url: None,
+                channel_name: None,
+                channel_thumbnail_url: None,
             })
         })?
         .filter_map(|row| row.ok())
@@ -1571,6 +1574,9 @@ mod tests {
             package_id: None,
             request_headers: None,
             network_route: None,
+            thumbnail_url: None,
+            channel_name: None,
+            channel_thumbnail_url: None,
         }
     }
 

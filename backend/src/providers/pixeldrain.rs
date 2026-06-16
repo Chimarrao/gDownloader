@@ -91,6 +91,7 @@ impl Provider for PixelDrainProvider {
                         mime_type: json["mime_type"].as_str().map(String::from),
                         is_folder: false,
                         children: None,
+                        ..Default::default()
                     })
                 }
                 PixelDrainTarget::List { id, .. } => {
@@ -126,6 +127,7 @@ impl Provider for PixelDrainProvider {
                         mime_type: None,
                         is_folder: true,
                         children: Some(children),
+                        ..Default::default()
                     })
                 }
             }

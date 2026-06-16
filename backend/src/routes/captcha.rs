@@ -157,6 +157,9 @@ mod tests {
             package_id: None,
             request_headers: None,
             network_route: None,
+            thumbnail_url: None,
+            channel_name: None,
+            channel_thumbnail_url: None,
         }
     }
 

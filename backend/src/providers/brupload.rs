@@ -317,6 +317,7 @@ impl Provider for BruploadProvider {
                 mime_type: None,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

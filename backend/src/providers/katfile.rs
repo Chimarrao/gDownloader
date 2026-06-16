@@ -159,6 +159,7 @@ impl Provider for KatfileProvider {
                 mime_type: None,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

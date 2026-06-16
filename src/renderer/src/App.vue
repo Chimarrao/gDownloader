@@ -160,10 +160,9 @@
         <DownloadList
           :skeleton-count="skeletonCount"
           :tor-active="torState.state === 'connected'"
-          @count-change="downloadCount = $event; updateTrayStats()"
+          @count-change="onDownloadCountChange"
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
-          @skeleton-done="skeletonCount = 0"
           @open-grabber="activeTab = 'grabber'"
         />
       </section>
@@ -249,6 +248,8 @@ interface TorRouteNode {
 const activeTab = ref<AppTab>('downloads')
 const downloadCount = ref(0)
 const skeletonCount = ref(0)
+const skeletonBaseCount = ref(0)
+const skeletonTargetCount = ref(0)
 const speedHistory = ref<number[]>(new Array(600).fill(0))
 const currentSpeed = ref(0)
 const topSpeedCanvasRef = ref<HTMLCanvasElement | null>(null)
@@ -636,7 +637,28 @@ function onStatsTick(event: CustomEvent): void {
 }
 
 function onAddingUrls(count: number): void {
+  if (count <= 0) {
+    skeletonCount.value = 0
+    skeletonTargetCount.value = 0
+    skeletonBaseCount.value = downloadCount.value
+    return
+  }
+  skeletonBaseCount.value = downloadCount.value
+  skeletonTargetCount.value = count
   skeletonCount.value = count
+}
+
+function onDownloadCountChange(count: number): void {
+  downloadCount.value = count
+  if (skeletonTargetCount.value > 0) {
+    const appeared = Math.max(0, count - skeletonBaseCount.value)
+    skeletonCount.value = Math.max(0, skeletonTargetCount.value - appeared)
+    if (skeletonCount.value === 0) {
+      skeletonTargetCount.value = 0
+      skeletonBaseCount.value = count
+    }
+  }
+  updateTrayStats()
 }
 
 function handleAddedToQueue(): void {

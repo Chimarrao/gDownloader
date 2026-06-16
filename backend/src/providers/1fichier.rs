@@ -347,6 +347,7 @@ impl Provider for FichierProvider {
                     mime_type: None,
                     is_folder: true,
                     children: if children.is_empty() { None } else { Some(children) },
+                    ..Default::default()
                 });
             }
 
@@ -359,6 +360,7 @@ impl Provider for FichierProvider {
                 mime_type: None,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

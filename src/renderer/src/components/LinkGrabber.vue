@@ -54,6 +54,8 @@
       @toggle-child="toggleChildChecked"
       @toggle-folder-node="toggleFolderNodeChecked"
       @set-row-selection="setRowSelectionChecked"
+      @select-youtube-format="selectYouTubeFormat"
+      @update-youtube-option="updateYouTubeOption"
       @toggle-expanded="toggleExpanded"
       @open-mirrors="openMirrors"
       @choose-destination="chooseRowDestination"
@@ -371,7 +373,7 @@ function pushMirrorResult(result: MirrorViewResult): void {
 }
 
 function canSearchMirrors(row: CapturedRow): boolean {
-  return !!row.info?.name && !row.info.isFolder && !row.loading && !row.error
+  return row.module?.id !== 'youtube' && !!row.info?.name && !row.info.isFolder && !row.loading && !row.error
 }
 
 function openMirrors(row: CapturedRow): void {
@@ -500,6 +502,22 @@ const selectedEntries = computed<QueueEntry[]>(() => {
       const children = selectableChildren(row)
       const chosen = children.filter((child) => child.selected !== false)
       if (chosen.length === 0) {
+        continue
+      }
+
+      if (isYouTubeFormatRow(row)) {
+        const child = chosen[0]
+        entries.push({
+          url: row.url,
+          module: row.module,
+          title: row.info.name,
+          size: child.size || row.info.size,
+          sourceLabel: row.module.name,
+          destDir: row.destDir || defaultOutputDir(),
+          selectedChildren: [buildYouTubeSelectionUrl(row, child)]
+            .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
+          expectedHash: row.expectedHash,
+        })
         continue
       }
 
@@ -697,6 +715,10 @@ async function detectProviders(): Promise<void> {
     sourceLabels: [],
     destDir: defaultOutputDir(),
     expectedHash: expectedHashFromUrl(url),
+    youtubeOutputFormat: defaultYouTubeOutputFormat(),
+    youtubeDownloadThumbnail: false,
+    youtubeDownloadSubtitles: false,
+    youtubeMultiAudio: false,
   }))
 
   const queue = rows.value.map((_, index) => index)
@@ -996,10 +1018,53 @@ function isYouTubeRow(row: CapturedRow): boolean {
   return row.module?.id === 'youtube'
 }
 
+function isYouTubeFormatRow(row: CapturedRow): boolean {
+  return isYouTubeRow(row) && !row.info?.isFolder
+}
+
+function defaultYouTubeOutputFormat(): string {
+  const value = currentSettings.value?.youtubeMergeFormat?.trim().toLowerCase() ?? ''
+  return ['mp4', 'mkv', 'webm'].includes(value) ? value : 'mp4'
+}
+
+function ensureYouTubeOptions(row: CapturedRow): void {
+  if (!isYouTubeFormatRow(row)) return
+  row.youtubeOutputFormat = normalizeYouTubeOutputFormat(row.youtubeOutputFormat)
+  row.youtubeDownloadThumbnail = Boolean(row.youtubeDownloadThumbnail)
+  row.youtubeDownloadSubtitles = Boolean(row.youtubeDownloadSubtitles)
+  row.youtubeMultiAudio = Boolean(row.youtubeMultiAudio)
+  applyYouTubeOutputExtension(row)
+}
+
+function normalizeYouTubeOutputFormat(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase() ?? ''
+  return ['mp4', 'mkv', 'webm'].includes(normalized) ? normalized : defaultYouTubeOutputFormat()
+}
+
+function applyYouTubeOutputExtension(row: CapturedRow): void {
+  if (!isYouTubeFormatRow(row) || !row.info?.name) return
+  const format = normalizeYouTubeOutputFormat(row.youtubeOutputFormat)
+  row.youtubeOutputFormat = format
+  row.info.name = replaceFileExtension(row.info.name, format)
+  row.displayName = row.info.name
+}
+
+function replaceFileExtension(filename: string, extension: string): string {
+  const cleaned = extension.replace(/^\.+/, '')
+  const slashIndex = Math.max(filename.lastIndexOf('/'), filename.lastIndexOf('\\'))
+  const dotIndex = filename.lastIndexOf('.')
+  if (dotIndex > slashIndex) {
+    return `${filename.slice(0, dotIndex)}.${cleaned}`
+  }
+  return `${filename}.${cleaned}`
+}
+
 function normalizeProviderSelection(row: CapturedRow): void {
-  if (!isYouTubeRow(row) || !row.info?.children?.length) {
+  if (!isYouTubeFormatRow(row) || !row.info?.children?.length) {
     return
   }
+  ensureYouTubeOptions(row)
+  row.expanded = true
   let selectedAssigned = false
   for (const child of row.info.children) {
     const selectable = !!child.sourceUrl && !child.isFolder
@@ -1012,7 +1077,7 @@ function normalizeProviderSelection(row: CapturedRow): void {
 }
 
 function supportsChildSelection(row: CapturedRow): boolean {
-  return (!!row.info?.isFolder || isYouTubeRow(row)) && selectableChildren(row).length > 0
+  return (!!row.info?.isFolder || isYouTubeFormatRow(row)) && selectableChildren(row).length > 0
 }
 
 function childNodes(row: CapturedRow): DerivedChildNode<SelectableChild>[] {
@@ -1053,11 +1118,17 @@ function rowSelectableUnitCount(row: CapturedRow): number {
   if (!row.module || row.loading || row.error) {
     return 0
   }
+  if (isYouTubeFormatRow(row)) {
+    return selectableChildren(row).length > 0 ? 1 : 0
+  }
   const children = supportsChildSelection(row) ? selectableChildren(row) : []
   return children.length > 0 ? children.length : 1
 }
 
 function rowSelectedUnitCount(row: CapturedRow): number {
+  if (isYouTubeFormatRow(row)) {
+    return row.selected && selectableChildren(row).some((child) => child.selected !== false) ? 1 : 0
+  }
   const children = supportsChildSelection(row) ? selectableChildren(row) : []
   if (children.length > 0) {
     return children.filter((child) => child.selected !== false).length
@@ -1071,6 +1142,9 @@ function isRowChecked(row: CapturedRow): boolean {
 }
 
 function isRowIndeterminate(row: CapturedRow): boolean {
+  if (isYouTubeFormatRow(row)) {
+    return false
+  }
   const selected = rowSelectedUnitCount(row)
   const total = rowSelectableUnitCount(row)
   return selected > 0 && selected < total
@@ -1096,13 +1170,13 @@ function isFolderNodeIndeterminate(node: DerivedChildNode<SelectableChild>): boo
 }
 
 function setRowSelection(row: CapturedRow, checked: boolean): void {
-  if (isYouTubeRow(row) && supportsChildSelection(row)) {
-    let selectedAssigned = false
-    for (const child of selectableChildren(row)) {
-      child.selected = checked && !selectedAssigned
-      if (child.selected) selectedAssigned = true
+  if (isYouTubeFormatRow(row) && supportsChildSelection(row)) {
+    const children = selectableChildren(row)
+    if (checked && !children.some((child) => child.selected !== false)) {
+      const first = children[0]
+      if (first) first.selected = true
     }
-    row.selected = checked && selectedAssigned
+    row.selected = checked && children.length > 0
     return
   }
 
@@ -1127,19 +1201,54 @@ function toggleRowChecked(payload: { row: CapturedRow; checked: boolean }): void
 }
 
 function toggleChildChecked(payload: { row: CapturedRow; child: SelectableChild; checked: boolean }): void {
-  if (isYouTubeRow(payload.row)) {
+  if (isYouTubeFormatRow(payload.row)) {
     for (const child of selectableChildren(payload.row)) {
       child.selected = child === payload.child ? payload.checked : false
     }
-    payload.row.selected = isRowChecked(payload.row)
+    payload.row.selected = payload.checked
     return
   }
   payload.child.selected = payload.checked
   payload.row.selected = isRowChecked(payload.row)
 }
 
+function selectYouTubeFormat(payload: { row: CapturedRow; sourceUrl: string }): void {
+  if (!isYouTubeFormatRow(payload.row)) return
+  let selectedAssigned = false
+  for (const child of selectableChildren(payload.row)) {
+    child.selected = child.sourceUrl === payload.sourceUrl
+    selectedAssigned ||= !!child.selected
+  }
+  payload.row.selected = selectedAssigned
+}
+
+function updateYouTubeOption(payload: {
+  row: CapturedRow
+  key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio'
+  value: string | boolean
+}): void {
+  if (!isYouTubeFormatRow(payload.row)) return
+  if (payload.key === 'youtubeOutputFormat') {
+    payload.row.youtubeOutputFormat = normalizeYouTubeOutputFormat(String(payload.value))
+    applyYouTubeOutputExtension(payload.row)
+    return
+  }
+  payload.row[payload.key] = Boolean(payload.value)
+}
+
+function buildYouTubeSelectionUrl(row: CapturedRow, child: SelectableChild): string | undefined {
+  if (!child.sourceUrl) return undefined
+  const [base, fragment = ''] = child.sourceUrl.split('#')
+  const params = new URLSearchParams(fragment)
+  params.set('ytdlp_merge_format', normalizeYouTubeOutputFormat(row.youtubeOutputFormat))
+  if (row.youtubeDownloadThumbnail) params.set('ytdlp_write_thumbnail', '1')
+  if (row.youtubeDownloadSubtitles) params.set('ytdlp_write_subs', '1')
+  if (row.youtubeMultiAudio) params.set('ytdlp_multi_audio', '1')
+  return `${base}#${params.toString()}`
+}
+
 function toggleFolderNodeChecked(payload: { row: CapturedRow; node: DerivedChildNode<SelectableChild>; checked: boolean }): void {
-  if (isYouTubeRow(payload.row)) {
+  if (isYouTubeFormatRow(payload.row)) {
     const first = selectableChildrenFromNode(payload.node)[0]
     if (first) {
       toggleChildChecked({ row: payload.row, child: first, checked: payload.checked })

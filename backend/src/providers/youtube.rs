@@ -28,6 +28,15 @@ struct YtdlpInfo {
     webpage_url: Option<String>,
     entries: Option<Vec<YtdlpEntry>>,
     formats: Option<Vec<YtdlpFormat>>,
+    uploader: Option<String>,
+    channel_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct YtdlpChannelInfo {
+    thumbnail: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +103,26 @@ impl YouTubeProvider {
         selected_children.as_ref().and_then(|children| {
             children.iter().find_map(|child| Self::fragment_value(child, "ytdlp_format"))
         })
+    }
+
+    fn selected_value(selected_children: &Option<Vec<String>>, key: &str) -> Option<String> {
+        selected_children.as_ref().and_then(|children| {
+            children.iter().find_map(|child| Self::fragment_value(child, key))
+        })
+    }
+
+    fn selected_flag(selected_children: &Option<Vec<String>>, key: &str) -> bool {
+        Self::selected_value(selected_children, key)
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false)
+    }
+
+    fn normalize_merge_format(value: &str) -> Option<String> {
+        let normalized = value.trim().trim_start_matches('.').to_ascii_lowercase();
+        match normalized.as_str() {
+            "mp4" | "mkv" | "webm" => Some(normalized),
+            _ => None,
+        }
     }
 
     fn selected_playlist_urls(selected_children: &Option<Vec<String>>) -> Option<Vec<String>> {
@@ -327,6 +356,32 @@ impl YouTubeProvider {
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
+    async fn read_channel_info(channel_id: &str) -> Option<YtdlpChannelInfo> {
+        let channel_url = format!("https://www.youtube.com/channel/{channel_id}");
+        let output = timeout(
+            Duration::from_secs(10),
+            Command::new(Self::ytdlp_bin())
+                .args([
+                    "-J",
+                    "--flat-playlist",
+                    "--playlist-items",
+                    "0",
+                    "--no-warnings",
+                    &channel_url,
+                ])
+                .output(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        serde_json::from_slice::<YtdlpChannelInfo>(&output.stdout).ok()
+    }
+
     async fn info_for(url: &str, context: Option<&DownloadContext>) -> Result<FileInfo> {
         let clean_url = Self::clean_url(url);
         let is_playlist = clean_url.contains("list=");
@@ -368,6 +423,7 @@ impl YouTubeProvider {
                 mime_type: Some("application/vnd.youtube.playlist".to_string()),
                 is_folder: true,
                 children: Some(std::mem::take(&mut children)),
+                ..Default::default()
             });
         }
 
@@ -377,9 +433,8 @@ impl YouTubeProvider {
             "YouTube Video",
         );
         let merge_format = context
-            .map(|context| context.youtube_merge_format.trim())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("mkv");
+            .and_then(|context| Self::normalize_merge_format(context.youtube_merge_format.trim()))
+            .unwrap_or_else(|| "mp4".to_string());
         let filename = format!("{title}.{merge_format}");
         let duration_secs = info.duration.unwrap_or(0.0).max(0.0).round() as u64;
         let children = Self::build_format_children(
@@ -387,12 +442,27 @@ impl YouTubeProvider {
             &info.formats.unwrap_or_default(),
             duration_secs,
         );
+
+        // Fetch channel avatar in parallel (non-fatal on failure)
+        let channel_id = info.channel_id.clone();
+        let channel_future = async move {
+            if let Some(cid) = channel_id {
+                Self::read_channel_info(&cid).await
+            } else {
+                None
+            }
+        };
+        let channel_info = channel_future.await;
+
         Ok(FileInfo {
             filename,
             size: children.iter().map(|child| child.size).max().unwrap_or(0),
             mime_type: Some("video/*".to_string()),
             is_folder: false,
             children: Some(children),
+            thumbnail_url: info.thumbnail.clone(),
+            channel_name: info.uploader.clone(),
+            channel_thumbnail_url: channel_info.and_then(|c| c.thumbnail),
         })
     }
 
@@ -549,15 +619,24 @@ impl YouTubeProvider {
             .await;
     }
 
+    fn phase_bounds(phase_count: u32, has_split_media: bool) -> (u64, u64) {
+        if !has_split_media {
+            return (0, 9_500);
+        }
+
+        match phase_count {
+            0 | 1 => (0, 4_500),
+            2 => (4_500, 4_500),
+            _ => (9_000, 0),
+        }
+    }
+
     fn phase_progress(downloaded: u64, phase_count: u32, has_split_media: bool) -> u64 {
-        if has_split_media {
-            match phase_count {
-                0 | 1 => downloaded.saturating_mul(4_500) / SYNTHETIC_PROGRESS_TOTAL,
-                2 => 4_500 + downloaded.saturating_mul(4_500) / SYNTHETIC_PROGRESS_TOTAL,
-                _ => 9_000,
-            }
+        let (base, span) = Self::phase_bounds(phase_count, has_split_media);
+        if span == 0 {
+            base
         } else {
-            downloaded.saturating_mul(9_500) / SYNTHETIC_PROGRESS_TOTAL
+            base + downloaded.min(SYNTHETIC_PROGRESS_TOTAL).saturating_mul(span) / SYNTHETIC_PROGRESS_TOTAL
         }
     }
 
@@ -627,6 +706,21 @@ impl Provider for YouTubeProvider {
                 .or_else(|| Self::fragment_value(url, "ytdlp_format"))
                 .unwrap_or_else(|| "bestvideo+bestaudio/best".to_string());
             let has_split_media = format.contains('+') || format.contains("bestvideo");
+            let selected_merge_format = Self::selected_value(&selected_children, "ytdlp_merge_format")
+                .or_else(|| Self::fragment_value(url, "ytdlp_merge_format"))
+                .and_then(|value| Self::normalize_merge_format(&value));
+            let write_thumbnail = Self::selected_flag(&selected_children, "ytdlp_write_thumbnail")
+                || Self::fragment_value(url, "ytdlp_write_thumbnail")
+                    .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            let write_subs_selected = Self::selected_flag(&selected_children, "ytdlp_write_subs")
+                || Self::fragment_value(url, "ytdlp_write_subs")
+                    .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            let multi_audio = Self::selected_flag(&selected_children, "ytdlp_multi_audio")
+                || Self::fragment_value(url, "ytdlp_multi_audio")
+                    .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
             let progress_child_key = selected_children
                 .as_ref()
                 .and_then(|children| children.first().cloned())
@@ -640,16 +734,19 @@ impl Provider for YouTubeProvider {
                 let mut args = Vec::<String>::new();
                 Self::apply_cookies_args(&mut args, &context);
                 Self::apply_proxy_args(&mut args, &context);
-                let merge_format = if context.youtube_merge_format.trim().is_empty() {
-                    "mkv"
-                } else {
-                    context.youtube_merge_format.trim()
-                };
+                let merge_format = selected_merge_format
+                    .as_deref()
+                    .or_else(|| {
+                        let value = context.youtube_merge_format.trim();
+                        if value.is_empty() { None } else { Some(value) }
+                    })
+                    .and_then(Self::normalize_merge_format)
+                    .unwrap_or_else(|| "mp4".to_string());
                 args.extend([
                     "-f".to_string(),
                     format.clone(),
                     "--merge-output-format".to_string(),
-                    merge_format.to_string(),
+                    merge_format,
                     "--newline".to_string(),
                     "--progress-template".to_string(),
                     "download:%(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s".to_string(),
@@ -667,7 +764,15 @@ impl Provider for YouTubeProvider {
                     args.push(limit.to_string());
                 }
 
-                if context.youtube_download_subs {
+                if write_thumbnail {
+                    args.push("--write-thumbnail".to_string());
+                }
+
+                if multi_audio {
+                    args.push("--audio-multistreams".to_string());
+                }
+
+                if context.youtube_download_subs || write_subs_selected {
                     args.push("--write-subs".to_string());
                     args.push("--write-auto-sub".to_string());
                     args.push("--sub-lang".to_string());
@@ -721,32 +826,39 @@ impl Provider for YouTubeProvider {
                 let mut item_total = 0u64;
                 let mut phase_count = 0u32;
                 let mut current_stage = String::new();
+                let mut last_synthetic_downloaded = 0u64;
 
                 while let Some(line) = lines.next_line().await? {
                     let trimmed = line.trim();
                     if trimmed.starts_with("[download] Destination:") || trimmed.starts_with("[download] Resuming download at byte") {
                         phase_count = phase_count.saturating_add(1);
                         current_stage = if phase_count <= 1 {
-                            "Baixando video"
+                            "Baixando vídeo"
                         } else {
-                            "Baixando audio"
+                            "Baixando áudio"
                         }
                         .to_string();
+                        last_synthetic_downloaded = last_synthetic_downloaded.max(Self::phase_progress(
+                            item_downloaded,
+                            phase_count,
+                            has_split_media,
+                        ));
                         Self::send_stage(
                             &progress_tx,
                             &progress_child_key,
                             &current_stage,
-                            grand_downloaded + Self::phase_progress(item_downloaded, phase_count, has_split_media),
+                            grand_downloaded + last_synthetic_downloaded,
                             grand_total.max(SYNTHETIC_PROGRESS_TOTAL),
                         )
                         .await;
                     } else if trimmed.starts_with("[Merger]") || trimmed.starts_with("[ffmpeg]") || trimmed.contains("Merging formats") {
-                        current_stage = "Mesclando audio e video".to_string();
+                        current_stage = "Mesclando arquivos".to_string();
+                        last_synthetic_downloaded = last_synthetic_downloaded.max(Self::merge_progress(has_split_media));
                         Self::send_stage(
                             &progress_tx,
                             &progress_child_key,
                             &current_stage,
-                            grand_downloaded + Self::merge_progress(has_split_media),
+                            grand_downloaded + last_synthetic_downloaded,
                             grand_total.max(item_total).max(SYNTHETIC_PROGRESS_TOTAL),
                         )
                         .await;
@@ -759,9 +871,10 @@ impl Provider for YouTubeProvider {
                         }
                         item_downloaded = downloaded;
                         let synthetic_downloaded = Self::phase_progress(downloaded, phase_count, has_split_media);
+                        last_synthetic_downloaded = last_synthetic_downloaded.max(synthetic_downloaded);
                         let _ = progress_tx
                             .send(ProgressUpdate {
-                                bytes_downloaded: grand_downloaded + synthetic_downloaded,
+                                bytes_downloaded: grand_downloaded + last_synthetic_downloaded,
                                 total_bytes: grand_total,
                                 child_path: Some(progress_child_key.clone()),
                                 child_filename: Some(if current_stage.is_empty() {
@@ -769,7 +882,7 @@ impl Provider for YouTubeProvider {
                                 } else {
                                     current_stage.clone()
                                 }),
-                                child_bytes_downloaded: Some(synthetic_downloaded),
+                                child_bytes_downloaded: Some(last_synthetic_downloaded),
                                 child_total_bytes: Some(item_total),
                                 child_speed_bps: Some(speed),
                                 child_eta_secs: Some(eta),
@@ -787,20 +900,21 @@ impl Provider for YouTubeProvider {
                         if stderr.is_empty() { "yt-dlp falhou ao baixar o video" } else { &stderr }
                     ));
                 }
-                grand_downloaded = grand_downloaded
-                    .saturating_add(Self::phase_progress(item_downloaded.max(item_total), phase_count, has_split_media));
+                let completed_synthetic = last_synthetic_downloaded
+                    .max(Self::phase_progress(item_downloaded.max(item_total), phase_count, has_split_media))
+                    .max(SYNTHETIC_PROGRESS_TOTAL);
+                grand_downloaded = grand_downloaded.saturating_add(completed_synthetic);
                 grand_total = grand_total.max(grand_downloaded);
                 let final_size = Self::output_size(dest_path, started_at).await;
                 if final_size > 0 {
                     grand_downloaded = final_size;
-                    grand_total = final_size;
                 }
                 Self::send_stage(
                     &progress_tx,
                     &progress_child_key,
-                    "Concluido",
-                    grand_total,
-                    grand_total.max(SYNTHETIC_PROGRESS_TOTAL),
+                    "Concluído",
+                    SYNTHETIC_PROGRESS_TOTAL,
+                    SYNTHETIC_PROGRESS_TOTAL,
                 )
                 .await;
             }
@@ -838,5 +952,26 @@ mod tests {
             YouTubeProvider::parse_progress("download: 25.0% N/A 00:00").unwrap();
         assert_eq!(downloaded, SYNTHETIC_PROGRESS_TOTAL / 4);
         assert_eq!(total, SYNTHETIC_PROGRESS_TOTAL);
+    }
+
+    #[test]
+    fn split_media_phase_progress_does_not_overlap_ranges() {
+        assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 1, true), 4_500);
+        assert_eq!(YouTubeProvider::phase_progress(0, 2, true), 4_500);
+        assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 2, true), 9_000);
+        assert_eq!(YouTubeProvider::merge_progress(true), 9_250);
+    }
+
+    #[test]
+    fn reads_selected_merge_format_from_child_fragment() {
+        let children = Some(vec![
+            "https://www.youtube.com/watch?v=x#ytdlp_format=bestvideo%2Bbestaudio&ytdlp_merge_format=mkv".to_string(),
+        ]);
+        assert_eq!(
+            YouTubeProvider::selected_value(&children, "ytdlp_merge_format").as_deref(),
+            Some("mkv")
+        );
+        assert_eq!(YouTubeProvider::normalize_merge_format("MKV").as_deref(), Some("mkv"));
+        assert_eq!(YouTubeProvider::normalize_merge_format("avi"), None);
     }
 }

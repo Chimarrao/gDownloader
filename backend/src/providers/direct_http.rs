@@ -526,6 +526,7 @@ impl Provider for DirectHttpProvider {
                 mime_type: metadata.mime_type,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

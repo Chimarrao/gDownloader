@@ -215,6 +215,7 @@ impl Provider for SharePointProvider {
                 mime_type,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

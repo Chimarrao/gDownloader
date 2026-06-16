@@ -309,6 +309,7 @@ impl Provider for MoonDLProvider {
                 mime_type: None,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

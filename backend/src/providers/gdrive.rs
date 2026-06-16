@@ -276,6 +276,7 @@ impl GDriveProvider {
             mime_type: None,
             is_folder: true,
             children: Some(children),
+            ..Default::default()
         })
     }
 
@@ -428,6 +429,7 @@ impl Provider for GDriveProvider {
                     .map(String::from),
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }

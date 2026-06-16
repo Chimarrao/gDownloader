@@ -70,6 +70,12 @@ pub struct Download {
     pub request_headers: Option<HashMap<String, String>>, // Headers capturados pelo interceptador local
     #[serde(default)]
     pub network_route: Option<DownloadNetworkRoute>,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub channel_name: Option<String>,
+    #[serde(default)]
+    pub channel_thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -152,13 +158,16 @@ pub struct FileChildInfo {
 
 // --- Informações de um arquivo antes de iniciar o download ---
 // Retornado pelo GET /file-info e usado internamente para nomear o arquivo
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileInfo {
     pub filename: String,
     pub size: u64,                    // 0 se o servidor não informar Content-Length
     pub mime_type: Option<String>,    // Option = Some("video/mp4") ou None — como ?string no PHP
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,
+    pub thumbnail_url: Option<String>,
+    pub channel_name: Option<String>,
+    pub channel_thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

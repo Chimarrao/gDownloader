@@ -99,6 +99,7 @@ impl DrimeProvider {
             mime_type: entry["mime"].as_str().map(String::from),
             is_folder: false,
             children: None,
+            ..Default::default()
         }
     }
 
@@ -173,6 +174,7 @@ impl Provider for DrimeProvider {
                     mime_type: None,
                     is_folder: true,
                     children: Some(mapped_children),
+                    ..Default::default()
                 });
             }
 

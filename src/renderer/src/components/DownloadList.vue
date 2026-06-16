@@ -116,9 +116,12 @@
           :key="`skeleton-${n}`"
           class="skeleton-card"
         >
-          <div class="skeleton-line skeleton-title"></div>
-          <div class="skeleton-line skeleton-progress"></div>
-          <div class="skeleton-line skeleton-meta"></div>
+          <div class="skeleton-icon"></div>
+          <div class="skeleton-body">
+            <div class="skeleton-line skeleton-title"></div>
+            <div class="skeleton-line skeleton-progress"></div>
+            <div class="skeleton-line skeleton-meta"></div>
+          </div>
         </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <div
@@ -131,7 +134,14 @@
         >
           <!-- Left: provider icon -->
           <div
-            v-if="hasColumn('host')"
+            v-if="hasColumn('host') && item.moduleId === 'youtube' && item.thumbnailUrl"
+            class="provider-icon provider-icon-thumb"
+            :title="moduleLabel(item.moduleId)"
+          >
+            <img :src="item.thumbnailUrl" class="item-thumb-img" />
+          </div>
+          <div
+            v-else-if="hasColumn('host')"
             class="provider-icon"
             v-html="getIcon(item.moduleId).svg"
             :style="providerIconStyle(item.moduleId)"
@@ -169,6 +179,12 @@
                   <i class="pi pi-ellipsis-v"></i>
                 </button>
               </div>
+            </div>
+
+            <!-- Channel line (YouTube only) -->
+            <div v-if="item.channelName" class="item-channel">
+              <img v-if="item.channelThumbnailUrl" :src="item.channelThumbnailUrl" class="item-channel-avatar" />
+              <span>{{ item.channelName }}</span>
             </div>
 
             <!-- Row 2: progress bar -->
@@ -699,7 +715,6 @@ const emit = defineEmits<{
   (e: 'count-change', count: number): void
   (e: 'download-complete', payload: { id: string; outputPath: string; url?: string; title?: string; sha256Hash?: string }): void
   (e: 'global-speed', bps: number): void
-  (e: 'skeleton-done'): void
   (e: 'open-grabber'): void
 }>()
 
@@ -1224,7 +1239,11 @@ onMounted(async () => {
         if (ev.child_filename && nextChildren?.length) {
           nextChildren = nextChildren.map((child) => {
             const matches = ev.child_path
-              ? child.path === ev.child_path || child.sourceUrl === ev.child_path
+              ? child.path === ev.child_path
+                || child.sourceUrl === ev.child_path
+                || (items.value[idx].moduleId === 'youtube'
+                  && !!child.sourceUrl
+                  && sameYouTubeSelection(child.sourceUrl, ev.child_path))
               : child.filename === ev.child_filename
 
             if (!matches) {
@@ -1262,9 +1281,12 @@ onMounted(async () => {
           ? nextChildren!.reduce((sum, child) => sum + (child.speedBps ?? 0), 0)
           : (ev.speed ?? 0)
         const aggregatedChildSpeed = smoothSpeedSample(ev.id, rawAggregatedChildSpeed)
-        const aggregatedPercent = total > 0
+        const computedPercent = total > 0
           ? Math.min(100, Math.floor((aggregatedChildBytes / total) * 100))
           : items.value[idx].percent
+        const aggregatedPercent = items.value[idx].status === DownloadStatusEnum.Downloading
+          ? Math.max(items.value[idx].percent ?? 0, computedPercent)
+          : computedPercent
         const aggregatedEta = aggregatedChildSpeed > 0 && total > aggregatedChildBytes
           ? Math.floor((total - aggregatedChildBytes) / aggregatedChildSpeed)
           : 0
@@ -1537,7 +1559,6 @@ async function hydrate(): Promise<void> {
     }
 
     emit('count-change', items.value.length)
-    emit('skeleton-done')
   } finally {
     hydrateInFlight = false
     if (hydrateQueued) {
@@ -1867,8 +1888,8 @@ function detailTabOptions(item: DownloadItem): Array<{ id: DetailTabId; label: s
   tabs.push(
     { id: 'general', label: 'Geral' },
     { id: 'logs', label: 'Logs' },
-    { id: 'mirrors', label: 'Mirrors' },
   )
+  if (item.moduleId !== 'youtube') tabs.push({ id: 'mirrors', label: 'Mirrors' })
   if (item.moduleId === 'torrent') tabs.push({ id: 'peers', label: 'Peers' })
   tabs.push({ id: 'history', label: 'Histórico' })
   return tabs
@@ -1922,6 +1943,16 @@ function statusTextValue(item: DownloadItem): string {
     return stageLabels.value[item.id]
   }
   return statusText(item, nowTick.value)
+}
+
+function sameYouTubeSelection(left: string, right: string): boolean {
+  const leftFormat = youtubeFragmentValue(left, 'ytdlp_format')
+  return leftFormat.length > 0 && leftFormat === youtubeFragmentValue(right, 'ytdlp_format')
+}
+
+function youtubeFragmentValue(url: string, key: string): string {
+  const fragment = url.split('#')[1] ?? ''
+  return new URLSearchParams(fragment).get(key) ?? ''
 }
 
 function statusColor(status: DownloadItem['status']): string {
@@ -2708,6 +2739,35 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   height: 36px;
 }
 
+.provider-icon-thumb {
+  padding: 0;
+  border-color: rgba(255,255,255,0.1);
+}
+
+.item-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.item-channel {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: -2px;
+}
+
+.item-channel-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
 /* ── Item body ──────────────────────────────────────────────── */
 .item-body {
   flex: 1;
@@ -2914,8 +2974,9 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .progress-fill {
   height: 100%;
   border-radius: 999px;
-  transition: width 0.3s ease;
+  transition: width 0.55s ease-out;
   min-width: 2px;
+  will-change: width;
 }
 
 .progress-shimmer {
@@ -3588,6 +3649,31 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 .skeleton-card {
   pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+}
+
+.skeleton-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  background: linear-gradient(
+    90deg,
+    var(--bg-card) 25%,
+    color-mix(in srgb, var(--bg-card) 70%, var(--text-muted)) 50%,
+    var(--bg-card) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-skeleton 1.4s infinite;
+}
+
+.skeleton-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
   flex-direction: column;
   gap: 8px;
 }
@@ -3625,11 +3711,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 .status-flash {
   animation: statusFlash 400ms ease-out;
-}
-
-/* ── Progress bar smooth transition ────────────────────────── */
-.progress-fill {
-  transition: width 0.4s ease-out;
 }
 
 /* ── Pin button ─────────────────────────────────────────────── */

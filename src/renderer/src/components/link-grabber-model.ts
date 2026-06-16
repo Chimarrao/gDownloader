@@ -30,6 +30,10 @@ export interface CapturedRow {
   sourceLabels: string[]
   destDir?: string
   expectedHash?: ExpectedHash
+  youtubeOutputFormat?: string
+  youtubeDownloadThumbnail?: boolean
+  youtubeDownloadSubtitles?: boolean
+  youtubeMultiAudio?: boolean
 }
 
 export interface MirrorViewResult {

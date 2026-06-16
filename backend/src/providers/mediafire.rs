@@ -342,6 +342,7 @@ impl Provider for MediaFireProvider {
                     mime_type: None,
                     is_folder: true,
                     children: Some(children),
+                    ..Default::default()
                 });
             }
 
@@ -386,6 +387,7 @@ impl Provider for MediaFireProvider {
                 mime_type,
                 is_folder: false,
                 children: None,
+                ..Default::default()
             })
         })
     }
