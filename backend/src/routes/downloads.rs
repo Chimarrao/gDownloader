@@ -13,9 +13,9 @@ use uuid::Uuid;
 use crate::{
     hash_verify,
     models::{
-        AddDownloadRequest, ApiError, Download, DownloadEvent, DownloadNetworkRoute,
+        AddDownloadRequest, ApiError, CachedFileInfo, Download, DownloadEvent, DownloadNetworkRoute,
         DownloadStatus, DuplicateDownload, DuplicateGroup, ExpectedHash, FileChildInfo,
-        HashAlgorithm, PublicSettings, WsEvent,
+        FileInfo, HashAlgorithm, PublicSettings, WsEvent,
     },
     providers,
     ws::AppState,
@@ -211,6 +211,19 @@ fn record_download_event(state: &AppState, download_id: &str, kind: &str, messag
     }
 }
 
+fn cached_file_info_to_file_info(cached: CachedFileInfo) -> FileInfo {
+    FileInfo {
+        filename: cached.name,
+        size: cached.size,
+        mime_type: cached.mime_type,
+        is_folder: cached.is_folder,
+        children: cached.children,
+        thumbnail_url: cached.thumbnail_url,
+        channel_name: cached.channel_name,
+        channel_thumbnail_url: cached.channel_thumbnail_url,
+    }
+}
+
 // Adiciona um novo download à fila e inicia o processo em background
 // POST /downloads — body: { "url": "...", "dest_dir": "..." }
 pub async fn add_download(
@@ -262,13 +275,31 @@ pub async fn add_download_internal(
         )
     })?;
 
-    // Busca informações do arquivo (nome, tamanho) antes de criar o item na fila
+    let selected_children = req
+        .selected_children
+        .clone()
+        .filter(|children| !children.is_empty());
+
+    // Busca informações do arquivo (nome, tamanho) antes de criar o item na fila.
+    // Quando o capturador já leu o link, usa o cache salvo para evitar uma nova
+    // rodada cara de metadados (especialmente no YouTube).
     let mut file_info = {
-        let context = {
+        let provider_id = providers::provider_id_from_name(provider.name());
+        let cached = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| crate::db::load_cached_file_info(&db, &req.url).ok())
+            .flatten()
+            .filter(|cached| cached.provider_id == provider_id);
+
+        if let Some(cached) = cached {
+            cached_file_info_to_file_info(cached)
+        } else {
             let settings = state.db.lock().ok()
                 .and_then(|db| crate::db::load_public_settings(&db).ok())
                 .unwrap_or_default();
-            providers::DownloadContext {
+            let context = providers::DownloadContext {
                 db_path: state.db_path.clone(),
                 proxy_mode: settings.proxy_mode,
                 proxy_host: settings.proxy_host,
@@ -285,20 +316,31 @@ pub async fn add_download_internal(
                 youtube_split_chapters: settings.youtube_split_chapters,
                 request_headers: req.request_headers.clone().unwrap_or_default(),
                 cached_channel_thumbnail_url: None,
+            };
+            let info = provider.get_file_info_with_context(&req.url, context).await.map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError::new(format!("Falha ao obter informações do arquivo: {e}"))),
+                )
+            })?;
+            if let Ok(db) = state.db.lock() {
+                let _ = crate::db::save_cached_file_info(
+                    &db,
+                    &req.url,
+                    provider_id,
+                    &info.filename,
+                    info.size,
+                    info.mime_type.as_deref(),
+                    info.is_folder,
+                    &info.children,
+                    info.thumbnail_url.as_deref(),
+                    info.channel_name.as_deref(),
+                    info.channel_thumbnail_url.as_deref(),
+                );
             }
-        };
-        provider.get_file_info_with_context(&req.url, context).await
-    }.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ApiError::new(format!("Falha ao obter informações do arquivo: {e}"))),
-        )
-    })?;
-
-    let selected_children = req
-        .selected_children
-        .clone()
-        .filter(|children| !children.is_empty());
+            info
+        }
+    };
 
     if file_info.is_folder {
         if let (Some(children), Some(selected)) = (file_info.children.as_mut(), selected_children.as_ref()) {
@@ -1140,6 +1182,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             .insert(id.clone(), download_task.abort_handle());
 
         let mut last_bytes = 0u64;
+        let mut max_bytes_seen = 0u64;
         let mut last_time = std::time::Instant::now();
         let mut current_speed = 0u64;
         let mut last_db_write = std::time::Instant::now();
@@ -1182,17 +1225,19 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 }
             };
             let should_persist_snapshot = last_db_write.elapsed().as_secs() >= 5;
+            max_bytes_seen = max_bytes_seen.max(update.bytes_downloaded);
+            let reported_bytes = max_bytes_seen;
             let elapsed = last_time.elapsed().as_secs_f64();
             if elapsed >= 0.5 {
-                let delta = update.bytes_downloaded.saturating_sub(last_bytes);
+                let delta = reported_bytes.saturating_sub(last_bytes);
                 if delta > 0 {
                     current_speed = (delta as f64 / elapsed) as u64;
                 }
-                last_bytes = update.bytes_downloaded;
+                last_bytes = reported_bytes;
                 last_time = std::time::Instant::now();
             }
 
-            let speed = if update.bytes_downloaded == 0 {
+            let speed = if reported_bytes == 0 {
                 0
             } else {
                 update.child_speed_bps.unwrap_or(current_speed)
@@ -1200,7 +1245,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
             let eta = update.child_eta_secs.unwrap_or_else(|| {
                 if speed > 0 && update.total_bytes > 0 {
-                    update.total_bytes.saturating_sub(update.bytes_downloaded) / speed
+                    update.total_bytes.saturating_sub(reported_bytes) / speed
                 } else {
                     0
                 }
@@ -1209,7 +1254,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             {
                 let mut map = state.downloads.lock().await;
                 if let Some(d) = map.get_mut(&id) {
-                    d.bytes_downloaded = update.bytes_downloaded;
+                    d.bytes_downloaded = d.bytes_downloaded.max(reported_bytes);
                     d.speed_bps = speed;
                     d.eta_secs = eta;
                     d.last_progress_at = Some(current_unix_secs());
@@ -1234,7 +1279,11 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                                     .unwrap_or_else(|| child.filename == child_filename);
 
                                 if matches {
-                                    child.bytes_downloaded = update.child_bytes_downloaded;
+                                    child.bytes_downloaded = match (child.bytes_downloaded, update.child_bytes_downloaded) {
+                                        (Some(previous), Some(next)) => Some(previous.max(next)),
+                                        (None, Some(next)) => Some(next),
+                                        (current, None) => current,
+                                    };
                                     child.speed_bps = update.child_speed_bps;
                                     child.eta_secs = update.child_eta_secs;
                                     child.status = Some(DownloadStatus::Downloading);
@@ -1263,12 +1312,12 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
             }
 
             if last_progress_broadcast.elapsed() >= std::time::Duration::from_millis(500)
-                || update.total_bytes > 0 && update.bytes_downloaded >= update.total_bytes
+                || update.total_bytes > 0 && reported_bytes >= update.total_bytes
             {
                 last_progress_broadcast = std::time::Instant::now();
                 state.broadcast(WsEvent::Progress {
                     id: id.clone(),
-                    bytes: update.bytes_downloaded,
+                    bytes: reported_bytes,
                     total: update.total_bytes,
                     speed,
                     eta,

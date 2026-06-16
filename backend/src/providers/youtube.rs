@@ -324,7 +324,54 @@ impl YouTubeProvider {
         })
     }
 
-    async fn read_info(url: &str, flat_playlist: bool, context: Option<&DownloadContext>) -> Result<YtdlpInfo> {
+    fn is_channel_url(url: &str) -> bool {
+        let Some(parsed) = super::parse_url(url) else {
+            return false;
+        };
+        let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+            return false;
+        };
+        if !(host == "youtube.com" || host.ends_with(".youtube.com")) {
+            return false;
+        }
+
+        let path = parsed.path().trim_matches('/').to_ascii_lowercase();
+        path.starts_with('@')
+            || path.starts_with("channel/")
+            || path.starts_with("c/")
+            || path.starts_with("user/")
+            || path.ends_with("/videos")
+            || path.ends_with("/streams")
+    }
+
+    fn channel_limit(url: &str) -> Option<u32> {
+        Self::fragment_value(url, "ytdlp_channel_limit")
+            .or_else(|| Self::fragment_value(url, "ytdlp_limit"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| {
+                std::env::var("GDOWNLOADER_YOUTUBE_CHANNEL_LIMIT")
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+            })
+            .map(|value| value.clamp(1, 1_000))
+    }
+
+    fn is_public_entry(entry: &YtdlpEntry) -> bool {
+        let title = entry.title.as_deref().unwrap_or("").to_ascii_lowercase();
+        let blocked_title = title.contains("private video")
+            || title.contains("deleted video")
+            || title.contains("unavailable")
+            || title.contains("members-only")
+            || title.contains("members only");
+        !blocked_title && Self::playlist_entry_url(entry).is_some()
+    }
+
+    async fn read_info(
+        url: &str,
+        flat_playlist: bool,
+        playlist_end: Option<u32>,
+        context: Option<&DownloadContext>,
+    ) -> Result<YtdlpInfo> {
         let mut args = Vec::<String>::new();
         if let Some(context) = context {
             Self::apply_cookies_args(&mut args, context);
@@ -333,6 +380,10 @@ impl YouTubeProvider {
         args.extend(["-J".to_string(), "--no-warnings".to_string()]);
         if flat_playlist {
             args.push("--flat-playlist".to_string());
+            if let Some(limit) = playlist_end {
+                args.push("--playlist-end".to_string());
+                args.push(limit.to_string());
+            }
         } else {
             args.push("--no-playlist".to_string());
         }
@@ -385,12 +436,15 @@ impl YouTubeProvider {
     async fn info_for(url: &str, context: Option<&DownloadContext>) -> Result<FileInfo> {
         let clean_url = Self::clean_url(url);
         let is_playlist = clean_url.contains("list=");
-        if is_playlist {
-            let info = Self::read_info(&clean_url, true, context).await?;
+        let is_channel = !is_playlist && Self::is_channel_url(&clean_url);
+        if is_playlist || is_channel {
+            let limit = if is_channel { Self::channel_limit(url) } else { None };
+            let info = Self::read_info(&clean_url, true, limit, context).await?;
             let mut children = info
                 .entries
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|entry| !is_channel || Self::is_public_entry(entry))
                 .filter_map(|entry| {
                     let source_url = Self::playlist_entry_url(&entry)?;
                     Some(FileChildInfo {
@@ -411,23 +465,36 @@ impl YouTubeProvider {
                 })
                 .collect::<Vec<_>>();
             if children.is_empty() {
-                return Err(anyhow!("Playlist do YouTube sem videos acessiveis"));
+                return Err(anyhow!(
+                    "{}",
+                    if is_channel {
+                        "Canal do YouTube sem videos publicos acessiveis"
+                    } else {
+                        "Playlist do YouTube sem videos acessiveis"
+                    }
+                ));
             }
             let filename = <Self as ProviderDefaults>::safe_filename(
-                info.title.as_deref().unwrap_or("YouTube Playlist"),
-                "YouTube Playlist",
+                info.title
+                    .as_deref()
+                    .unwrap_or(if is_channel { "YouTube Channel" } else { "YouTube Playlist" }),
+                if is_channel { "YouTube Channel" } else { "YouTube Playlist" },
             );
             return Ok(FileInfo {
                 filename,
                 size: 0,
-                mime_type: Some("application/vnd.youtube.playlist".to_string()),
+                mime_type: Some(if is_channel {
+                    "application/vnd.youtube.channel"
+                } else {
+                    "application/vnd.youtube.playlist"
+                }.to_string()),
                 is_folder: true,
                 children: Some(std::mem::take(&mut children)),
                 ..Default::default()
             });
         }
 
-        let info = Self::read_info(&clean_url, false, context).await?;
+        let info = Self::read_info(&clean_url, false, None, context).await?;
         let title = <Self as ProviderDefaults>::safe_filename(
             info.title.as_deref().unwrap_or("YouTube Video"),
             "YouTube Video",
@@ -832,7 +899,7 @@ impl Provider for YouTubeProvider {
 
                 while let Some(line) = lines.next_line().await? {
                     let trimmed = line.trim();
-                    if trimmed.starts_with("[download] Destination:") || trimmed.starts_with("[download] Resuming download at byte") {
+                    if trimmed.starts_with("[download] Destination:") {
                         phase_count = phase_count.saturating_add(1);
                         current_stage = if phase_count <= 1 {
                             "Baixando vídeo"
@@ -845,6 +912,16 @@ impl Provider for YouTubeProvider {
                             phase_count,
                             has_split_media,
                         ));
+                        Self::send_stage(
+                            &progress_tx,
+                            &progress_child_key,
+                            &current_stage,
+                            grand_downloaded + last_synthetic_downloaded,
+                            grand_total.max(SYNTHETIC_PROGRESS_TOTAL),
+                        )
+                        .await;
+                    } else if trimmed.starts_with("[download] Resuming download at byte") && current_stage.is_empty() {
+                        current_stage = "Baixando vídeo".to_string();
                         Self::send_stage(
                             &progress_tx,
                             &progress_child_key,
@@ -936,6 +1013,21 @@ mod tests {
         assert!(YouTubeProvider::matches("https://www.youtube.com/watch?v=xF8l17MJkMk"));
         assert!(YouTubeProvider::matches("https://music.youtube.com/watch?v=xF8l17MJkMk"));
         assert!(!YouTubeProvider::matches("https://example.com/watch?v=xF8l17MJkMk"));
+    }
+
+    #[test]
+    fn detects_channel_urls_and_limits_channel_capture() {
+        assert!(YouTubeProvider::is_channel_url("https://www.youtube.com/@canal/videos"));
+        assert!(YouTubeProvider::is_channel_url("https://www.youtube.com/channel/UCabc123"));
+        assert!(!YouTubeProvider::is_channel_url("https://www.youtube.com/watch?v=xF8l17MJkMk"));
+        assert_eq!(
+            YouTubeProvider::channel_limit("https://www.youtube.com/@canal#ytdlp_channel_limit=40"),
+            Some(40)
+        );
+        assert_eq!(
+            YouTubeProvider::channel_limit("https://www.youtube.com/@canal#ytdlp_channel_limit=5000"),
+            Some(1_000)
+        );
     }
 
     #[test]
