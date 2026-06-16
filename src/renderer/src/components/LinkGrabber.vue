@@ -157,6 +157,7 @@ const visibleFilteredUrls = ref<Set<string> | null>(null)
 const adding = ref(false)
 const lastError = ref('')
 const detectToken = ref(0)
+const selectAllIntent = ref(true)
 const actionsRef = ref<HTMLElement | null>(null)
 const addQueueDone = ref(0)
 const addQueueTotal = ref(0)
@@ -692,6 +693,7 @@ function nextFrame(): Promise<void> {
 
 async function detectProviders(): Promise<void> {
   const token = ++detectToken.value
+  selectAllIntent.value = true
   lastError.value = ''
   const urls = parseUrls(urlsInput.value)
 
@@ -770,8 +772,12 @@ async function detectProviders(): Promise<void> {
           rows.value[index].displayName = info.name
           applyExpectedHash(rows.value[index])
           normalizeProviderSelection(rows.value[index])
-          rows.value[index].selected = isRowChecked(rows.value[index])
           rows.value[index].loading = false
+          if (!selectAllIntent.value) {
+            setRowSelection(rows.value[index], false)
+          } else {
+            rows.value[index].selected = isRowChecked(rows.value[index])
+          }
           rows.value[index].availability = 'online'
           rows.value[index].cachedInfo = false
           rows.value[index].error = ''
@@ -868,6 +874,7 @@ async function applyDiskAvailability(row: CapturedRow): Promise<void> {
 }
 
 function toggleAllChecked(checked: boolean): void {
+  selectAllIntent.value = checked
   for (const row of selectableRows.value) {
     setRowSelection(row, checked)
   }
@@ -1064,7 +1071,6 @@ function normalizeProviderSelection(row: CapturedRow): void {
     return
   }
   ensureYouTubeOptions(row)
-  row.expanded = true
   let selectedAssigned = false
   for (const child of row.info.children) {
     const selectable = !!child.sourceUrl && !child.isFolder
