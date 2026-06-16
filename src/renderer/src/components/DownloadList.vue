@@ -3653,6 +3653,12 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-items: flex-start;
   gap: 12px;
   padding: 14px;
+  min-height: var(--row-height);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .skeleton-icon {
@@ -3662,9 +3668,9 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   flex-shrink: 0;
   background: linear-gradient(
     90deg,
-    var(--bg-card) 25%,
-    color-mix(in srgb, var(--bg-card) 70%, var(--text-muted)) 50%,
-    var(--bg-card) 75%
+    color-mix(in srgb, var(--text-muted) 12%, transparent) 25%,
+    color-mix(in srgb, var(--text-muted) 28%, transparent) 50%,
+    color-mix(in srgb, var(--text-muted) 12%, transparent) 75%
   );
   background-size: 200% 100%;
   animation: shimmer-skeleton 1.4s infinite;
@@ -3675,23 +3681,24 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 9px;
+  padding-top: 2px;
 }
 
 .skeleton-line {
   border-radius: 6px;
   background: linear-gradient(
     90deg,
-    var(--bg-card) 25%,
-    color-mix(in srgb, var(--bg-card) 70%, var(--text-muted)) 50%,
-    var(--bg-card) 75%
+    color-mix(in srgb, var(--text-muted) 12%, transparent) 25%,
+    color-mix(in srgb, var(--text-muted) 28%, transparent) 50%,
+    color-mix(in srgb, var(--text-muted) 12%, transparent) 75%
   );
   background-size: 200% 100%;
   animation: shimmer-skeleton 1.4s infinite;
 }
 
-.skeleton-title    { height: 14px; width: 55%; }
-.skeleton-progress { height: 8px;  width: 100%; }
+.skeleton-title    { height: 13px; width: 60%; }
+.skeleton-progress { height: 6px;  width: 100%; }
 .skeleton-meta     { height: 10px; width: 35%; }
 
 /* ── disk_full meta ─────────────────────────────────────────── */
