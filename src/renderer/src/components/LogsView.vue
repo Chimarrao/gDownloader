@@ -10,8 +10,8 @@
         <select v-model="levelFilter" class="logs-select">
           <option value="all">Todos</option>
           <option value="info">Info</option>
-          <option value="warn">Warn</option>
-          <option value="error">Error</option>
+          <option value="warn">Aviso</option>
+          <option value="error">Erro</option>
         </select>
         <select v-model="moduleFilter" class="logs-select">
           <option value="all">Módulos</option>
@@ -26,10 +26,21 @@
     </div>
 
     <div class="logs-list">
-      <div v-if="filteredLines.length === 0" class="logs-empty">
+      <div v-if="filteredEntries.length === 0" class="logs-empty">
         Nenhum log encontrado
       </div>
-      <pre v-else v-for="(line, index) in filteredLines" :key="`${index}-${line}`" class="log-line" :class="lineClass(line)">{{ line }}</pre>
+      <div
+        v-else
+        v-for="(entry, index) in filteredEntries"
+        :key="`${index}-${entry.raw}`"
+        class="log-entry"
+        :class="`is-${entry.level}`"
+        :title="entry.raw"
+      >
+        <span class="log-level">{{ entry.levelLabel }}</span>
+        <span class="log-module">{{ entry.module }}</span>
+        <span class="log-message">{{ entry.friendly }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -45,21 +56,32 @@ const search = ref('')
 let disposeWatch: (() => void) | null = null
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
+type LogLevel = 'info' | 'warn' | 'error'
+
+interface LogEntry {
+  raw: string
+  level: LogLevel
+  levelLabel: string
+  module: string
+  friendly: string
+}
+
+const entries = computed(() => lines.value.map(parseLogLine))
+
 const modules = computed(() => {
   const found = new Set<string>()
-  for (const line of lines.value) {
-    const target = line.match(/\s([a-zA-Z0-9_:.-]+):/)?.[1] ?? line.match(/\[([^\]]+)\]/)?.[1]
-    if (target) found.add(target)
+  for (const entry of entries.value) {
+    if (entry.module) found.add(entry.module)
   }
   return [...found].sort((a, b) => a.localeCompare(b))
 })
 
-const filteredLines = computed(() => {
+const filteredEntries = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return lines.value.filter((line) => {
-    const lower = line.toLowerCase()
-    if (levelFilter.value !== 'all' && !lower.includes(levelFilter.value)) return false
-    if (moduleFilter.value !== 'all' && !line.includes(moduleFilter.value)) return false
+  return entries.value.filter((entry) => {
+    const lower = `${entry.raw} ${entry.friendly} ${entry.module}`.toLowerCase()
+    if (levelFilter.value !== 'all' && entry.level !== levelFilter.value) return false
+    if (moduleFilter.value !== 'all' && entry.module !== moduleFilter.value) return false
     if (q && !lower.includes(q)) return false
     return true
   })
@@ -86,14 +108,45 @@ async function refresh(): Promise<void> {
 }
 
 async function copyFiltered(): Promise<void> {
-  await window.api.clipboard.writeText(filteredLines.value.join('\n'))
+  await window.api.clipboard.writeText(filteredEntries.value.map((entry) => entry.raw).join('\n'))
 }
 
-function lineClass(line: string): string {
+function parseLogLine(line: string): LogEntry {
   const lower = line.toLowerCase()
-  if (lower.includes('error')) return 'is-error'
-  if (lower.includes('warn')) return 'is-warn'
-  return 'is-info'
+  const level: LogLevel = lower.includes('error')
+    ? 'error'
+    : lower.includes('warn')
+      ? 'warn'
+      : 'info'
+  const target = line.match(/\s([a-zA-Z0-9_:.-]+):/)?.[1] ?? line.match(/\[([^\]]+)\]/)?.[1] ?? 'Sistema'
+  const module = target.split('::').filter(Boolean).pop() ?? target
+
+  return {
+    raw: line,
+    level,
+    levelLabel: level === 'error' ? 'Erro' : level === 'warn' ? 'Aviso' : 'Info',
+    module,
+    friendly: friendlyMessage(line),
+  }
+}
+
+function friendlyMessage(line: string): string {
+  const lower = line.toLowerCase()
+  if (lower.includes('download adicionado')) return 'Download adicionado à fila.'
+  if (lower.includes('iniciando tentativa de download')) return 'Download iniciado.'
+  if (lower.includes('download concluído') || lower.includes('download concluido')) return 'Download concluído.'
+  if (lower.includes('travado sem progresso')) return 'Sem progresso por muito tempo; uma nova tentativa será feita.'
+  if (lower.includes('captcha')) return 'Captcha precisa de atenção.'
+  if (lower.includes('rate') || lower.includes('limite')) return 'Servidor limitou a velocidade ou novas tentativas.'
+  if (lower.includes('yt-dlp') && lower.includes('falhou')) return 'YouTube não conseguiu concluir a operação.'
+  if (lower.includes('erro') || lower.includes('error')) return 'Ocorreu uma falha. Veja o detalhe técnico no tooltip.'
+  if (lower.includes('warn')) return 'Atenção necessária, mas o app continua funcionando.'
+
+  return line
+    .replace(/^\S+\s+\S+\s+/, '')
+    .replace(/\s+[a-zA-Z0-9_:.-]+:\s*/, '')
+    .trim()
+    .slice(0, 220) || 'Evento registrado.'
 }
 </script>
 
@@ -177,28 +230,59 @@ function lineClass(line: string): string {
   padding: 8px;
 }
 
-.log-line {
-  margin: 0;
-  padding: 3px 4px;
-  border-radius: 4px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 11px;
-  line-height: 1.45;
-  color: var(--text-muted);
+.log-entry {
+  display: grid;
+  grid-template-columns: 64px minmax(96px, 150px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
-.log-line.is-error {
+.log-entry.is-error {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.08);
 }
 
-.log-line.is-warn {
+.log-entry.is-warn {
   color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
 }
 
-.log-line.is-info {
+.log-entry.is-info {
   color: var(--text-primary);
+}
+
+.log-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.log-module {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.log-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .logs-empty {
