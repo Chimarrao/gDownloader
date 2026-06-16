@@ -187,6 +187,18 @@
               <span>{{ item.channelName }}</span>
             </div>
 
+            <div v-if="showYouTubeStages(item)" class="youtube-stage-strip" aria-label="Etapas do YouTube">
+              <span
+                v-for="stage in youtubeStages(item)"
+                :key="`${item.id}:${stage.label}`"
+                class="youtube-stage"
+                :class="stage.state"
+              >
+                <i :class="stage.icon"></i>
+                {{ stage.label }}
+              </span>
+            </div>
+
             <!-- Row 2: progress bar -->
             <div v-if="hasColumn('progress')" class="progress-track">
               <div
@@ -760,6 +772,7 @@ const unsubs: Array<() => void> = []
 const captchaAttemptedIds = new Set<string>()
 const itemIndexById = ref<Record<string, number>>({})
 const speedSamples = ref<Record<string, number[]>>({})
+const rawSpeeds = ref<Record<string, number>>({})
 const smoothedSpeeds = ref<Record<string, number>>({})
 const captchaSolvedIds = ref<Set<string>>(new Set())
 const sparklineCanvases = new Map<string, HTMLCanvasElement>()
@@ -949,14 +962,18 @@ function recordSpeedSample(id: string, speed: number): void {
 }
 
 function smoothSpeedSample(id: string, rawSpeed: number): number {
+  rawSpeeds.value = { ...rawSpeeds.value, [id]: Math.max(0, Number.isFinite(rawSpeed) ? rawSpeed : 0) }
+  const previous = smoothedSpeeds.value[id] ?? 0
   if (!Number.isFinite(rawSpeed) || rawSpeed <= 0) {
-    smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: 0 }
-    return 0
+    const decayed = previous > 1024 ? Math.round(previous * 0.82) : 0
+    smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: decayed }
+    return decayed
   }
   const cappedRaw = Math.min(rawSpeed, 200 * 1024 * 1024)
-  const previous = smoothedSpeeds.value[id] ?? cappedRaw
   const spikeLimited = previous > 0 ? Math.min(cappedRaw, previous * 3 + 512 * 1024) : cappedRaw
-  const next = Math.round(previous * 0.72 + spikeLimited * 0.28)
+  const next = previous > 0
+    ? Math.round(previous * 0.72 + spikeLimited * 0.28)
+    : spikeLimited
   smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: next }
   return next
 }
@@ -1253,7 +1270,7 @@ onMounted(async () => {
             }
 
             const childTotal = ev.child_total ?? child.size ?? 0
-            const childBytes = ev.child_bytes ?? child.bytesDownloaded ?? 0
+            const childBytes = Math.max(child.bytesDownloaded ?? 0, ev.child_bytes ?? child.bytesDownloaded ?? 0)
             const childSpeed = smoothSpeedSample(`${ev.id}:${child.path ?? child.sourceUrl ?? child.filename}`, ev.child_speed ?? child.speedBps ?? 0)
             const childStatus =
               childTotal > 0 && childBytes >= childTotal
@@ -1262,9 +1279,6 @@ onMounted(async () => {
 
             return {
               ...child,
-              filename: items.value[idx].moduleId === 'youtube' && ev.child_filename
-                ? ev.child_filename
-                : child.filename,
               bytesDownloaded: childBytes,
               speedBps: childSpeed,
               etaSec: ev.child_eta ?? child.etaSec ?? 0,
@@ -1514,6 +1528,46 @@ watch(activeCaptchaItem, (item) => {
   })
 })
 
+function mergeHydratedChildren(existing?: DownloadChild[], fresh?: DownloadChild[]): DownloadChild[] | undefined {
+  if (!fresh) return existing
+  if (!existing?.length) return fresh
+
+  return fresh.map((child) => {
+    const previous = existing.find((candidate) =>
+      (!!child.path && candidate.path === child.path)
+      || (!!child.sourceUrl && candidate.sourceUrl === child.sourceUrl)
+      || (child.sourceUrl && candidate.sourceUrl && sameYouTubeSelection(candidate.sourceUrl, child.sourceUrl))
+      || candidate.filename === child.filename
+    )
+    if (!previous) return child
+
+    return {
+      ...child,
+      bytesDownloaded: Math.max(previous.bytesDownloaded ?? 0, child.bytesDownloaded ?? 0),
+      speedBps: child.speedBps ?? previous.speedBps,
+      etaSec: child.etaSec ?? previous.etaSec,
+      status: child.status ?? previous.status,
+    }
+  })
+}
+
+function mergeHydratedDownload(existing: DownloadItem, fresh: DownloadItem): DownloadItem {
+  if (existing.status !== DownloadStatusEnum.Downloading || fresh.status !== DownloadStatusEnum.Downloading) {
+    return {
+      ...fresh,
+      children: mergeHydratedChildren(existing.children, fresh.children),
+    }
+  }
+
+  return {
+    ...fresh,
+    percent: Math.max(existing.percent ?? 0, fresh.percent ?? 0),
+    speedBps: Math.max(existing.speedBps ?? 0, fresh.speedBps ?? 0),
+    etaSec: fresh.etaSec || existing.etaSec,
+    children: mergeHydratedChildren(existing.children, fresh.children),
+  }
+}
+
 // ── Data methods ───────────────────────────────────────────
 async function hydrate(): Promise<void> {
   if (hydrateInFlight) {
@@ -1535,7 +1589,7 @@ async function hydrate(): Promise<void> {
     for (const freshItem of fresh) {
       const idx = items.value.findIndex((i) => i.id === freshItem.id)
       if (idx >= 0) {
-        Object.assign(items.value[idx], freshItem)
+        Object.assign(items.value[idx], mergeHydratedDownload(items.value[idx], freshItem))
       } else {
         items.value.push(freshItem)
       }
@@ -1928,6 +1982,40 @@ function effectiveSpeedValue(item: DownloadItem): number {
 
 function effectiveEtaValue(item: DownloadItem): number {
   return effectiveEta(item, nowTick.value)
+}
+
+type YouTubeStageState = 'done' | 'current' | 'pending'
+
+function showYouTubeStages(item: DownloadItem): boolean {
+  return item.moduleId === 'youtube'
+    && [DownloadStatusEnum.Downloading, DownloadStatusEnum.Verifying, DownloadStatusEnum.Complete].includes(item.status)
+}
+
+function youtubeStages(item: DownloadItem): Array<{ label: string; state: YouTubeStageState; icon: string }> {
+  const current = (stageLabels.value[item.id] ?? '').toLowerCase()
+  const isComplete = item.status === DownloadStatusEnum.Complete
+  const isMerging = current.includes('mescl') || item.status === DownloadStatusEnum.Verifying
+  const isAudio = current.includes('áudio') || current.includes('audio')
+
+  const stateFor = (index: number): YouTubeStageState => {
+    if (isComplete) return 'done'
+    if (isMerging) return index < 2 ? 'done' : 'current'
+    if (isAudio) return index === 0 ? 'done' : index === 1 ? 'current' : 'pending'
+    return index === 0 ? 'current' : 'pending'
+  }
+
+  return ['Baixando vídeo', 'Baixando áudio', 'Mesclando'].map((label, index) => {
+    const state = stateFor(index)
+    return {
+      label,
+      state,
+      icon: state === 'done'
+        ? 'pi pi-check'
+        : state === 'current'
+          ? 'pi pi-spin pi-spinner'
+          : 'pi pi-circle',
+    }
+  })
 }
 
 function isWaitingRetryNow(item: DownloadItem): boolean {
@@ -2766,6 +2854,44 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border-radius: 50%;
   object-fit: cover;
   display: block;
+}
+
+.youtube-stage-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 24px;
+}
+
+.youtube-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-primary));
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.youtube-stage.done {
+  border-color: color-mix(in srgb, #22c55e 42%, var(--border-color));
+  color: #22c55e;
+  background: color-mix(in srgb, #22c55e 10%, transparent);
+}
+
+.youtube-stage.current {
+  border-color: color-mix(in srgb, var(--accent-color) 58%, var(--border-color));
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+}
+
+.youtube-stage.pending {
+  opacity: 0.72;
 }
 
 /* ── Item body ──────────────────────────────────────────────── */
