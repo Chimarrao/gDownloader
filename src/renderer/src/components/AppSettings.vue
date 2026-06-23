@@ -655,11 +655,17 @@ onMounted(async () => {
     await loadArchivePasswords()
     await refreshCacheInfo()
   }
-  window.addEventListener('gdownloader-settings-updated', onExternalSettingsUpdated as EventListener)
+  window.addEventListener(
+    'gdownloader-settings-updated',
+    onExternalSettingsUpdated as Parameters<typeof window.addEventListener>[1]
+  )
 })
 
 onUnmounted(() => {
-  window.removeEventListener('gdownloader-settings-updated', onExternalSettingsUpdated as EventListener)
+  window.removeEventListener(
+    'gdownloader-settings-updated',
+    onExternalSettingsUpdated as Parameters<typeof window.removeEventListener>[1]
+  )
 })
 
 function onExternalSettingsUpdated(event: CustomEvent<AppSettingsSnapshot>): void {

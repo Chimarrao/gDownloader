@@ -1027,7 +1027,7 @@ function providerIconStyle(moduleId: string): Record<string, string> {
 }
 
 function isPremiumProvider(moduleId: string): boolean {
-  return ['rapidgator', 'fichier', 'katfile', 'terabox'].includes(moduleId)
+  return ['rapidgator', 'katfile', 'terabox'].includes(moduleId)
 }
 
 function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
@@ -1373,7 +1373,8 @@ onMounted(async () => {
       const outputPath = ev.path ?? ev.outputPath ?? ''
       if (idx >= 0) {
         recordSpeedSample(ev.id, 0)
-        const { [ev.id]: _done, ...restStages } = stageLabels.value
+        const restStages = { ...stageLabels.value }
+        delete restStages[ev.id]
         stageLabels.value = restStages
         items.value[idx] = {
           ...items.value[idx],
@@ -1419,7 +1420,8 @@ onMounted(async () => {
       const idx = itemIndexById.value[ev.id] ?? -1
       if (idx >= 0) {
         recordSpeedSample(ev.id, 0)
-        const { [ev.id]: _failed, ...restStages } = stageLabels.value
+        const restStages = { ...stageLabels.value }
+        delete restStages[ev.id]
         stageLabels.value = restStages
         items.value[idx] = {
           ...items.value[idx],

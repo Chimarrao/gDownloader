@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
@@ -10,6 +10,8 @@ use crate::models::{FileChildInfo, FileInfo};
 use super::{apply_speed_limit, host_matches, rate_limit_error, Provider, ProgressUpdate, ProviderDefaults};
 
 pub struct GDriveProvider;
+
+const GDRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 
 impl GDriveProvider {
     pub fn matches(url: &str) -> bool {
@@ -219,7 +221,15 @@ impl GDriveProvider {
         decoded
     }
 
+    #[cfg(test)]
     fn parse_folder_children_from_ivd(ivd: &str) -> Result<Vec<FileChildInfo>> {
+        Self::parse_folder_children_from_ivd_with_prefix(ivd, "")
+    }
+
+    fn parse_folder_children_from_ivd_with_prefix(
+        ivd: &str,
+        prefix: &str,
+    ) -> Result<Vec<FileChildInfo>> {
         let value: Value = serde_json::from_str(ivd)?;
         let entries = value
             .get(0)
@@ -237,13 +247,23 @@ impl GDriveProvider {
                 if id.is_empty() || filename.is_empty() {
                     return None;
                 }
-                let source_url = format!("https://drive.google.com/file/d/{id}/view");
+                let is_folder = mime_type.as_deref() == Some(GDRIVE_FOLDER_MIME);
+                let path = if prefix.is_empty() {
+                    filename.to_string()
+                } else {
+                    format!("{}/{}", prefix.trim_matches('/'), filename)
+                };
+                let source_url = if is_folder {
+                    format!("https://drive.google.com/drive/folders/{id}")
+                } else {
+                    format!("https://drive.google.com/file/d/{id}/view")
+                };
                 Some(FileChildInfo {
                     filename: filename.to_string(),
                     size,
                     mime_type,
-                    is_folder: false,
-                    path: Some(filename.to_string()),
+                    is_folder,
+                    path: Some(path),
                     source_url: Some(source_url),
                     bytes_downloaded: None,
                     speed_bps: None,
@@ -259,15 +279,140 @@ impl GDriveProvider {
         Ok(children)
     }
 
-    async fn get_folder_info(client: &reqwest::Client, url: &str) -> Result<FileInfo> {
+    fn unique_child_path(path: &str, seen: &mut HashMap<String, usize>) -> String {
+        let count = seen.entry(path.to_string()).or_insert(0);
+        *count += 1;
+        if *count == 1 {
+            return path.to_string();
+        }
+
+        let duplicate_index = *count;
+        let (dir, filename) = path
+            .rsplit_once('/')
+            .map(|(dir, filename)| (Some(dir), filename))
+            .unwrap_or((None, path));
+        let renamed = filename
+            .rfind('.')
+            .filter(|pos| *pos > 0)
+            .map(|pos| {
+                format!(
+                    "{} ({}){}",
+                    &filename[..pos],
+                    duplicate_index,
+                    &filename[pos..]
+                )
+            })
+            .unwrap_or_else(|| format!("{filename} ({duplicate_index})"));
+
+        dir.map(|dir| format!("{dir}/{renamed}")).unwrap_or(renamed)
+    }
+
+    async fn fetch_folder_html(client: &reqwest::Client, folder_id: &str) -> Result<String> {
+        let page_url = format!("https://drive.google.com/drive/folders/{folder_id}");
+        Ok(client
+            .get(&page_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?)
+    }
+
+    async fn collect_folder_file_children(
+        client: &reqwest::Client,
+        root_folder_id: &str,
+        root_html: String,
+        selected_sources: Option<&HashSet<String>>,
+    ) -> Result<Vec<FileChildInfo>> {
+        let mut pending = vec![(root_folder_id.to_string(), String::new(), Some(root_html))];
+        let mut visited = HashSet::new();
+        let mut seen_file_paths = HashMap::new();
+        let mut files = Vec::new();
+
+        while let Some((folder_id, prefix, html)) = pending.pop() {
+            if selected_sources
+                .map(|selected| files.len() >= selected.len())
+                .unwrap_or(false)
+            {
+                break;
+            }
+
+            if !visited.insert(folder_id.clone()) {
+                continue;
+            }
+
+            let html = match html {
+                Some(value) => value,
+                None => Self::fetch_folder_html(client, &folder_id).await?,
+            };
+            let ivd = Self::extract_drive_ivd(&html)
+                .ok_or_else(|| anyhow!("Google Drive não retornou metadados da pasta pública"))?;
+            let children = Self::parse_folder_children_from_ivd_with_prefix(&ivd, &prefix)?;
+
+            for mut child in children {
+                if child.is_folder {
+                    let source_url = child
+                        .source_url
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("Subpasta do Google Drive sem URL"))?;
+                    let child_id = Self::extract_folder_id(source_url)
+                        .ok_or_else(|| {
+                            anyhow!("Subpasta do Google Drive com URL inválida: {source_url}")
+                        })?;
+                    let child_prefix = child.path.clone().unwrap_or_else(|| child.filename.clone());
+                    pending.push((child_id, child_prefix, None));
+                } else {
+                    if selected_sources
+                        .map(|selected| {
+                            child
+                                .source_url
+                                .as_ref()
+                                .map(|source_url| !selected.contains(source_url))
+                                .unwrap_or(true)
+                        })
+                        .unwrap_or(false)
+                    {
+                        continue;
+                    }
+
+                    let path = child.path.clone().unwrap_or_else(|| child.filename.clone());
+                    let unique_path = Self::unique_child_path(&path, &mut seen_file_paths);
+                    if unique_path != path {
+                        child.filename = unique_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&child.filename)
+                            .to_string();
+                        child.path = Some(unique_path);
+                    }
+                    files.push(child);
+                }
+            }
+        }
+
+        if files.is_empty() {
+            let message = if selected_sources.is_some() {
+                "Itens selecionados não encontrados na pasta do Google Drive"
+            } else {
+                "Pasta do Google Drive vazia ou sem arquivos acessíveis"
+            };
+            return Err(anyhow!(message));
+        }
+
+        Ok(files)
+    }
+
+    async fn get_folder_info_with_selection(
+        client: &reqwest::Client,
+        url: &str,
+        selected_sources: Option<&HashSet<String>>,
+    ) -> Result<FileInfo> {
         let folder_id = Self::extract_folder_id(url)
             .ok_or_else(|| anyhow!("URL de pasta do Google Drive inválida: {url}"))?;
-        let page_url = format!("https://drive.google.com/drive/folders/{folder_id}");
-        let html = client.get(&page_url).send().await?.error_for_status()?.text().await?;
+        let html = Self::fetch_folder_html(client, &folder_id).await?;
         let folder_name = Self::extract_title(&html, &format!("gdrive_{folder_id}"));
-        let ivd = Self::extract_drive_ivd(&html)
-            .ok_or_else(|| anyhow!("Google Drive não retornou metadados da pasta pública"))?;
-        let children = Self::parse_folder_children_from_ivd(&ivd)?;
+        let children =
+            Self::collect_folder_file_children(client, &folder_id, html, selected_sources).await?;
         let total_size = children.iter().map(|child| child.size).sum();
 
         Ok(FileInfo {
@@ -278,6 +423,10 @@ impl GDriveProvider {
             children: Some(children),
             ..Default::default()
         })
+    }
+
+    async fn get_folder_info(client: &reqwest::Client, url: &str) -> Result<FileInfo> {
+        Self::get_folder_info_with_selection(client, url, None).await
     }
 
     fn extract_confirm_download_url(html: &str) -> Option<String> {
@@ -447,10 +596,15 @@ impl Provider for GDriveProvider {
         Box::pin(async move {
             if Self::is_folder_url(url) {
                 let client = <Self as ProviderDefaults>::http_client()?;
-                let info = Self::get_folder_info(&client, url).await?;
+                let selected_set = selected_children
+                    .as_ref()
+                    .filter(|items| !items.is_empty())
+                    .map(|items| items.iter().cloned().collect::<HashSet<_>>());
+                let info =
+                    Self::get_folder_info_with_selection(&client, url, selected_set.as_ref())
+                        .await?;
                 let mut children = info.children.unwrap_or_default();
-                if let Some(selected) = selected_children.filter(|items| !items.is_empty()) {
-                    let selected_set = selected.into_iter().collect::<HashSet<_>>();
+                if let Some(selected_set) = selected_set.as_ref() {
                     children.retain(|child| {
                         child
                             .source_url
@@ -664,6 +818,45 @@ mod tests {
         assert_eq!(
             children[0].source_url.as_deref(),
             Some("https://drive.google.com/file/d/file123/view")
+        );
+    }
+
+    #[test]
+    fn marks_drive_folder_children_as_folders() {
+        let ivd = r#"[[["child_folder",["root"],"Subpasta","application/vnd.google-apps.folder",0,null,0,0,0,0,0,null,null,0],["file123",["root"],"Movie.mkv","video/x-matroska",0,null,0,0,0,0,0,null,null,12345]],null]"#;
+        let children =
+            GDriveProvider::parse_folder_children_from_ivd_with_prefix(ivd, "Root").expect("children");
+
+        assert_eq!(children.len(), 2);
+        assert!(children[0].is_folder);
+        assert_eq!(children[0].path.as_deref(), Some("Root/Subpasta"));
+        assert_eq!(
+            children[0].source_url.as_deref(),
+            Some("https://drive.google.com/drive/folders/child_folder")
+        );
+        assert!(!children[1].is_folder);
+        assert_eq!(children[1].path.as_deref(), Some("Root/Movie.mkv"));
+    }
+
+    #[test]
+    fn renames_duplicate_drive_child_paths() {
+        let mut seen = std::collections::HashMap::new();
+
+        assert_eq!(
+            GDriveProvider::unique_child_path("THUMBS/1.jpeg", &mut seen),
+            "THUMBS/1.jpeg"
+        );
+        assert_eq!(
+            GDriveProvider::unique_child_path("THUMBS/1.jpeg", &mut seen),
+            "THUMBS/1 (2).jpeg"
+        );
+        assert_eq!(
+            GDriveProvider::unique_child_path("README", &mut seen),
+            "README"
+        );
+        assert_eq!(
+            GDriveProvider::unique_child_path("README", &mut seen),
+            "README (2)"
         );
     }
 
