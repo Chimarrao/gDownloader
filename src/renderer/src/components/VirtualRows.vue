@@ -6,7 +6,11 @@
     @scroll="onScroll"
   >
     <div :style="{ height: `${topSpacer}px` }"></div>
-    <div v-for="(item, index) in visibleItems" :key="getKey(item, startIndex + index)">
+    <div
+      v-for="(item, index) in visibleItems"
+      :key="getKey(item, startIndex + index)"
+      class="virtual-row-shell"
+    >
       <slot :item="item" :index="startIndex + index"></slot>
     </div>
     <div :style="{ height: `${bottomSpacer}px` }"></div>

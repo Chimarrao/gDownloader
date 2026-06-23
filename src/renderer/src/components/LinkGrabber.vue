@@ -165,6 +165,9 @@ const expectedHashesByFilename = ref<Record<string, ExpectedHash>>({})
 const currentSettings = ref<AppSettingsSnapshot | null>(null)
 const globalDestDir = ref('')
 let detectTimer: number | null = null
+const childNodeCache = new WeakMap<SelectableChild[], DerivedChildNode<SelectableChild>[]>()
+const selectableChildrenCache = new WeakMap<SelectableChild[], SelectableChild[]>()
+const nodeSelectableChildrenCache = new WeakMap<DerivedChildNode<SelectableChild>, SelectableChild[]>()
 
 // ── Mirrors ───────────────────────────────────────────────────────────────
 const mirrorsSearching = ref(false)
@@ -1087,20 +1090,39 @@ function supportsChildSelection(row: CapturedRow): boolean {
 }
 
 function childNodes(row: CapturedRow): DerivedChildNode<SelectableChild>[] {
-  if (!row.info?.children?.length) {
+  const children = row.info?.children
+  if (!children?.length) {
     return []
   }
-  return flattenChildTree(buildChildTree(row.info.children))
+  const cached = childNodeCache.get(children)
+  if (cached) {
+    return cached
+  }
+  const nodes = flattenChildTree(buildChildTree(children))
+  childNodeCache.set(children, nodes)
+  return nodes
 }
 
 function selectableChildren(row: CapturedRow): SelectableChild[] {
-  if (!row.info?.children?.length) {
+  const children = row.info?.children
+  if (!children?.length) {
     return []
   }
-  return row.info.children.filter((child) => !!child.sourceUrl && !child.isFolder)
+  const cached = selectableChildrenCache.get(children)
+  if (cached) {
+    return cached
+  }
+  const selectable = children.filter((child) => !!child.sourceUrl && !child.isFolder)
+  selectableChildrenCache.set(children, selectable)
+  return selectable
 }
 
 function selectableChildrenFromNode(node: DerivedChildNode<SelectableChild>): SelectableChild[] {
+  const cached = nodeSelectableChildrenCache.get(node)
+  if (cached) {
+    return cached
+  }
+
   const children: SelectableChild[] = []
 
   const visit = (current: DerivedChildNode<SelectableChild>): void => {
@@ -1117,6 +1139,7 @@ function selectableChildrenFromNode(node: DerivedChildNode<SelectableChild>): Se
   }
 
   visit(node)
+  nodeSelectableChildrenCache.set(node, children)
   return children
 }
 

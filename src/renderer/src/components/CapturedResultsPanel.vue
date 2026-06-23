@@ -106,10 +106,16 @@
       </div>
     </div>
 
-    <div class="captured-list">
+    <VirtualRows
+      class="captured-list"
+      :items="filteredRows"
+      key-field="url"
+      :item-height="112"
+      :overscan="8"
+      max-height="100%"
+    >
+      <template #default="{ item: row }">
       <div
-        v-for="row in filteredRows"
-        :key="row.url"
         class="captured-row"
         :class="{ unavailable: !row.module || row.error }"
       >
@@ -394,7 +400,8 @@
           </div>
         </div>
       </div>
-    </div>
+      </template>
+    </VirtualRows>
   </div>
 </template>
 
@@ -860,6 +867,10 @@ function suffixFps(source: string, label: string): string {
 }
 
 .captured-row + .captured-row {
+  border-top: 1px solid rgba(126, 139, 164, 0.14);
+}
+
+.captured-list :deep(.virtual-row-shell + .virtual-row-shell .captured-row) {
   border-top: 1px solid rgba(126, 139, 164, 0.14);
 }
 

@@ -376,49 +376,58 @@
                 <span>Árvore de arquivos</span>
                 <span>{{ item.children?.length ?? 0 }} item(ns)</span>
               </div>
-              <div
-                v-for="node in childNodes(item.children)"
-                :key="`${item.id}:${node.key}`"
-                class="child-row"
-                :class="{ 'is-folder-row': node.isFolder }"
+              <VirtualRows
+                class="download-child-virtual-list"
+                :items="childNodes(item.children)"
+                key-field="key"
+                :item-height="58"
+                :overscan="8"
+                max-height="360px"
               >
-                <div class="child-main">
-                  <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
-                    <span
-                      class="child-icon"
-                      :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
-                      :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
-                      role="img"
-                    ></span>
-                    <span class="child-name-label">{{ node.name }}</span>
-                    <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
+                <template #default="{ item: node }">
+                  <div
+                    class="child-row"
+                    :class="{ 'is-folder-row': node.isFolder }"
+                  >
+                    <div class="child-main">
+                      <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
+                        <span
+                          class="child-icon"
+                          :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
+                          :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
+                          role="img"
+                        ></span>
+                        <span class="child-name-label">{{ node.name }}</span>
+                        <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
+                      </div>
+                      <div class="child-meta">
+                        <span class="child-status">{{ childStatusText(node.status) }}</span>
+                        <span class="meta-sep">·</span>
+                        <span>{{ childPercent(node) }}%</span>
+                        <template v-if="(node.speedBps ?? 0) > 0">
+                          <span class="meta-sep">·</span>
+                          <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
+                        </template>
+                        <template v-if="(node.etaSec ?? 0) > 0">
+                          <span class="meta-sep">·</span>
+                          <span>{{ formatEta(node.etaSec ?? 0) }}</span>
+                        </template>
+                        <template v-if="node.isFolder">
+                          <span class="meta-sep">·</span>
+                          <span>{{ node.fileCount }} arquivo(s)</span>
+                        </template>
+                      </div>
+                      <div class="child-track">
+                        <div
+                          class="child-fill"
+                          :style="{ width: `${childPercent(node)}%` }"
+                        ></div>
+                      </div>
+                    </div>
+                    <span class="child-size">{{ formatBytes(node.size) }}</span>
                   </div>
-                  <div class="child-meta">
-                    <span class="child-status">{{ childStatusText(node.status) }}</span>
-                    <span class="meta-sep">·</span>
-                    <span>{{ childPercent(node) }}%</span>
-                    <template v-if="(node.speedBps ?? 0) > 0">
-                      <span class="meta-sep">·</span>
-                      <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
-                    </template>
-                    <template v-if="(node.etaSec ?? 0) > 0">
-                      <span class="meta-sep">·</span>
-                      <span>{{ formatEta(node.etaSec ?? 0) }}</span>
-                    </template>
-                    <template v-if="node.isFolder">
-                      <span class="meta-sep">·</span>
-                      <span>{{ node.fileCount }} arquivo(s)</span>
-                    </template>
-                  </div>
-                  <div class="child-track">
-                    <div
-                      class="child-fill"
-                      :style="{ width: `${childPercent(node)}%` }"
-                    ></div>
-                  </div>
-                </div>
-                <span class="child-size">{{ formatBytes(node.size) }}</span>
-              </div>
+                </template>
+              </VirtualRows>
             </div>
 
             <div v-if="isDetailExpanded(item.id)" class="download-detail-panel" @click.stop>
@@ -440,45 +449,55 @@
                   <span>{{ item.children?.length ?? 0 }} item(ns)</span>
                 </div>
                 <div v-if="!(item.children?.length)" class="queue-empty">Nenhum arquivo interno foi informado pelo provedor.</div>
-                <div
-                  v-for="node in childNodes(item.children)"
-                  :key="`${item.id}:detail:${node.key}`"
-                  class="child-row"
-                  :class="{ 'is-folder-row': node.isFolder }"
+                <VirtualRows
+                  v-if="item.children?.length"
+                  class="download-child-virtual-list"
+                  :items="childNodes(item.children)"
+                  key-field="key"
+                  :item-height="58"
+                  :overscan="10"
+                  max-height="520px"
                 >
-                  <div class="child-main">
-                    <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
-                      <span
-                        class="child-icon"
-                        :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
-                        :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
-                        role="img"
-                      ></span>
-                      <span class="child-name-label">{{ node.name }}</span>
-                      <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
+                  <template #default="{ item: node }">
+                    <div
+                      class="child-row"
+                      :class="{ 'is-folder-row': node.isFolder }"
+                    >
+                      <div class="child-main">
+                        <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
+                          <span
+                            class="child-icon"
+                            :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
+                            :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
+                            role="img"
+                          ></span>
+                          <span class="child-name-label">{{ node.name }}</span>
+                          <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
+                        </div>
+                        <div class="child-meta">
+                          <span class="child-status">{{ childStatusText(node.status) }}</span>
+                          <span class="meta-sep">·</span>
+                          <span>{{ childPercent(node) }}%</span>
+                          <template v-if="(node.speedBps ?? 0) > 0">
+                            <span class="meta-sep">·</span>
+                            <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
+                          </template>
+                          <template v-if="(node.etaSec ?? 0) > 0">
+                            <span class="meta-sep">·</span>
+                            <span>{{ formatEta(node.etaSec ?? 0) }}</span>
+                          </template>
+                        </div>
+                        <div class="child-track">
+                          <div
+                            class="child-fill"
+                            :style="{ width: `${childPercent(node)}%` }"
+                          ></div>
+                        </div>
+                      </div>
+                      <span class="child-size">{{ formatBytes(node.size) }}</span>
                     </div>
-                    <div class="child-meta">
-                      <span class="child-status">{{ childStatusText(node.status) }}</span>
-                      <span class="meta-sep">·</span>
-                      <span>{{ childPercent(node) }}%</span>
-                      <template v-if="(node.speedBps ?? 0) > 0">
-                        <span class="meta-sep">·</span>
-                        <span class="meta-speed">{{ formatSpeed(node.speedBps ?? 0) }}</span>
-                      </template>
-                      <template v-if="(node.etaSec ?? 0) > 0">
-                        <span class="meta-sep">·</span>
-                        <span>{{ formatEta(node.etaSec ?? 0) }}</span>
-                      </template>
-                    </div>
-                    <div class="child-track">
-                      <div
-                        class="child-fill"
-                        :style="{ width: `${childPercent(node)}%` }"
-                      ></div>
-                    </div>
-                  </div>
-                  <span class="child-size">{{ formatBytes(node.size) }}</span>
-                </div>
+                  </template>
+                </VirtualRows>
               </div>
 
               <div v-else-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
@@ -707,6 +726,7 @@ import {
 import { formatBytes, formatEta, formatSpeed } from '../utils/format'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 import ErrorState from './ErrorState.vue'
+import VirtualRows from './VirtualRows.vue'
 
 interface ModuleSummary {
   id: string
@@ -791,6 +811,7 @@ const torCircuitRetryIds = new Set<string>()
 const sortOptions = DOWNLOAD_SORT_OPTIONS
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
+const downloadChildNodeCache = new WeakMap<DownloadChild[], DerivedChildNode[]>()
 
 // ── Computed ───────────────────────────────────────────────
 const packageFilteredItems = computed(() => {
@@ -1143,18 +1164,20 @@ function rateLimitCountdown(item: DownloadItem): string {
   return formatEta(Math.ceil((item.retryAt - nowTick.value) / 1000))
 }
 
-const virtualizationEnabled = computed(() =>
-  orderedItems.value.length > 40 && !Object.values(expandedFolders.value).some(Boolean)
+const hasExpandedDownloadRows = computed(() =>
+  Object.values(expandedFolders.value).some(Boolean) || Object.values(expandedDetails.value).some(Boolean)
 )
-const estimatedRowHeight = 148
+const virtualizationEnabled = computed(() => orderedItems.value.length > 40)
+const estimatedRowHeight = computed(() => hasExpandedDownloadRows.value ? 260 : 148)
 const overscan = 6
 const visibleRange = computed(() => {
   if (!virtualizationEnabled.value) {
     return { start: 0, end: orderedItems.value.length }
   }
   const viewportHeight = itemsContainerRef.value?.clientHeight ?? 900
-  const start = Math.max(0, Math.floor(listScrollTop.value / estimatedRowHeight) - overscan)
-  const visibleCount = Math.ceil(viewportHeight / estimatedRowHeight) + overscan * 2
+  const rowHeight = estimatedRowHeight.value
+  const start = Math.max(0, Math.floor(listScrollTop.value / rowHeight) - overscan)
+  const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
   return {
     start,
     end: Math.min(orderedItems.value.length, start + visibleCount),
@@ -1166,11 +1189,11 @@ const visibleItems = computed(() =>
     : orderedItems.value
 )
 const topSpacerHeight = computed(() =>
-  virtualizationEnabled.value ? visibleRange.value.start * estimatedRowHeight : 0
+  virtualizationEnabled.value ? visibleRange.value.start * estimatedRowHeight.value : 0
 )
 const bottomSpacerHeight = computed(() =>
   virtualizationEnabled.value
-    ? Math.max(0, (orderedItems.value.length - visibleRange.value.end) * estimatedRowHeight)
+    ? Math.max(0, (orderedItems.value.length - visibleRange.value.end) * estimatedRowHeight.value)
     : 0
 )
 
@@ -1305,8 +1328,7 @@ onMounted(async () => {
           ? Math.floor((total - aggregatedChildBytes) / aggregatedChildSpeed)
           : 0
 
-        items.value[idx] = {
-          ...items.value[idx],
+        patchItemAt(idx, {
           percent: aggregatedPercent,
           speedBps: aggregatedChildSpeed,
           etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0),
@@ -1315,7 +1337,7 @@ onMounted(async () => {
           size: displaySize > 0 ? displaySize : items.value[idx].size,
           // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.
           children: nextChildren
-        }
+        })
         recordSpeedSample(ev.id, aggregatedChildSpeed)
         // Somar speed de todos os itens ativos (throttled a 200ms para não sobrecarregar)
         const now = Date.now()
@@ -1353,15 +1375,14 @@ onMounted(async () => {
         ? Math.min(100, Math.floor((bytesDone / total) * 100))
         : items.value[idx].percent
 
-      items.value[idx] = {
-        ...items.value[idx],
+      patchItemAt(idx, {
         status: DownloadStatusEnum.Verifying,
         percent,
         size: total > 0 ? total : items.value[idx].size,
         speedBps: 0,
         etaSec: 0,
         lastProgressAt: Date.now(),
-      }
+      })
     })
   )
 
@@ -1376,14 +1397,13 @@ onMounted(async () => {
         const restStages = { ...stageLabels.value }
         delete restStages[ev.id]
         stageLabels.value = restStages
-        items.value[idx] = {
-          ...items.value[idx],
+        patchItemAt(idx, {
           status: DownloadStatusEnum.Complete,
           percent: 100,
           speedBps: 0,
           etaSec: 0,
           outputPath
-        }
+        })
         emit('download-complete', {
           id: ev.id,
           outputPath,
@@ -1423,13 +1443,12 @@ onMounted(async () => {
         const restStages = { ...stageLabels.value }
         delete restStages[ev.id]
         stageLabels.value = restStages
-        items.value[idx] = {
-          ...items.value[idx],
+        patchItemAt(idx, {
           status: DownloadStatusEnum.Error,
           speedBps: 0,
           etaSec: 0,
           error: ev.message ?? ev.error ?? 'Erro desconhecido'
-        }
+        })
       }
       scheduleHydrate(900)
     })
@@ -1649,7 +1668,7 @@ async function assignPackage(item: DownloadItem, packageId: string): Promise<voi
   }
   const idx = itemIndexById.value[item.id] ?? -1
   if (idx >= 0) {
-    items.value[idx] = { ...items.value[idx], packageId: packageId || undefined }
+    patchItemAt(idx, { packageId: packageId || undefined })
   }
 }
 
@@ -1664,7 +1683,16 @@ function upsertById(id: string, patch: Partial<DownloadItem>): void {
     void hydrate()
     return
   }
-  items.value[idx] = { ...items.value[idx], ...patch }
+  patchItemAt(idx, patch)
+}
+
+function patchItemAt(idx: number, patch: Partial<DownloadItem>): DownloadItem | null {
+  const item = items.value[idx]
+  if (!item) {
+    return null
+  }
+  Object.assign(item, patch)
+  return item
 }
 
 function rebuildItemIndex(): void {
@@ -1738,7 +1766,7 @@ async function togglePin(id: string): Promise<void> {
   const idx = itemIndexById.value[id] ?? -1
   if (idx >= 0) {
     // Optimistic update
-    items.value[idx] = { ...items.value[idx], pinned: !items.value[idx].pinned }
+    patchItemAt(idx, { pinned: !items.value[idx].pinned })
   }
   await window.api.downloads.togglePin(id).catch(() => null)
 }
@@ -1838,7 +1866,7 @@ async function setContextPriority(priority: number): Promise<void> {
   for (const item of targets) {
     await window.api.downloads.setPriority(item.id, priority).catch(() => null)
     const idx = itemIndexById.value[item.id] ?? -1
-    if (idx >= 0) items.value[idx] = { ...items.value[idx], priority }
+    if (idx >= 0) patchItemAt(idx, { priority })
   }
   await hydrate()
 }
@@ -2095,7 +2123,13 @@ function childNodes(children?: DownloadChild[]): DerivedChildNode[] {
   if (!children?.length) {
     return []
   }
-  return flattenChildTree(buildChildTree(children))
+  const cached = downloadChildNodeCache.get(children)
+  if (cached) {
+    return cached
+  }
+  const nodes = flattenChildTree(buildChildTree(children))
+  downloadChildNodeCache.set(children, nodes)
+  return nodes
 }
 
 function isExtractableArchive(filePath: string): boolean {
@@ -3337,6 +3371,18 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 12px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.download-child-virtual-list {
+  width: 100%;
+}
+
+.download-child-virtual-list :deep(.virtual-row-shell) {
+  padding-block: 3px;
+}
+
+.download-child-virtual-list :deep(.virtual-row-shell + .virtual-row-shell) {
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .child-main {
