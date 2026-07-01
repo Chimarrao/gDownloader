@@ -206,6 +206,8 @@ export interface PersistedSettings {
   youtubeSubLangs?: string
   youtubeEmbedSubs?: boolean
   youtubeSplitChapters?: boolean
+  ytdlpAutoUpdate?: boolean
+  ytdlpBinPath?: string
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

@@ -41,6 +41,8 @@ export const defaultPublicSettings: PersistedSettings = {
   youtubeSubLangs: 'pt,en',
   youtubeEmbedSubs: false,
   youtubeSplitChapters: false,
+  ytdlpAutoUpdate: true,
+  ytdlpBinPath: '',
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
