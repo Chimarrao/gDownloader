@@ -206,6 +206,55 @@
           <span>{{ settings.youtubeSplitChapters ? 'Ativado' : 'Desativado' }}</span>
         </label>
       </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">yt-dlp</span>
+          <span class="setting-desc" v-if="ytdlpStatus.state === 'ready'">
+            v{{ ytdlpStatus.version }}<span v-if="ytdlpStatus.updateAvailable"> · atualização disponível</span>
+          </span>
+          <span class="setting-desc" v-else-if="ytdlpStatus.state === 'downloading'">
+            <span v-if="ytdlpProgress">Baixando... {{ Math.round((ytdlpProgress.bytesDownloaded / Math.max(ytdlpProgress.totalBytes, 1)) * 100) }}%</span>
+            <span v-else>Baixando yt-dlp...</span>
+          </span>
+          <span class="setting-desc" v-else-if="ytdlpStatus.state === 'error'" style="color: var(--color-error, #e74c3c)">
+            Erro: {{ ytdlpStatus.error ?? 'falha ao obter yt-dlp' }}
+          </span>
+        </div>
+        <button
+          class="btn-secondary"
+          :disabled="ytdlpCheckingUpdate || ytdlpStatus.state === 'downloading'"
+          @click="checkYtdlpUpdate"
+        >
+          {{ ytdlpCheckingUpdate ? 'Verificando...' : 'Verificar agora' }}
+        </button>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Atualizar automaticamente</span>
+          <span class="setting-desc">Verifica e baixa novas versões do yt-dlp ao abrir o app</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.ytdlpAutoUpdate" @change="save" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Caminho do yt-dlp (avançado)</span>
+          <span class="setting-desc">Deixe em branco para usar o binário gerenciado pelo app</span>
+        </div>
+        <input
+          v-model="settings.ytdlpBinPath"
+          class="setting-input setting-input-wide"
+          placeholder="(gerenciado automaticamente)"
+          @change="save"
+        />
+      </div>
     </div>
 
     <!-- Appearance section -->
@@ -611,6 +660,8 @@ const settings = reactive<AppSettingsSnapshot>({
   youtubeSubLangs: 'pt,en',
   youtubeEmbedSubs: false,
   youtubeSplitChapters: false,
+  ytdlpAutoUpdate: true,
+  ytdlpBinPath: '',
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -618,6 +669,36 @@ const settings = reactive<AppSettingsSnapshot>({
     port: 9786,
   },
 })
+interface YtdlpStatus {
+  version: string | null
+  updateAvailable: boolean
+  state: 'ready' | 'downloading' | 'error'
+  error?: string
+}
+
+const ytdlpStatus = ref<YtdlpStatus>({ version: null, updateAvailable: false, state: 'downloading' })
+const ytdlpProgress = ref<{ bytesDownloaded: number; totalBytes: number } | null>(null)
+const ytdlpCheckingUpdate = ref(false)
+let ytdlpProgressCleanup: (() => void) | null = null
+
+async function loadYtdlpStatus(): Promise<void> {
+  try {
+    ytdlpStatus.value = await window.api.ytdlp.status()
+  } catch {
+    // ignora
+  }
+}
+
+async function checkYtdlpUpdate(): Promise<void> {
+  ytdlpCheckingUpdate.value = true
+  try {
+    ytdlpStatus.value = await window.api.ytdlp.checkUpdate()
+  } finally {
+    ytdlpCheckingUpdate.value = false
+    ytdlpProgress.value = null
+  }
+}
+
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
@@ -659,6 +740,11 @@ onMounted(async () => {
     'gdownloader-settings-updated',
     onExternalSettingsUpdated as Parameters<typeof window.addEventListener>[1]
   )
+  await loadYtdlpStatus()
+  ytdlpProgressCleanup = window.api.ytdlp.onProgress((e) => {
+    ytdlpProgress.value = e
+    ytdlpStatus.value = { ...ytdlpStatus.value, state: 'downloading' }
+  })
 })
 
 onUnmounted(() => {
@@ -666,6 +752,7 @@ onUnmounted(() => {
     'gdownloader-settings-updated',
     onExternalSettingsUpdated as Parameters<typeof window.removeEventListener>[1]
   )
+  ytdlpProgressCleanup?.()
 })
 
 function onExternalSettingsUpdated(event: CustomEvent<AppSettingsSnapshot>): void {
