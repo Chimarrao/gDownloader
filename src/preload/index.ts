@@ -930,6 +930,31 @@ const api = {
     }
   },
 
+  ytdlp: {
+    status: (): Promise<{
+      version: string | null
+      updateAvailable: boolean
+      state: 'ready' | 'downloading' | 'error'
+      error?: string
+    }> => ipcRenderer.invoke('ytdlp:status'),
+
+    checkUpdate: (): Promise<{
+      version: string | null
+      updateAvailable: boolean
+      state: 'ready' | 'downloading' | 'error'
+      error?: string
+    }> => ipcRenderer.invoke('ytdlp:checkUpdate'),
+
+    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { bytesDownloaded: number; totalBytes: number },
+      ): void => cb(payload)
+      ipcRenderer.on('ytdlp:progress', handler)
+      return () => ipcRenderer.removeListener('ytdlp:progress', handler)
+    },
+  },
+
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
 
