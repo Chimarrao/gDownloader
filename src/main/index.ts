@@ -31,6 +31,7 @@ import { logMain } from './debug-log'
 import { createKatfileService } from './katfile-service'
 import { createRemoteAccessServer, generateRemoteAccessCredentials } from './remote-access-server'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
+import { createYtdlpService } from './ytdlp-service'
 
 const legacySettingsPaths = [
   join(process.cwd(), 'settings.json'),
@@ -387,6 +388,7 @@ async function solveCaptchaWithNopecha(params: {
 }
 
 let rustPort: number | null = null
+let ytdlpService: ReturnType<typeof createYtdlpService> | null = null
 let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
 let lastClipboardText = ''
 let lastClipboardSignature = ''
@@ -395,13 +397,18 @@ let managedTorBootstrap = 0
 let lastTorExit: { ip: string; country?: string; countryCode?: string; isTor: boolean } | null = null
 const backendRuntime = createBackendRuntime({
   dbPath: getDatabasePath(),
-  createEnv: (dbPath) => ({
-    ...process.env,
-    TERABOX_PROXY_PORT: String(teraboxProxyPort),
-    AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
-    KATFILE_PROXY_PORT: String(teraboxProxyPort),
-    GDOWNLOADER_DB_PATH: dbPath,
-  }),
+  createEnv: (dbPath) => {
+    const settings = storage.getPublicSettings()
+    const ytdlpBin = ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? '') ?? 'yt-dlp'
+    return {
+      ...process.env,
+      TERABOX_PROXY_PORT: String(teraboxProxyPort),
+      AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
+      KATFILE_PROXY_PORT: String(teraboxProxyPort),
+      GDOWNLOADER_DB_PATH: dbPath,
+      GDOWNLOADER_YTDLP_BIN: ytdlpBin,
+    }
+  },
   onStdErr: (message) => {
     logMain('rust', 'stderr', message)
   },
@@ -1289,6 +1296,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  ytdlpService = createYtdlpService(app.getPath('userData'))
   app.setName('gDownloader')
   electronApp.setAppUserModelId('com.gdownloader')
 
@@ -1653,6 +1661,22 @@ app.whenReady().then(async () => {
     },
   )
 
+  // IPC: ytdlp status and update
+  ipcMain.handle('ytdlp:status', () => ytdlpService?.getStatus() ?? { version: null, updateAvailable: false, state: 'downloading' as const })
+
+  ipcMain.handle('ytdlp:checkUpdate', async () => {
+    if (ytdlpService) {
+      const settings = storage.getPublicSettings()
+      await ytdlpService
+        .ensureReady(settings.ytdlpBinPath ?? '', true)
+        .catch((err) => {
+          logMain('ytdlp', 'Falha na verificação manual de atualização', err)
+        })
+      return ytdlpService.getStatus()
+    }
+    return { version: null, updateAvailable: false, state: 'error' as const, error: 'Serviço não inicializado' }
+  })
+
   // IPC: tray stats update
   ipcMain.on(
     'tray:update-stats',
@@ -1718,6 +1742,20 @@ app.whenReady().then(async () => {
   // Inicia o backend Rust antes de abrir a janela
   try {
     rustPort = await backendRuntime.start()
+    // Inicia download/atualização do yt-dlp em background (não bloqueia)
+    if (ytdlpService) {
+      const settingsForYtdlp = storage.getPublicSettings()
+      ytdlpService.onProgress((e) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('ytdlp:progress', e)
+        }
+      })
+      void ytdlpService
+        .ensureReady(settingsForYtdlp.ytdlpBinPath ?? '', settingsForYtdlp.ytdlpAutoUpdate ?? true)
+        .catch((err) => {
+          logMain('ytdlp', 'Falha ao garantir yt-dlp pronto', err)
+        })
+    }
     await loadPublicSettings()
     await loadSecureSettings()
     await migrateLegacySettings()
