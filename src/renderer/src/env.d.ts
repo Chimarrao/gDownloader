@@ -335,6 +335,21 @@ interface RendererApi {
       body?: string
     }) => Promise<unknown>
   }
+  ytdlp: {
+    status: () => Promise<{
+      version: string | null
+      updateAvailable: boolean
+      state: 'ready' | 'downloading' | 'error'
+      error?: string
+    }>
+    checkUpdate: () => Promise<{
+      version: string | null
+      updateAvailable: boolean
+      state: 'ready' | 'downloading' | 'error'
+      error?: string
+    }>
+    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void) => () => void
+  }
   getBackendPort: () => Promise<number>
   tray: {
     updateStats: (data: { activeCount: number; speed: string }) => void
