@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { chmodSync, createWriteStream, existsSync, mkdirSync, renameSync } from 'fs'
+import { chmodSync, createWriteStream, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs'
 import * as https from 'https'
 import { join } from 'path'
 
@@ -91,6 +91,7 @@ function httpsDownload(
           file.on('finish', () => file.close(() => resolve()))
           file.on('error', (err) => {
             file.close()
+            try { unlinkSync(destPath) } catch { /* best effort */ }
             reject(err)
           })
           res.on('error', reject)
@@ -118,6 +119,7 @@ export function createYtdlpService(userDataPath: string) {
   let status: YtdlpStatus = { version: null, updateAvailable: false, state: 'downloading' }
   let cachedLatest: { version: string; fetchedAt: number } | null = null
   let onProgressCallback: ((e: YtdlpProgressEvent) => void) | null = null
+  let activeEnsurePromise: Promise<void> | null = null
 
   function getStatus(): YtdlpStatus {
     return { ...status }
@@ -157,7 +159,7 @@ export function createYtdlpService(userDataPath: string) {
     renameSync(tmpPath, managedBinPath(userDataPath))
   }
 
-  async function ensureReady(customBinPath: string, autoUpdate: boolean): Promise<void> {
+  async function _doEnsureReady(customBinPath: string, autoUpdate: boolean): Promise<void> {
     const managed = managedBinPath(userDataPath)
     const effective = resolvedBinPath(customBinPath, managed)
     const usingManaged = effective === managed
@@ -216,6 +218,14 @@ export function createYtdlpService(userDataPath: string) {
     } catch {
       // mantém versão atual silenciosamente
     }
+  }
+
+  async function ensureReady(customBinPath: string, autoUpdate: boolean): Promise<void> {
+    if (activeEnsurePromise) return activeEnsurePromise
+    activeEnsurePromise = _doEnsureReady(customBinPath, autoUpdate).finally(() => {
+      activeEnsurePromise = null
+    })
+    return activeEnsurePromise
   }
 
   function effectiveBinPath(customBinPath: string): string {

@@ -1668,7 +1668,7 @@ app.whenReady().then(async () => {
     if (ytdlpService) {
       const settings = storage.getPublicSettings()
       await ytdlpService
-        .ensureReady(settings.ytdlpBinPath ?? '', true)
+        .ensureReady(settings.ytdlpBinPath ?? '', settings.ytdlpAutoUpdate ?? true)
         .catch((err) => {
           logMain('ytdlp', 'Falha na verificação manual de atualização', err)
         })
