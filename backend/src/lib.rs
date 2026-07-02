@@ -140,6 +140,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/config/legacy-migrations", get(routes::config::get_legacy_config_migrations))
         .route("/config/legacy-migrations", post(routes::config::record_legacy_config_migration))
         .route("/config/downloads", post(routes::config::update_download_config))
+        .route("/config/tor-runtime", post(routes::config::update_tor_runtime))
         .route("/config/secure", get(routes::config::get_secure_settings))
         .route("/config/secure", post(routes::config::update_secure_settings))
         .route("/history",       get(routes::history::list_history))

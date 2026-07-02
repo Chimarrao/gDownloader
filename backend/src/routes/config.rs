@@ -23,6 +23,22 @@ pub async fn update_download_config(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TorRuntimeRequest {
+    /// Porta SOCKS do Tor; `None`/ausente desliga o roteamento isolado.
+    pub socks_port: Option<u16>,
+}
+
+/// Informa ao backend a porta SOCKS do daemon Tor gerenciado pelo main, para
+/// habilitar roteamento isolado por-download sem alterar o `proxy_mode` global.
+pub async fn update_tor_runtime(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(req): Json<TorRuntimeRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    *state.isolated_tor_port.lock().await = req.socks_port.filter(|port| *port > 0);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(serde::Serialize)]
 pub struct TestProxyResponse {
     pub ip: String,
