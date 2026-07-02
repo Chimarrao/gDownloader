@@ -3743,7 +3743,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .meta-size {
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-weight: 500;
   font-family: 'Courier New', monospace;
   font-size: 10.5px;
 }
