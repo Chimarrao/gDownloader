@@ -1034,6 +1034,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
     let mut attempt = 0u32;
     let mut stall_retries = 0u32;
+    let mut tor_limit_retries: u32 = 0;
     loop {
         {
             let mut map = state.downloads.lock().await;
@@ -1502,6 +1503,18 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     let isolated_tor_retry = is_rate_limit
                         && should_assign_isolated_route(download_auto_tor, isolated_tor_port);
                     if isolated_tor_retry {
+                        tor_limit_retries = tor_limit_retries.saturating_add(1);
+                        if tor_limit_retry_exhausted(tor_limit_retries) {
+                            state.active_tasks.lock().await.remove(&id);
+                            update_error(
+                                &state,
+                                &id,
+                                "Limite de tentativas via Tor atingido — o arquivo pode estar indisponível",
+                            )
+                            .await;
+                            reschedule_pending_downloads(state.clone());
+                            return;
+                        }
                         let _ = rotate_download_tor_route(&state, &id, &settings).await;
                     }
                     let retry_delay_secs = if isolated_tor_retry { 3 } else { retry_policy.retry_delay_secs };
@@ -1705,6 +1718,14 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 /// só depende da flag por-download e de o daemon Tor estar rodando (porta runtime).
 fn should_assign_isolated_route(auto_tor_on_limit: bool, isolated_tor_port: Option<u16>) -> bool {
     auto_tor_on_limit && isolated_tor_port.is_some()
+}
+
+/// Teto de tentativas no modo Tor isolado antes de desistir e marcar erro.
+const TOR_LIMIT_MAX_RETRIES: u32 = 50;
+
+/// Puro e testável: indica se o modo Tor esgotou o teto de tentativas.
+fn tor_limit_retry_exhausted(tor_limit_retries: u32) -> bool {
+    tor_limit_retries >= TOR_LIMIT_MAX_RETRIES
 }
 
 async fn ensure_download_network_route(
@@ -2683,6 +2704,14 @@ mod tests {
         assert!(!should_assign_isolated_route(false, Some(9150)));
         // flag off + tor off => no
         assert!(!should_assign_isolated_route(false, None));
+    }
+
+    #[test]
+    fn tor_limit_retry_cap_is_reached_after_max() {
+        assert!(!tor_limit_retry_exhausted(0));
+        assert!(!tor_limit_retry_exhausted(TOR_LIMIT_MAX_RETRIES - 1));
+        assert!(tor_limit_retry_exhausted(TOR_LIMIT_MAX_RETRIES));
+        assert!(tor_limit_retry_exhausted(TOR_LIMIT_MAX_RETRIES + 1));
     }
 
     #[test]
