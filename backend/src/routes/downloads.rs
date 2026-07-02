@@ -1498,10 +1498,9 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         let map = state.downloads.lock().await;
                         map.get(&id).map(|d| d.auto_tor_on_limit).unwrap_or(false)
                     };
+                    let isolated_tor_port = *state.isolated_tor_port.lock().await;
                     let isolated_tor_retry = is_rate_limit
-                        && settings.proxy_mode == "tor"
-                        && settings.start_tor
-                        && (settings.use_reconnect_on_rate_limit || download_auto_tor);
+                        && should_assign_isolated_route(download_auto_tor, isolated_tor_port);
                     if isolated_tor_retry {
                         let _ = rotate_download_tor_route(&state, &id, &settings).await;
                     }
@@ -1713,9 +1712,9 @@ async fn ensure_download_network_route(
     id: &str,
     settings: &PublicSettings,
 ) -> Option<DownloadNetworkRoute> {
-    if settings.proxy_mode != "tor" || !settings.start_tor {
-        return None;
-    }
+    let isolated_port = *state.isolated_tor_port.lock().await;
+    // Modo global "tudo via Tor" continua funcionando como antes.
+    let global_tor = settings.proxy_mode == "tor" && settings.start_tor;
 
     let mut changed = false;
     let route = {
@@ -1723,13 +1722,19 @@ async fn ensure_download_network_route(
         let Some(download) = map.get_mut(id) else {
             return None;
         };
+        // Rota isolada por-download: flag ligada + daemon Tor rodando, mesmo que
+        // o proxy global esteja desligado.
+        let want_isolated = should_assign_isolated_route(download.auto_tor_on_limit, isolated_port);
+        if !global_tor && !want_isolated {
+            return None;
+        }
         let needs_new = download
             .network_route
             .as_ref()
             .map(|route| route.mode != "tor" || route.proxy_username.is_none() || route.proxy_password.is_none())
             .unwrap_or(true);
         if needs_new {
-            download.network_route = Some(new_tor_route(id, settings, 0));
+            download.network_route = Some(new_tor_route(id, settings, 0, isolated_port));
             changed = true;
         }
         download.network_route.clone()
@@ -1748,7 +1753,15 @@ async fn rotate_download_tor_route(
     id: &str,
     settings: &PublicSettings,
 ) -> Option<DownloadNetworkRoute> {
-    if settings.proxy_mode != "tor" || !settings.start_tor {
+    let isolated_port = *state.isolated_tor_port.lock().await;
+    let global_tor = settings.proxy_mode == "tor" && settings.start_tor;
+    let want_isolated = {
+        let map = state.downloads.lock().await;
+        map.get(id)
+            .map(|d| should_assign_isolated_route(d.auto_tor_on_limit, isolated_port))
+            .unwrap_or(false)
+    };
+    if !global_tor && !want_isolated {
         return None;
     }
 
@@ -1762,7 +1775,7 @@ async fn rotate_download_tor_route(
             .as_ref()
             .map(|route| route.circuit_changes.saturating_add(1))
             .unwrap_or(1);
-        download.network_route = Some(new_tor_route(id, settings, next_generation));
+        download.network_route = Some(new_tor_route(id, settings, next_generation, isolated_port));
         download.network_route.clone()
     };
 
@@ -1824,9 +1837,13 @@ async fn refresh_download_tor_exit(state: AppState, id: String, route: DownloadN
     record_download_event(&state, &id, "network", &format!("Saída Tor validada: {ip}"));
 }
 
-fn new_tor_route(id: &str, settings: &PublicSettings, circuit_changes: u32) -> DownloadNetworkRoute {
+fn new_tor_route(id: &str, settings: &PublicSettings, circuit_changes: u32, isolated_port: Option<u16>) -> DownloadNetworkRoute {
     let nonce = Uuid::new_v4().simple().to_string();
     let short_id = id.chars().take(8).collect::<String>();
+    let port = isolated_port
+        .filter(|value| *value > 0)
+        .or_else(|| if settings.proxy_port == 0 { None } else { Some(settings.proxy_port) })
+        .unwrap_or(9150);
     DownloadNetworkRoute {
         mode: "tor".to_string(),
         isolated: true,
@@ -1835,7 +1852,7 @@ fn new_tor_route(id: &str, settings: &PublicSettings, circuit_changes: u32) -> D
         } else {
             settings.proxy_host.clone()
         },
-        proxy_port: if settings.proxy_port == 0 { 9150 } else { settings.proxy_port },
+        proxy_port: port,
         proxy_username: Some(format!("gdl-{short_id}-{circuit_changes}")),
         proxy_password: Some(nonce),
         exit_ip: None,
