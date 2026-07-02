@@ -1208,7 +1208,7 @@ async function clearCache(ids?: string[]): Promise<void> {
 /* Setting row */
 .setting-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, auto);
+  grid-template-columns: minmax(160px, 1fr) minmax(0, auto);
   align-items: center;
   gap: 20px;
   padding: 12px 0;
@@ -1248,13 +1248,18 @@ async function clearCache(ids?: string[]): Promise<void> {
   padding: 7px 12px;
   outline: none;
   transition: border-color 0.15s;
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .output-folder-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.output-folder-actions .setting-input {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -1309,7 +1314,9 @@ async function clearCache(ids?: string[]): Promise<void> {
 }
 
 .setting-input-wide {
-  width: min(420px, 42vw);
+  width: 100%;
+  max-width: 300px;
+  min-width: 0;
   font-family: 'JetBrains Mono', 'Courier New', monospace;
 }
 
