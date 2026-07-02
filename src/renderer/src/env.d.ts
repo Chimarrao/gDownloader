@@ -310,6 +310,8 @@ interface RendererApi {
       isTor?: boolean
     }>
     bootstrapProgress: () => Promise<number>
+    ensureRunning: () => Promise<{ running: boolean; port: number | null }>
+    runtimeStatus: () => Promise<{ running: boolean; port: number | null }>
   }
   intercept: {
     status: () => Promise<{

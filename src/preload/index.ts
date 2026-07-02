@@ -570,6 +570,10 @@ const api = {
       isTor?: boolean
     }> => ipcRenderer.invoke('tor:newIdentity'),
     bootstrapProgress: (): Promise<number> => ipcRenderer.invoke('tor:bootstrapProgress'),
+    ensureRunning: (): Promise<{ running: boolean; port: number | null }> =>
+      ipcRenderer.invoke('tor:ensureRunning'),
+    runtimeStatus: (): Promise<{ running: boolean; port: number | null }> =>
+      ipcRenderer.invoke('tor:runtimeStatus'),
   },
   intercept: {
     status: (): Promise<{
