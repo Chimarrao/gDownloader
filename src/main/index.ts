@@ -817,8 +817,12 @@ async function tryStartTor(): Promise<void> {
       }
     }
     managedTorBootstrap = 0
+    // O Tor empacotado loga via "Log notice stdout" (torrc-defaults), então o
+    // progresso "Bootstrapped X%" sai pelo STDOUT — não pelo stderr. Antes só o
+    // stderr era escutado, então o bootstrap nunca era detectado e o app achava
+    // que o Tor falhava. Agora capturamos os dois.
     managedTorProcess = spawn(torBinary, torArgs(), {
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       cwd: dirname(torBinary),
       env: {
         ...process.env,
@@ -827,14 +831,16 @@ async function tryStartTor(): Promise<void> {
         ...(process.platform === 'win32' ? { PATH: `${dirname(torBinary)};${process.env.PATH ?? ''}` } : {}),
       },
     })
-    managedTorProcess.stderr?.on('data', (data: Buffer) => {
+    const handleTorLog = (channel: 'stdout' | 'stderr') => (data: Buffer) => {
       const message = data.toString()
       const match = message.match(/Bootstrapped\s+(\d+)%/i)
       if (match) {
         managedTorBootstrap = Math.max(managedTorBootstrap, Number(match[1]) || 0)
       }
-      logMain('tor', 'stderr', message)
-    })
+      logMain('tor', channel, message)
+    }
+    managedTorProcess.stdout?.on('data', handleTorLog('stdout'))
+    managedTorProcess.stderr?.on('data', handleTorLog('stderr'))
     managedTorProcess.once('exit', () => {
       managedTorProcess = null
       managedTorBootstrap = 0
@@ -1493,6 +1499,11 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('tor:status', async () => {
     return torStatusPayload()
+  })
+  ipcMain.handle('tor:bootstrapProgress', async () => {
+    // Progresso do bootstrap do Tor empacotado (0–100). Usado para a animação
+    // de conexão mostrar a porcentagem real em vez de um spinner sem fim.
+    return Math.max(0, Math.min(100, managedTorBootstrap))
   })
   ipcMain.handle('tor:connect', async () => {
     const pausedIds = await pauseActiveDownloadsForNetworkSwitch()

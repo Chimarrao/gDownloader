@@ -233,6 +233,7 @@ async fn enqueue_intercept(
         priority: Some(0),
         duplicate_action: Some(settings.duplicate_action),
         request_headers: Some(req.headers),
+        auto_tor_on_limit: None,
     };
     add_download_internal(state.clone(), add_req).await?;
     if let Ok(db) = state.db.lock() {

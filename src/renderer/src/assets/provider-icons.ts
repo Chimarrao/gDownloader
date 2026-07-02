@@ -12,6 +12,7 @@ import katfileSvg from './provider-icons/katfile.svg?raw'
 import pixeldrainSvg from './provider-icons/pixeldrain.svg?raw'
 import transferitSvg from './provider-icons/transferit.svg?raw'
 import youtubeSvg from './provider-icons/youtube.svg?raw'
+import fichierSvg from './provider-icons/1fichier.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -28,11 +29,8 @@ const ICONS: Record<string, ProviderIcon> = {
     svg: mediafireSvg,
   },
   fichier: {
-    color: '#e67e22',
-    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
-      <rect width="36" height="36" rx="8" fill="#e67e22"/>
-      <text x="18" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="white" font-family="Arial, sans-serif">1F</text>
-    </svg>`,
+    color: '#ef7c14',
+    svg: fichierSvg,
   },
   drime: {
     color: '#2ec4b6',

@@ -6,6 +6,7 @@ import {
   compareDownloads,
   effectiveSpeed,
   getDownloadActions,
+  isClearable,
   retryCountdown,
   statusText,
 } from '../download-display'
@@ -77,5 +78,20 @@ describe('download-display helpers', () => {
     expect(actions.canOpenCaptcha).toBe(true)
     expect(actions.canCancel).toBe(true)
     expect(actions.canPause).toBe(false)
+  })
+
+  it('limpar concluídos preserva downloads interrompidos na metade', () => {
+    // Bug: um download do 1fichier na metade (Error, 50%) era apagado ao limpar.
+    const halfErrored = makeItem({ status: DownloadStatus.Error, percent: 50 })
+    expect(isClearable(halfErrored)).toBe(false)
+
+    // Concluídos e falhas sem progresso continuam sendo limpáveis.
+    expect(isClearable(makeItem({ status: DownloadStatus.Complete, percent: 100 }))).toBe(true)
+    expect(isClearable(makeItem({ status: DownloadStatus.Error, percent: 0 }))).toBe(true)
+    expect(isClearable(makeItem({ status: DownloadStatus.Cancelled, percent: 0 }))).toBe(true)
+
+    // Ativos nunca são limpáveis.
+    expect(isClearable(makeItem({ status: DownloadStatus.Downloading, percent: 30 }))).toBe(false)
+    expect(isClearable(makeItem({ status: DownloadStatus.RateLimited, percent: 10 }))).toBe(false)
   })
 })

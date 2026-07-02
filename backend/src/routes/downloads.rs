@@ -522,6 +522,7 @@ pub async fn add_download_internal(
         thumbnail_url: file_info.thumbnail_url,
         channel_name: file_info.channel_name,
         channel_thumbnail_url: file_info.channel_thumbnail_url,
+        auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(false),
     };
 
     {
@@ -766,7 +767,8 @@ pub async fn clear_finished_downloads(
     {
         let mut map = state.downloads.lock().await;
         map.retain(|_, download| {
-            matches!(
+            // Mantém estados ativos/em espera.
+            let is_active = matches!(
                 download.status,
                 DownloadStatus::Pending
                     | DownloadStatus::Downloading
@@ -774,7 +776,14 @@ pub async fn clear_finished_downloads(
                     | DownloadStatus::Paused
                     | DownloadStatus::RateLimited
                     | DownloadStatus::WaitingCaptcha
-            )
+            );
+            // Mantém também downloads que falharam/foram interrompidos mas têm
+            // progresso parcial recuperável (ex.: 1fichier na metade). "Limpar
+            // concluídos" não deve apagar algo que o usuário ainda pode retomar.
+            let has_resumable_progress = !matches!(download.status, DownloadStatus::Complete)
+                && download.bytes_downloaded > 0
+                && (download.size == 0 || download.bytes_downloaded < download.size);
+            is_active || has_resumable_progress
         });
     }
     if let Ok(db) = state.db.lock() {
@@ -1482,10 +1491,17 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     let settings = state.db.lock().ok()
                         .and_then(|db| crate::db::load_public_settings(&db).ok())
                         .unwrap_or_default();
+                    // Flag por-download: "usar Tor ao atingir o limite". Quando
+                    // ligada, rotaciona o circuito Tor e retenta — sem exigir o
+                    // ajuste global de reconexão.
+                    let download_auto_tor = {
+                        let map = state.downloads.lock().await;
+                        map.get(&id).map(|d| d.auto_tor_on_limit).unwrap_or(false)
+                    };
                     let isolated_tor_retry = is_rate_limit
-                        && settings.use_reconnect_on_rate_limit
                         && settings.proxy_mode == "tor"
-                        && settings.start_tor;
+                        && settings.start_tor
+                        && (settings.use_reconnect_on_rate_limit || download_auto_tor);
                     if isolated_tor_retry {
                         let _ = rotate_download_tor_route(&state, &id, &settings).await;
                     }
@@ -2582,6 +2598,41 @@ pub async fn toggle_pin_download(
     } else {
         Err((StatusCode::NOT_FOUND, Json(ApiError::new("Download not found"))))
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct AutoTorRequest {
+    pub enabled: bool,
+}
+
+/// Liga/desliga o "usar Tor ao atingir o limite" para um download específico.
+/// A conexão do Tor em si é orquestrada pelo processo principal/UI; aqui só
+/// persistimos a intenção para que o ciclo de retry passe a rotacionar o
+/// circuito até concluir.
+pub async fn set_auto_tor(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AutoTorRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    {
+        let mut map = state.downloads.lock().await;
+        let Some(dl) = map.get_mut(&id) else {
+            return Err((StatusCode::NOT_FOUND, Json(ApiError::new("Download não encontrado"))));
+        };
+        dl.auto_tor_on_limit = req.enabled;
+    }
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(
+        &state,
+        &id,
+        "network",
+        if req.enabled {
+            "Tor ao atingir limite: ativado para este download"
+        } else {
+            "Tor ao atingir limite: desativado para este download"
+        },
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

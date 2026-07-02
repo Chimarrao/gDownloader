@@ -170,6 +170,7 @@ interface RendererApi {
     restart: (id: string) => Promise<void>
     force: (id: string) => Promise<void>
     setPriority: (id: string, priority: number) => Promise<void>
+    setAutoTor: (id: string, enabled: boolean) => Promise<void>
     setSpeedLimit: (id: string, speedLimitKib: number) => Promise<void>
     remove: (id: string) => Promise<void>
     removeWithFiles: (id: string) => Promise<void>
@@ -308,6 +309,7 @@ interface RendererApi {
       countryCode?: string
       isTor?: boolean
     }>
+    bootstrapProgress: () => Promise<number>
   }
   intercept: {
     status: () => Promise<{

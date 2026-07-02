@@ -390,6 +390,14 @@ const api = {
       })
     },
 
+    setAutoTor: async (id: string, enabled: boolean) => {
+      await fetchBackend(`/downloads/${id}/auto-tor`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+    },
+
     setSpeedLimit: async (id: string, speedLimitKib: number) => {
       await fetchBackend(`/downloads/${id}/speed-limit`, {
         method: 'POST',
@@ -561,6 +569,7 @@ const api = {
       countryCode?: string
       isTor?: boolean
     }> => ipcRenderer.invoke('tor:newIdentity'),
+    bootstrapProgress: (): Promise<number> => ipcRenderer.invoke('tor:bootstrapProgress'),
   },
   intercept: {
     status: (): Promise<{
@@ -1049,6 +1058,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     thumbnailUrl: typeof d.thumbnail_url === 'string' ? d.thumbnail_url : undefined,
     channelName: typeof d.channel_name === 'string' ? d.channel_name : undefined,
     channelThumbnailUrl: typeof d.channel_thumbnail_url === 'string' ? d.channel_thumbnail_url : undefined,
+    autoTorOnLimit: Boolean(d.auto_tor_on_limit),
   }
 }
 

@@ -94,6 +94,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "add_file_cache_media_columns",
         apply: migration_add_file_cache_media_columns,
     },
+    Migration {
+        version: 17,
+        name: "add_download_auto_tor_on_limit",
+        apply: migration_add_download_auto_tor_on_limit,
+    },
 ];
 
 pub fn init(db_path: &str) -> Result<Connection> {
@@ -287,6 +292,15 @@ fn migration_add_download_network_route(conn: &Connection) -> Result<()> {
         "downloads",
         "network_route_json",
         "ALTER TABLE downloads ADD COLUMN network_route_json TEXT",
+    )
+}
+
+fn migration_add_download_auto_tor_on_limit(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "auto_tor_on_limit",
+        "ALTER TABLE downloads ADD COLUMN auto_tor_on_limit INTEGER NOT NULL DEFAULT 0",
     )
 }
 
@@ -636,8 +650,8 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               parallel_parts, selected_children_json, expected_hash_json,
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
-              completed_at, last_progress_at, pinned, network_route_json, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)
+              completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -667,6 +681,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              last_progress_at       = excluded.last_progress_at,
              pinned                 = excluded.pinned,
              network_route_json     = excluded.network_route_json,
+             auto_tor_on_limit      = excluded.auto_tor_on_limit,
              updated_at             = excluded.updated_at",
         params![
             d.id,
@@ -699,6 +714,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.last_progress_at.map(|value| value as i64),
             if d.pinned { 1i64 } else { 0i64 },
             to_json(&d.network_route),
+            if d.auto_tor_on_limit { 1i64 } else { 0i64 },
             now_secs(),
         ],
     )?;
@@ -711,8 +727,14 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
 }
 
 pub fn delete_finished(conn: &Connection) -> Result<()> {
+    // Apaga concluídos e falhas SEM progresso recuperável. Downloads
+    // interrompidos com bytes parciais (que o usuário pode retomar) são mantidos
+    // — espelha o retain em clear_finished_downloads.
     conn.execute(
-        "DELETE FROM downloads WHERE status IN ('complete','cancelled','error','corrupted')",
+        "DELETE FROM downloads
+         WHERE status = 'complete'
+            OR (status IN ('cancelled','error','corrupted','disk_full')
+                AND (bytes_downloaded = 0 OR (size > 0 AND bytes_downloaded >= size)))",
         [],
     )?;
     Ok(())
@@ -823,7 +845,8 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 parallel_parts, selected_children_json, expected_hash_json, retry_at,
                 captcha_type, captcha_sitekey, captcha_page_url, captcha_token,
                 error, priority, created_at, started_at, completed_at, last_progress_at,
-                COALESCE(pinned, 0) as pinned, package_id, network_route_json
+                COALESCE(pinned, 0) as pinned, package_id, network_route_json,
+                COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -884,6 +907,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 thumbnail_url: None,
                 channel_name: None,
                 channel_thumbnail_url: None,
+                auto_tor_on_limit: row.get::<_, i64>(31)? != 0,
             })
         })?
         .filter_map(|row| row.ok())
@@ -1617,6 +1641,7 @@ mod tests {
             thumbnail_url: None,
             channel_name: None,
             channel_thumbnail_url: None,
+            auto_tor_on_limit: false,
         }
     }
 
@@ -1673,6 +1698,41 @@ mod tests {
         let loaded_after_clear = load_all_downloads(&conn).unwrap();
         assert_eq!(loaded_after_clear.len(), 2);
         assert!(loaded_after_clear.iter().all(|item| item.status != DownloadStatus::Complete));
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn clear_finished_preserves_partial_and_persists_auto_tor() {
+        let path = temp_db_path("clear-finished-partial");
+        let conn = init(path.to_string_lossy().as_ref()).unwrap();
+
+        // Erro NA METADE (bytes 120 de 1234) — deve sobreviver à limpeza.
+        let mut half_errored = sample_download(DownloadStatus::Error);
+        half_errored.id = "half".to_string();
+        half_errored.identity_key = "example::half".to_string();
+        half_errored.auto_tor_on_limit = true; // confirma persistência do novo campo
+        upsert(&conn, &half_errored).unwrap();
+
+        // Erro SEM nada baixado — deve ser limpo.
+        let mut empty_errored = sample_download(DownloadStatus::Error);
+        empty_errored.id = "empty".to_string();
+        empty_errored.identity_key = "example::empty".to_string();
+        empty_errored.bytes_downloaded = 0;
+        upsert(&conn, &empty_errored).unwrap();
+
+        // Concluído — deve ser limpo.
+        let mut complete = sample_download(DownloadStatus::Complete);
+        complete.id = "done".to_string();
+        complete.identity_key = "example::done".to_string();
+        upsert(&conn, &complete).unwrap();
+
+        delete_finished(&conn).unwrap();
+        let remaining = load_all_downloads(&conn).unwrap();
+        assert_eq!(remaining.len(), 1);
+        let survivor = &remaining[0];
+        assert_eq!(survivor.id, "half");
+        assert!(survivor.auto_tor_on_limit, "flag auto_tor_on_limit deve persistir");
 
         std::fs::remove_file(path).ok();
     }

@@ -170,6 +170,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/downloads/:id/remove-with-files", delete(routes::downloads::remove_download_with_files))
         .route("/downloads/:id", delete(routes::downloads::cancel_download))
         .route("/downloads/:id/pin", post(routes::downloads::toggle_pin_download))
+        .route("/downloads/:id/auto-tor", post(routes::downloads::set_auto_tor))
         .route("/captcha", get(routes::captcha::captcha_page))
         .route("/captcha/submit", post(routes::captcha::submit_captcha))
         .route("/mirrors/search", get(routes::mirrors::search_mirrors))

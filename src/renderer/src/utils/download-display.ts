@@ -62,6 +62,16 @@ export function isTerminal(status: DownloadItem['status']): boolean {
   )
 }
 
+// "Limpar concluídos" só deve remover itens realmente encerrados: concluídos ou
+// falhas SEM progresso parcial recuperável. Um download interrompido na metade
+// (ex.: 1fichier) tem percent entre 0 e 100 e deve ser preservado para retomada.
+export function isClearable(item: Pick<DownloadItem, 'status' | 'percent'>): boolean {
+  if (item.status === DownloadStatus.Complete) return true
+  if (!isTerminal(item.status)) return false
+  const hasPartialProgress = item.percent > 0 && item.percent < 100
+  return !hasPartialProgress
+}
+
 export function activePriority(item: DownloadItem): number {
   if (item.status === DownloadStatus.Downloading || item.status === DownloadStatus.Verifying) return 0
   if (

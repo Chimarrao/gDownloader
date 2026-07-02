@@ -35,7 +35,14 @@
         </div>
         <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
           <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
-            <span class="tor-icon" aria-hidden="true" v-html="torIconSvg"></span>
+            <span
+              class="tor-icon"
+              :class="{ 'tor-icon-busy': torState.state === 'connecting' || torState.state === 'disconnecting' }"
+              :style="{ '--tor-progress': `${torBootstrap}%` }"
+              aria-hidden="true"
+            >
+              <span class="tor-icon-glyph" v-html="torIconSvg"></span>
+            </span>
             <strong>Tor</strong>
             <em>{{ torStatusLabel }}</em>
           </button>
@@ -156,6 +163,7 @@
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
           @open-grabber="activeTab = 'grabber'"
+          @tor-changed="refreshTorStatus"
         />
       </section>
 
@@ -235,6 +243,7 @@ const torPanelOpen = ref(false)
 const torBusy = ref(false)
 const torError = ref('')
 const torPulseIndex = ref(0)
+const torBootstrap = ref(0)
 const clipboardMonitorEnabled = ref(false)
 const torState = ref<{
   state: TorStateName
@@ -259,7 +268,9 @@ let appMounted = true
 
 const torRouteNodes = computed(() => torState.value.route)
 const torStatusLabel = computed(() => {
-  if (torBusy.value && torState.value.state === 'connecting') return 'conectando'
+  if (torBusy.value && torState.value.state === 'connecting') {
+    return torBootstrap.value > 0 ? `conectando ${torBootstrap.value}%` : 'conectando'
+  }
   if (torBusy.value && torState.value.state === 'disconnecting') return 'desconectando'
   if (torState.value.state === 'connected') return 'conectado'
   return 'desconectado'
@@ -466,7 +477,17 @@ function toggleTorPanel(): void {
 async function connectTor(): Promise<void> {
   torBusy.value = true
   torError.value = ''
+  torBootstrap.value = 0
   torState.value = { ...torState.value, state: 'connecting' }
+  // Acompanha o bootstrap real do Tor para a animação mostrar a porcentagem.
+  const bootstrapPoll = setInterval(() => {
+    void window.api.tor
+      .bootstrapProgress()
+      .then((percent) => {
+        if (typeof percent === 'number') torBootstrap.value = Math.max(torBootstrap.value, percent)
+      })
+      .catch(() => null)
+  }, 600)
   try {
     const payload = await withTimeout(
       window.api.tor.connect(),
@@ -479,6 +500,8 @@ async function connectTor(): Promise<void> {
     torState.value = { ...torState.value, state: 'disconnected', route: [] }
     torError.value = error instanceof Error ? error.message : String(error)
   } finally {
+    clearInterval(bootstrapPoll)
+    torBootstrap.value = 0
     torBusy.value = false
   }
 }
@@ -733,10 +756,19 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 .tor-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: #7d4698;
+}
+
+.tor-icon-glyph {
   display: inline-flex;
   width: 19px;
   height: 19px;
-  color: #7d4698;
 }
 
 .tor-icon :deep(svg) {
@@ -745,9 +777,58 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   height: 19px;
 }
 
-.tor-widget.tor-connecting .tor-icon,
-.tor-widget.tor-disconnecting .tor-icon {
-  animation: tor-spin 0.95s linear infinite;
+/* Animação de conexão: a cebola NÃO gira mais (ficava esquisito tombando).
+   Agora ela "respira" suavemente enquanto um anel de progresso real (movido
+   pelo bootstrap do Tor) preenche ao redor dela. */
+.tor-icon-busy .tor-icon-glyph {
+  animation: tor-breathe 1.6s ease-in-out infinite;
+}
+
+/* Trilho do anel (faint). */
+.tor-icon-busy::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent-color, #f59e0b) 22%, transparent);
+}
+
+/* Preenchimento do anel até a porcentagem do bootstrap. */
+.tor-icon-busy::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent-color, #f59e0b) var(--tor-progress, 0%),
+    transparent 0
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  transition: background 0.4s ease;
+  animation: tor-ring-sheen 1.4s ease-in-out infinite;
+}
+
+@keyframes tor-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 1;
+  }
+}
+
+@keyframes tor-ring-sheen {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .tor-panel {
@@ -965,12 +1046,6 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   color: #dc2626;
   font-size: 12px;
   line-height: 1.35;
-}
-
-@keyframes tor-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 @keyframes tor-pulse {

@@ -19,6 +19,7 @@ export const defaultPublicSettings: PersistedSettings = {
   accentColor: undefined,
   duplicateAction: 'ask',
   uiDensity: 'comfortable',
+  reorderAnimations: true,
   interceptMode: 'off',
   interceptMinSizeMb: 1,
   interceptMimeAllowlist: [

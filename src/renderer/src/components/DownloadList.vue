@@ -108,6 +108,61 @@
           >
             Limpar concluídos
           </button>
+          <div class="display-menu-wrap">
+            <button
+              class="toolbar-btn"
+              :class="{ active: displayMenuOpen }"
+              title="Configurar exibição da lista"
+              @click.stop="toggleDisplayMenu"
+            >
+              <i class="pi pi-sliders-h"></i>
+              Exibição
+            </button>
+            <div v-if="displayMenuOpen" class="display-menu" @click.stop>
+              <div class="display-menu-section">
+                <span class="display-menu-label">Densidade</span>
+                <div class="density-toggle">
+                  <button
+                    v-for="opt in densityOptions"
+                    :key="opt.value"
+                    class="density-btn"
+                    :class="{ active: uiDensity === opt.value }"
+                    :title="opt.label"
+                    @click="setDensity(opt.value)"
+                  >
+                    <i :class="opt.icon"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="display-menu-section">
+                <span class="display-menu-label">Campos visíveis</span>
+                <div class="display-fields">
+                  <label
+                    v-for="col in columnOptions"
+                    :key="col.id"
+                    class="display-field"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="hasColumn(col.id)"
+                      @change="toggleColumn(col.id)"
+                    />
+                    <span>{{ col.label }}</span>
+                  </label>
+                </div>
+              </div>
+              <div class="display-menu-section">
+                <label class="display-field display-toggle-row">
+                  <input
+                    type="checkbox"
+                    :checked="reorderAnimations"
+                    @change="toggleReorderAnimations"
+                  />
+                  <span>Animação suave ao reordenar</span>
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="items-stack">
@@ -124,6 +179,12 @@
           </div>
         </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
+        <TransitionGroup
+          tag="div"
+          name="reorder"
+          class="items-stack-rows"
+          :class="{ 'reorder-animate': reorderAnimationEnabled }"
+        >
         <div
           v-for="item in visibleItems"
           :key="item.id"
@@ -368,6 +429,31 @@
               ]"
             />
 
+            <!-- Tor ao atingir limite: ativo (rotacionando circuitos) -->
+            <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-banner active">
+              <span class="row-tor-icon" v-html="torIconSvg"></span>
+              <span class="tor-limit-text">
+                Usando Tor para contornar o limite — trocando de circuito e
+                continuando até concluir.
+              </span>
+              <button class="tor-limit-off" title="Desativar Tor para este download" @click.stop="disableAutoTor(item)">
+                Desativar
+              </button>
+            </div>
+
+            <!-- Tor ao atingir limite: oferta (download bateu no limite) -->
+            <div v-else-if="!item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-banner">
+              <span class="row-tor-icon" v-html="torIconSvg"></span>
+              <span class="tor-limit-text">
+                Limite atingido. Dá pra continuar baixando via Tor (troca de IP e
+                segue até concluir).
+              </span>
+              <button class="tor-limit-cta" :disabled="torEngaging.has(item.id)" @click.stop="engageTorForDownload(item)">
+                <i class="pi" :class="torEngaging.has(item.id) ? 'pi-spin pi-spinner' : 'pi-bolt'"></i>
+                {{ torEngaging.has(item.id) ? 'Conectando…' : 'Continuar via Tor' }}
+              </button>
+            </div>
+
             <div
               v-show="item.isFolder && isExpanded(item.id) && (item.children?.length ?? 0) > 0"
               class="folder-children"
@@ -558,6 +644,7 @@
             </div>
           </div>
         </div>
+        </TransitionGroup>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
       </div>
     </div>
@@ -623,6 +710,10 @@
       <button v-if="contextCan('canForce')" @click="runContextAction('force')"><i class="pi pi-bolt"></i>Forçar agora</button>
       <button v-if="contextCan('canCancel')" @click="runContextAction('cancel')"><i class="pi pi-times"></i>Cancelar</button>
       <button @click="toggleContextPin"><i class="pi pi-star"></i>{{ contextMenuItem.pinned ? 'Desafixar' : 'Fixar no topo' }}</button>
+      <button @click="toggleContextAutoTor">
+        <span class="ctx-tor-icon" v-html="torIconSvg"></span>
+        {{ contextMenuItem.autoTorOnLimit ? 'Desativar Tor ao atingir limite' : 'Usar Tor ao atingir limite' }}
+      </button>
       <button v-if="contextMenuItem.isFolder && (contextMenuItem.children?.length ?? 0) > 0" @click="toggleContextFolder">
         <i class="pi pi-sitemap"></i>{{ isExpanded(contextMenuItem.id) ? 'Ocultar itens' : 'Mostrar itens' }}
       </button>
@@ -716,6 +807,7 @@ import {
   effectiveEta,
   effectiveSpeed,
   getDownloadActions,
+  isClearable,
   isTerminal,
   isWaitingRetry,
   retryCountdown,
@@ -748,6 +840,7 @@ const emit = defineEmits<{
   (e: 'download-complete', payload: { id: string; outputPath: string; url?: string; title?: string; sha256Hash?: string }): void
   (e: 'global-speed', bps: number): void
   (e: 'open-grabber'): void
+  (e: 'tor-changed'): void
 }>()
 
 // ── State ──────────────────────────────────────────────────
@@ -769,6 +862,7 @@ const filterStatuses = ref<string[]>([])
 const filterHosts = ref<string[]>([])
 const filterPackages = ref<string[]>([])
 const uiDensity = ref<'comfortable' | 'compact' | 'dense'>('comfortable')
+const reorderAnimations = ref(true)
 const queuePanelCollapsed = ref(false)
 const draggedPreviewId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
@@ -863,7 +957,7 @@ const orderedItems = computed(() =>
   })
 )
 const finishedCount = computed(() =>
-  items.value.filter((item) => isTerminal(item.status)).length
+  items.value.filter((item) => isClearable(item)).length
 )
 const activeCaptchaItem = computed(() =>
   items.value.find((item) => item.id === activeCaptchaId.value && item.status === DownloadStatusEnum.WaitingCaptcha) ?? null
@@ -942,6 +1036,7 @@ function selectDownload(item: DownloadItem, event?: MouseEvent): void {
 
 function closeContextMenu(): void {
   contextMenu.value = { visible: false, x: 0, y: 0, itemId: null }
+  displayMenuOpen.value = false
 }
 
 function openContextMenu(item: DownloadItem, event: MouseEvent): void {
@@ -962,6 +1057,70 @@ function contextCan(action: string): boolean {
 
 function hasColumn(column: string): boolean {
   return visibleColumns.value.includes(column)
+}
+
+// ── Configuração de exibição do bloco de download (densidade + campos) ──
+const displayMenuOpen = ref(false)
+const densityOptions: Array<{
+  value: 'comfortable' | 'compact' | 'dense'
+  label: string
+  icon: string
+}> = [
+  { value: 'comfortable', label: 'Confortável', icon: 'pi pi-align-justify' },
+  { value: 'compact', label: 'Compacto', icon: 'pi pi-bars' },
+  { value: 'dense', label: 'Denso', icon: 'pi pi-list' },
+]
+const columnOptions: Array<{ id: string; label: string }> = [
+  { id: 'name', label: 'Nome' },
+  { id: 'status', label: 'Status' },
+  { id: 'size', label: 'Tamanho' },
+  { id: 'progress', label: 'Progresso' },
+  { id: 'speed', label: 'Velocidade' },
+  { id: 'eta', label: 'ETA' },
+  { id: 'host', label: 'Host / ícone' },
+  { id: 'package', label: 'Pacote' },
+  { id: 'added', label: 'Adicionado' },
+  { id: 'completed', label: 'Concluído' },
+  { id: 'hash', label: 'Hash' },
+]
+
+function toggleDisplayMenu(): void {
+  displayMenuOpen.value = !displayMenuOpen.value
+}
+
+function setDensity(value: 'comfortable' | 'compact' | 'dense'): void {
+  uiDensity.value = value
+  void persistDisplaySettings()
+}
+
+function toggleColumn(column: string): void {
+  if (visibleColumns.value.includes(column)) {
+    visibleColumns.value = visibleColumns.value.filter((item) => item !== column)
+  } else {
+    // Mantém a ordem canônica de defaultColumns ao reativar um campo.
+    visibleColumns.value = defaultColumns.filter(
+      (item) => item === column || visibleColumns.value.includes(item)
+    )
+  }
+  void persistDisplaySettings()
+}
+
+function toggleReorderAnimations(): void {
+  reorderAnimations.value = !reorderAnimations.value
+  void persistDisplaySettings()
+}
+
+async function persistDisplaySettings(): Promise<void> {
+  const settings = await window.api.settings.load().catch(() => null)
+  if (!settings) return
+  await window.api.settings
+    .save({
+      ...settings,
+      visibleColumns: [...visibleColumns.value],
+      uiDensity: uiDensity.value,
+      reorderAnimations: reorderAnimations.value,
+    })
+    .catch(() => null)
 }
 
 function formatDateTime(timestamp: number): string {
@@ -1168,6 +1327,12 @@ const hasExpandedDownloadRows = computed(() =>
   Object.values(expandedFolders.value).some(Boolean) || Object.values(expandedDetails.value).some(Boolean)
 )
 const virtualizationEnabled = computed(() => orderedItems.value.length > 40)
+// Animação suave de reordenação: só quando a lista não está virtualizada
+// (a virtualização monta/desmonta linhas no scroll, o que brigaria com o FLIP)
+// e quando o usuário não desativou nas configurações.
+const reorderAnimationEnabled = computed(
+  () => reorderAnimations.value && !virtualizationEnabled.value
+)
 const estimatedRowHeight = computed(() => hasExpandedDownloadRows.value ? 260 : 148)
 const overscan = 6
 const visibleRange = computed(() => {
@@ -1239,6 +1404,7 @@ onMounted(async () => {
   filterHosts.value = settings?.lastFilters?.hosts ?? []
   filterPackages.value = settings?.lastFilters?.packages ?? []
   uiDensity.value = settings?.uiDensity ?? 'comfortable'
+  reorderAnimations.value = settings?.reorderAnimations ?? true
 
   // Load existing downloads from backend
   await hydrate()
@@ -1549,6 +1715,12 @@ watch(activeCaptchaItem, (item) => {
   })
 })
 
+// Dispara o Tor automático para downloads com a flag ligada que bateram no limite.
+watch(
+  () => items.value.map((item) => `${item.id}:${item.status}:${item.autoTorOnLimit ? 1 : 0}`).join(','),
+  () => maybeAutoEngageTor(),
+)
+
 function mergeHydratedChildren(existing?: DownloadChild[], fresh?: DownloadChild[]): DownloadChild[] | undefined {
   if (!fresh) return existing
   if (!existing?.length) return fresh
@@ -1724,6 +1896,73 @@ async function retry(id: string): Promise<void> {
   await hydrate()
 }
 
+// ── Tor ao atingir o limite (por download) ─────────────────────
+const torEngaging = ref<Set<string>>(new Set())
+const autoTorAttempted = new Set<string>()
+
+// Mostra o aviso/CTA do Tor quando o download bateu no limite do servidor.
+function showTorLimitHint(item: DownloadItem): boolean {
+  return item.status === DownloadStatusEnum.RateLimited || isWaitingRetryNow(item)
+}
+
+function setItemAutoTor(id: string, enabled: boolean): void {
+  const item = items.value.find((entry) => entry.id === id)
+  if (item) item.autoTorOnLimit = enabled
+}
+
+// Liga o Tor para este download e segue baixando: marca a flag, conecta o Tor
+// (global) e retenta. O backend então rotaciona o circuito a cada limite até
+// concluir.
+async function engageTorForDownload(item: DownloadItem): Promise<void> {
+  if (torEngaging.value.has(item.id)) return
+  torEngaging.value = new Set(torEngaging.value).add(item.id)
+  try {
+    await window.api.downloads.setAutoTor(item.id, true).catch(() => null)
+    setItemAutoTor(item.id, true)
+    if (!torActive.value) {
+      await window.api.tor.connect()
+      emit('tor-changed')
+    }
+    await window.api.downloads.retry(item.id).catch(() => null)
+    await hydrate()
+  } catch (error) {
+    const item2 = items.value.find((entry) => entry.id === item.id)
+    if (item2) {
+      item2.error = error instanceof Error ? error.message : 'Falha ao conectar ao Tor'
+    }
+  } finally {
+    const next = new Set(torEngaging.value)
+    next.delete(item.id)
+    torEngaging.value = next
+  }
+}
+
+async function disableAutoTor(item: DownloadItem): Promise<void> {
+  await window.api.downloads.setAutoTor(item.id, false).catch(() => null)
+  setItemAutoTor(item.id, false)
+}
+
+// Auto: quando um download com a flag ligada bate no limite e o Tor ainda não
+// está conectado, dispara a conexão automaticamente (uma vez por download).
+function maybeAutoEngageTor(): void {
+  if (torActive.value) {
+    autoTorAttempted.clear()
+    return
+  }
+  for (const item of items.value) {
+    if (
+      item.autoTorOnLimit &&
+      showTorLimitHint(item) &&
+      !torEngaging.value.has(item.id) &&
+      !autoTorAttempted.has(item.id)
+    ) {
+      autoTorAttempted.add(item.id)
+      void engageTorForDownload(item)
+      break
+    }
+  }
+}
+
 async function saveArchivePasswordFor(id: string): Promise<void> {
   const password = (archivePasswordDrafts.value[id] ?? '').trim()
   if (!password) {
@@ -1797,6 +2036,23 @@ function toggleContextFolder(): void {
   const item = contextMenuItem.value
   closeContextMenu()
   if (item) toggleFolder(item.id)
+}
+
+async function toggleContextAutoTor(): Promise<void> {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (!item) return
+  if (item.autoTorOnLimit) {
+    await disableAutoTor(item)
+  } else {
+    // Pré-ativa para este download. Se já estiver no limite, engata o Tor agora;
+    // caso contrário, aguarda o limite acontecer (auto-watcher cuida disso).
+    await window.api.downloads.setAutoTor(item.id, true).catch(() => null)
+    setItemAutoTor(item.id, true)
+    if (showTorLimitHint(item)) {
+      void engageTorForDownload(item)
+    }
+  }
 }
 
 function openContextCaptcha(): void {
@@ -2339,6 +2595,83 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   position: relative;
 }
 
+/* ── Popover de exibição (densidade + campos + animação) ──────── */
+.display-menu-wrap {
+  position: relative;
+}
+
+.toolbar-btn.active {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+}
+
+.display-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+}
+
+.display-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.display-menu-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.display-menu .density-toggle {
+  width: 100%;
+  height: 32px;
+}
+
+.display-menu .density-btn {
+  flex: 1;
+  width: auto;
+}
+
+.display-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 10px;
+}
+
+.display-field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.display-field input[type='checkbox'] {
+  accent-color: var(--accent-color);
+  cursor: pointer;
+  margin: 0;
+}
+
+.display-toggle-row {
+  font-size: 13px;
+}
+
 .columns-menu {
   position: absolute;
   right: 0;
@@ -2685,6 +3018,18 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   width: 100%;
   min-width: 0;
   align-self: stretch;
+}
+
+/* Wrapper do TransitionGroup: display:contents mantém os cards como filhos
+   diretos do flex (preserva o layout e a virtualização). */
+.items-stack-rows {
+  display: contents;
+}
+
+/* Reordenação suave (FLIP do Vue) — habilitada só fora da virtualização. */
+.items-stack-rows.reorder-animate .reorder-move {
+  transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
+  z-index: 1;
 }
 
 /* ── Download card ──────────────────────────────────────────── */
@@ -3191,6 +3536,92 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .row-tor-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ── Banner "Continuar via Tor" no card de download ───────────── */
+.tor-limit-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, #7d4698 38%, transparent);
+  background: color-mix(in srgb, #7d4698 9%, var(--bg-card));
+}
+
+.tor-limit-banner.active {
+  border-color: color-mix(in srgb, #22c55e 42%, transparent);
+  background: color-mix(in srgb, #22c55e 9%, var(--bg-card));
+}
+
+.tor-limit-banner .row-tor-icon {
+  width: 17px;
+  height: 17px;
+  color: #7d4698;
+}
+
+.tor-limit-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.tor-limit-cta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #7d4698;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.tor-limit-cta:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.tor-limit-cta:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.tor-limit-off {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tor-limit-off:hover {
+  color: var(--text-primary);
+}
+
+.ctx-tor-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  color: #7d4698;
+}
+
+.ctx-tor-icon :deep(svg) {
   width: 100%;
   height: 100%;
   display: block;

@@ -94,6 +94,7 @@ export interface DownloadItem {
   thumbnailUrl?: string
   channelName?: string
   channelThumbnailUrl?: string
+  autoTorOnLimit?: boolean
 }
 
 export interface DownloadNetworkRoute {
@@ -192,6 +193,7 @@ export interface PersistedSettings {
     packages?: string[]
   }
   uiDensity?: 'comfortable' | 'compact' | 'dense'
+  reorderAnimations?: boolean
   interceptMode?: 'off' | 'proxy_only'
   interceptMinSizeMb?: number
   interceptMimeAllowlist?: string[]

@@ -160,6 +160,7 @@ mod tests {
             thumbnail_url: None,
             channel_name: None,
             channel_thumbnail_url: None,
+            auto_tor_on_limit: false,
         }
     }
 

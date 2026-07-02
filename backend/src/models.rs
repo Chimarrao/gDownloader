@@ -76,6 +76,10 @@ pub struct Download {
     pub channel_name: Option<String>,
     #[serde(default)]
     pub channel_thumbnail_url: Option<String>,
+    /// Quando true, ao bater no limite (rate-limit) este download deve usar o
+    /// Tor e seguir tentando (rotacionando o circuito) até concluir.
+    #[serde(default)]
+    pub auto_tor_on_limit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -605,6 +609,8 @@ pub struct AddDownloadRequest {
     pub duplicate_action: Option<String>,
     #[serde(default)]
     pub request_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub auto_tor_on_limit: Option<bool>,
 }
 
 // --- Resposta padrão de erro da API ---

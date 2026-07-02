@@ -127,6 +127,23 @@ impl FichierProvider {
             || html.contains("Sign in instantly to continue your download")
     }
 
+    /// 1fichier bloqueia IPs de servidor/VPN/proxy/Tor para download gratuito.
+    /// A página de bloqueio não tem o formulário de download, então sem isso o
+    /// fluxo cairia em um erro genérico de "link não encontrado".
+    fn has_restricted_access_error(html: &str) -> bool {
+        html.contains("professional infrastructure detected")
+            || html.contains("Accès restreint")
+            || html.contains("professional network infrastructures")
+    }
+
+    fn restricted_access_error() -> anyhow::Error {
+        anyhow!(
+            "1Fichier bloqueou este IP para download gratuito (VPN, proxy, Tor ou \
+             infraestrutura de servidor detectada). Desative o proxy/Tor e use uma \
+             conexão residencial, ou utilize uma conta premium."
+        )
+    }
+
     fn is_folder_page(url: &str, html: &str) -> bool {
         url.contains("/dir/") || html.contains("liste des fichiers") || html.contains("file list")
     }
@@ -179,6 +196,11 @@ impl FichierProvider {
         info!(target: "gdownloader_backend::providers::1fichier", "1Fichier abrindo landing page: {}", page_url);
         let landing = client.get(page_url).send().await?.error_for_status()?.text().await?;
 
+        if Self::has_restricted_access_error(&landing) {
+            warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier bloqueou IP (VPN/proxy/Tor) para {}", page_url);
+            return Err(Self::restricted_access_error());
+        }
+
         if Self::has_free_slot_error(&landing) {
             warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier sem slot gratuito para {}", page_url);
             return Err(Self::free_slot_error());
@@ -206,6 +228,10 @@ impl FichierProvider {
         }
 
         let html = response.text().await?;
+        if Self::has_restricted_access_error(&html) {
+            warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier bloqueou IP (VPN/proxy/Tor) após POST: {}", page_url);
+            return Err(Self::restricted_access_error());
+        }
         if Self::has_free_slot_error(&html) {
             warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier continuou sem slot gratuito após POST: {}", page_url);
             return Err(Self::free_slot_error());
@@ -262,25 +288,77 @@ impl FichierProvider {
     }
 
     fn extract_direct_link(html: &str) -> Option<String> {
+        // 1) Caminho feliz: o botão verde "Click here to download" do 1fichier
+        //    (`class="...btn-orange..."`). O href pode vir antes ou depois da classe.
+        let button_patterns = [
+            r#"(?is)<a\b[^>]*class="[^"]*btn-orange[^"]*"[^>]*href="(https?://[^"]+)""#,
+            r#"(?is)<a\b[^>]*href="(https?://[^"]+)"[^>]*class="[^"]*btn-orange[^"]*""#,
+        ];
+        for pattern in button_patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if let Some(caps) = re.captures(html) {
+                    let href = caps[1].to_string();
+                    if Self::is_plausible_direct_link(&href) {
+                        return Some(href);
+                    }
+                }
+            }
+        }
+
+        // 2) Fallback: primeiro href que pareça realmente o arquivo final.
+        //    O filtro descarta favicon/CSS/JS, páginas institucionais e redes
+        //    sociais — sem ele, o primeiro href da página é o favicon (~1 KB),
+        //    que era exatamente o "download de 1 KB" relatado.
         let mut cursor = html;
         while let Some(pos) = cursor.find("href=\"") {
             let rest = &cursor[pos + 6..];
             let end = rest.find('"')?;
             let href = &rest[..end];
-            let lower = href.to_ascii_lowercase();
-            if href.starts_with("http")
-                && !lower.contains("/login")
-                && !lower.contains("/register")
-                && !lower.contains("/hlp")
-                && !lower.contains("/tarifs")
-                && !lower.contains("/cgu")
-            {
+            if href.starts_with("http") && Self::is_plausible_direct_link(href) {
                 return Some(href.to_string());
             }
             cursor = &rest[end + 1..];
         }
 
         None
+    }
+
+    /// Decide se um href tem cara de arquivo final do 1fichier (e não de
+    /// favicon, folha de estilo, página institucional ou link social).
+    fn is_plausible_direct_link(href: &str) -> bool {
+        let lower = href.to_ascii_lowercase();
+
+        // Hosts que nunca servem o arquivo final.
+        const BAD_HOST_FRAGMENTS: [&str; 4] =
+            ["img.1fichier.com", "twitter.com", "facebook.com", "dstorage.fr"];
+        if BAD_HOST_FRAGMENTS.iter().any(|frag| lower.contains(frag)) {
+            return false;
+        }
+
+        // Páginas institucionais / autenticação.
+        const BAD_PATHS: [&str; 11] = [
+            "/login", "/register", "/hlp", "/tarifs", "/cgu", "/abus", "/network",
+            "/contact", "/revendeurs", "/api", "/console",
+        ];
+        if BAD_PATHS.iter().any(|frag| lower.contains(frag)) {
+            return false;
+        }
+
+        // Recursos estáticos (favicon, css, js, imagens, html).
+        const BAD_EXT: [&str; 9] =
+            [".ico", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".html"];
+        let path_only = lower.split(['?', '#']).next().unwrap_or(&lower);
+        if BAD_EXT.iter().any(|ext| path_only.ends_with(ext)) {
+            return false;
+        }
+
+        // Precisa ter um caminho ou querystring reais (não apenas o domínio raiz).
+        let rest = lower.splitn(2, "://").nth(1).unwrap_or("");
+        let has_path = rest
+            .split_once('/')
+            .map(|(_, path)| !path.trim_matches('/').is_empty())
+            .unwrap_or(false);
+        has_path || rest.contains('?')
     }
 
     fn is_binary_response(resp: &reqwest::Response) -> bool {
@@ -320,6 +398,10 @@ impl Provider for FichierProvider {
             let client = <Self as ProviderDefaults>::http_client()?;
             info!(target: "gdownloader_backend::providers::1fichier", "1Fichier coletando metadata: {}", page_url);
             let html = client.get(&page_url).send().await?.error_for_status()?.text().await?;
+
+            if Self::has_restricted_access_error(&html) {
+                return Err(Self::restricted_access_error());
+            }
 
             // Rate limit
             if let Some(secs) = Self::extract_wait_seconds(&html) {
@@ -521,6 +603,67 @@ mod tests {
     fn detects_free_slot_error() {
         let html = "All free guest slots are currently in use.";
         assert!(FichierProvider::has_free_slot_error(html));
+    }
+
+    #[test]
+    fn detects_restricted_access_block() {
+        // Texto real da página servida pelo 1fichier a IPs de Tor/VPN/servidor.
+        let html = "Accès restreint – professional infrastructure detected. This IP \
+                    address has been identified as belonging to a server, proxy, VPN, \
+                    relay network, or associated with abusive activity.";
+        assert!(FichierProvider::has_restricted_access_error(html));
+        // Página normal não dispara o bloqueio.
+        assert!(!FichierProvider::has_restricted_access_error(
+            "<span style=\"font-weight:bold\">arquivo.rar</span>"
+        ));
+    }
+
+    #[test]
+    fn direct_link_ignores_favicon_and_assets() {
+        // Reproduz a página real do 1fichier: o favicon aparece como o primeiro
+        // href; o link verdadeiro está no botão verde de download.
+        let html = r#"
+            <link rel="icon" href="https://img.1fichier.com/favicon.ico" />
+            <a href="https://img.1fichier.com/css/style.css">css</a>
+            <a href="https://1fichier.com/tarifs.html">Preços</a>
+            <a href="/login.pl">Entrar</a>
+            <div class="ct_warn">
+              <a href="https://a-7.1fichier.com/c123456789?file=token" class="ok btn-general btn-orange">Click here to download the file</a>
+            </div>
+            <a target="_new" href="https://facebook.com/1fichiercom">fb</a>
+        "#;
+
+        assert_eq!(
+            FichierProvider::extract_direct_link(html).as_deref(),
+            Some("https://a-7.1fichier.com/c123456789?file=token")
+        );
+    }
+
+    #[test]
+    fn direct_link_falls_back_without_button_class() {
+        // Mesmo sem a classe do botão, o filtro deve pular favicon/assets/páginas
+        // e cair no nó de download real.
+        let html = r#"
+            <a href="https://img.1fichier.com/favicon.ico">icon</a>
+            <a href="https://1fichier.com/cgu.html">cgu</a>
+            <a href="https://a-3.1fichier.com/d/abcXYZ">Download</a>
+        "#;
+        assert_eq!(
+            FichierProvider::extract_direct_link(html).as_deref(),
+            Some("https://a-3.1fichier.com/d/abcXYZ")
+        );
+    }
+
+    #[test]
+    fn direct_link_rejects_bare_domain() {
+        assert!(!FichierProvider::is_plausible_direct_link("https://1fichier.com"));
+        assert!(!FichierProvider::is_plausible_direct_link("https://1fichier.com/"));
+        assert!(!FichierProvider::is_plausible_direct_link(
+            "https://img.1fichier.com/favicon.ico"
+        ));
+        assert!(FichierProvider::is_plausible_direct_link(
+            "https://a-9.1fichier.com/c987"
+        ));
     }
 
     #[test]
