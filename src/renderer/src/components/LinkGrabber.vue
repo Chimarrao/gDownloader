@@ -108,6 +108,7 @@ import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes, formatDuration } from '../utils/format'
 import { parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
+import { pruneCapturedRows } from '../utils/capture-selection'
 import CapturedResultsPanel from './CapturedResultsPanel.vue'
 import LinkInputPanel from './LinkInputPanel.vue'
 import LinkGrabberActionsBar from './LinkGrabberActionsBar.vue'
@@ -851,9 +852,11 @@ async function addAll(): Promise<void> {
   adding.value = false
   addQueueDone.value = 0
   addQueueTotal.value = 0
-  if (addedCount === entries.length) {
-    urlsInput.value = ''
-    rows.value = []
+  if (addedCount > 0) {
+    rows.value = pruneCapturedRows<CapturedRow>(rows.value)
+    if (rows.value.length === 0) {
+      urlsInput.value = ''
+    }
   }
 }
 
