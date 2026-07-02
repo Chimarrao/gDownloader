@@ -23,3 +23,7 @@ backend/target/
 backend/logs/
 logs/
 backend/backend/
+
+# Documentos de trabalho locais (não versionados)
+melhorias.odt
+.~lock.*#
