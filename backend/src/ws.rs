@@ -29,6 +29,11 @@ pub struct AppState {
     pub db: Arc<StdMutex<rusqlite::Connection>>,
     pub db_path: Option<String>,
     pub stats: Arc<StatsManager>,
+    /// Porta SOCKS do daemon Tor quando ele está rodando para roteamento
+    /// isolado por-download. `None` quando o Tor isolado não está disponível.
+    /// Definido pelo processo main via `POST /config/tor-runtime`, independente
+    /// do `proxy_mode` global.
+    pub isolated_tor_port: Arc<Mutex<Option<u16>>>,
 }
 
 // Como um class em PHP — agrupa métodos desta struct
@@ -55,6 +60,7 @@ impl AppState {
             db: Arc::new(StdMutex::new(db)),
             db_path,
             stats: Arc::new(StatsManager::new(60)),
+            isolated_tor_port: Arc::new(Mutex::new(None)),
         }
     }
 
