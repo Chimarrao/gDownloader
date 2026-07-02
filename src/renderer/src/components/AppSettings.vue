@@ -1269,6 +1269,28 @@ async function clearCache(ids?: string[]): Promise<void> {
   cursor: pointer;
 }
 
+.btn-secondary {
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--accent-color);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .setting-input:focus,
 .setting-select:focus {
   border-color: var(--accent-color);
