@@ -1301,6 +1301,36 @@ function createWindow(): BrowserWindow {
   return win
 }
 
+// Inicia o daemon Tor apenas para roteamento isolado por-download, SEM alterar o
+// proxy global. Informa a porta SOCKS ao backend para habilitar as rotas isoladas.
+async function ensureTorRunningForIsolation(): Promise<{ running: boolean; port: number | null }> {
+  let endpoint = await detectTorEndpoint()
+  if (!endpoint) {
+    await tryStartTor()
+    endpoint = await waitForTorEndpoint()
+    if (endpoint && managedTorProcess && managedTorBootstrap < 100) {
+      const bootstrapped = await waitForManagedTorBootstrap()
+      if (!bootstrapped) {
+        if (managedTorProcess && !managedTorProcess.killed) {
+          managedTorProcess.kill()
+          managedTorProcess = null
+        }
+        const percent = managedTorBootstrap
+        managedTorBootstrap = 0
+        throw new Error(`Tor iniciou mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`)
+      }
+    }
+  }
+  if (!endpoint) {
+    throw new Error('Tor embutido não iniciou em 127.0.0.1:9150.')
+  }
+  // Informa o backend sem alterar o proxy global.
+  await postBackend('/config/tor-runtime', { socks_port: endpoint.port }).catch((error) => {
+    logMain('tor', 'Falha ao informar porta Tor isolada ao backend', error)
+  })
+  return { running: true, port: endpoint.port }
+}
+
 app.whenReady().then(async () => {
   ytdlpService = createYtdlpService(app.getPath('userData'))
   app.setName('gDownloader')
@@ -1504,6 +1534,13 @@ app.whenReady().then(async () => {
     // Progresso do bootstrap do Tor empacotado (0–100). Usado para a animação
     // de conexão mostrar a porcentagem real em vez de um spinner sem fim.
     return Math.max(0, Math.min(100, managedTorBootstrap))
+  })
+  ipcMain.handle('tor:ensureRunning', async () => {
+    return ensureTorRunningForIsolation()
+  })
+  ipcMain.handle('tor:runtimeStatus', async () => {
+    const endpoint = await detectTorEndpoint()
+    return { running: Boolean(endpoint), port: endpoint?.port ?? null }
   })
   ipcMain.handle('tor:connect', async () => {
     const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
@@ -1822,6 +1859,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   tray?.destroy()
   tray = null
+  void postBackend('/config/tor-runtime', { socks_port: null }).catch(() => undefined)
   backendRuntime.markQuitting()
   backendRuntime.stop()
   void remoteAccessServer.stop()
