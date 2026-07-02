@@ -433,8 +433,8 @@
             <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-banner active">
               <span class="row-tor-icon" v-html="torIconSvg"></span>
               <span class="tor-limit-text">
-                Usando Tor para contornar o limite — trocando de circuito e
-                continuando até concluir.
+                Baixando via Tor<template v-if="item.networkRoute?.circuitChanges != null"> · circuito #{{ item.networkRoute.circuitChanges }}</template><template v-if="item.networkRoute?.exitIp"> · saída {{ item.networkRoute.exitIp }}</template>
+                — trocando de IP até concluir.
               </span>
               <button class="tor-limit-off" title="Desativar Tor para este download" @click.stop="disableAutoTor(item)">
                 Desativar
@@ -450,7 +450,7 @@
               </span>
               <button class="tor-limit-cta" :disabled="torEngaging.has(item.id)" @click.stop="engageTorForDownload(item)">
                 <i class="pi" :class="torEngaging.has(item.id) ? 'pi-spin pi-spinner' : 'pi-bolt'"></i>
-                {{ torEngaging.has(item.id) ? 'Conectando…' : 'Continuar via Tor' }}
+                {{ torEngaging.has(item.id) ? (torBootstrapPercent > 0 && torBootstrapPercent < 100 ? `Conectando ao Tor… ${torBootstrapPercent}%` : 'Conectando…') : 'Continuar via Tor' }}
               </button>
             </div>
 
@@ -1899,6 +1899,19 @@ async function retry(id: string): Promise<void> {
 // ── Tor ao atingir o limite (por download) ─────────────────────
 const torEngaging = ref<Set<string>>(new Set())
 const autoTorAttempted = new Set<string>()
+const torBootstrapPercent = ref(0)
+let torBootstrapTimer: ReturnType<typeof setInterval> | null = null
+
+function startTorBootstrapPolling(): void {
+  if (torBootstrapTimer) return
+  torBootstrapTimer = setInterval(async () => {
+    torBootstrapPercent.value = await window.api.tor.bootstrapProgress().catch(() => 0)
+    if (torBootstrapPercent.value >= 100 && torBootstrapTimer) {
+      clearInterval(torBootstrapTimer)
+      torBootstrapTimer = null
+    }
+  }, 700)
+}
 
 // Mostra o aviso/CTA do Tor quando o download bateu no limite do servidor.
 function showTorLimitHint(item: DownloadItem): boolean {
@@ -1916,13 +1929,12 @@ function setItemAutoTor(id: string, enabled: boolean): void {
 async function engageTorForDownload(item: DownloadItem): Promise<void> {
   if (torEngaging.value.has(item.id)) return
   torEngaging.value = new Set(torEngaging.value).add(item.id)
+  startTorBootstrapPolling()
   try {
     await window.api.downloads.setAutoTor(item.id, true).catch(() => null)
     setItemAutoTor(item.id, true)
-    if (!torActive.value) {
-      await window.api.tor.connect()
-      emit('tor-changed')
-    }
+    // Inicia o daemon Tor apenas para roteamento isolado — NÃO altera o proxy global.
+    await window.api.tor.ensureRunning()
     await window.api.downloads.retry(item.id).catch(() => null)
     await hydrate()
   } catch (error) {
