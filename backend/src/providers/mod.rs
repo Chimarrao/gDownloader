@@ -360,6 +360,30 @@ pub trait ProviderDefaults {
         }
     }
 
+    /// Como `http_client`, mas para o arquivo `file_index` de uma pasta: quando
+    /// a proxy da task é Tor, usa um usuário SOCKS único por arquivo (novo
+    /// circuito/IP). Fora do Tor, é idêntico a `http_client`.
+    fn http_client_for_file_index(file_index: usize) -> Result<reqwest::Client>
+    where
+        Self: Sized,
+    {
+        if let Ok(proxy) = TASK_PROXY.try_with(Clone::clone) {
+            if proxy.mode == "tor" {
+                let base = proxy.username.clone().unwrap_or_else(|| "gdl".to_string());
+                let user = per_file_socks_user(&base, file_index);
+                let pass = uuid::Uuid::new_v4().simple().to_string();
+                return Self::http_client_with_proxy(
+                    &proxy.mode,
+                    &proxy.host,
+                    proxy.port,
+                    Some(&user),
+                    Some(&pass),
+                );
+            }
+        }
+        Self::http_client()
+    }
+
     fn response_total_bytes(resp: &reqwest::Response, resumed_bytes: u64) -> u64
     where
         Self: Sized,
@@ -445,6 +469,13 @@ pub struct DownloadContext {
     /// Avatar do canal já em cache: quando presente, evita a chamada extra
     /// (cara) do yt-dlp para buscar o thumbnail do canal novamente.
     pub cached_channel_thumbnail_url: Option<String>,
+}
+
+/// Deriva um usuário SOCKS único por arquivo a partir da base do download.
+/// Com `IsolateSOCKSAuth` no Tor, cada usuário distinto recebe um circuito/IP
+/// de saída próprio — então cada arquivo de uma pasta sai por um IP diferente.
+pub fn per_file_socks_user(base_user: &str, file_index: usize) -> String {
+    format!("{base_user}-f{file_index}")
 }
 
 pub async fn apply_speed_limit(
@@ -819,4 +850,17 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     // URL não reconhecida por nenhum provider suportado
     None
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::per_file_socks_user;
+
+    #[test]
+    fn per_file_socks_user_is_distinct_per_index() {
+        let base = "gdl-abcd1234-2";
+        assert_eq!(per_file_socks_user(base, 0), "gdl-abcd1234-2-f0");
+        assert_eq!(per_file_socks_user(base, 1), "gdl-abcd1234-2-f1");
+        assert_ne!(per_file_socks_user(base, 0), per_file_socks_user(base, 1));
+    }
 }

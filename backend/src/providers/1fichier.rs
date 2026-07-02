@@ -486,7 +486,7 @@ impl Provider for FichierProvider {
                 let total_size: u64 = children.iter().map(|child| child.size).sum();
                 let mut downloaded_total = 0u64;
 
-                for child in &children {
+                for (file_index, child) in children.iter().enumerate() {
                     let child_url = child.source_url.clone().ok_or_else(|| anyhow!("Item da pasta do 1Fichier sem URL"))?;
                     let child_path = child.path.clone().unwrap_or_else(|| child.filename.clone());
                     info!(
@@ -524,7 +524,8 @@ impl Provider for FichierProvider {
                     let child_total = child.size;
                     let child_started_at = tokio::time::Instant::now();
                     let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<ProgressUpdate>(64);
-                    let child_client = client.clone();
+                    let child_client = <Self as ProviderDefaults>::http_client_for_file_index(file_index)
+                        .unwrap_or_else(|_| client.clone());
                     let child_speed_limit = speed_limit_bps;
                     let child_dest = output_path.clone();
 
