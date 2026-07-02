@@ -636,7 +636,7 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadActionTrigger: 'queue_empty',
   postDownloadCommand: '',
   postDownloadWebhookUrl: '',
-  duplicateAction: 'skip',
+  duplicateAction: 'rename',
   uiDensity: 'comfortable',
   interceptMode: 'off',
   interceptMinSizeMb: 1,

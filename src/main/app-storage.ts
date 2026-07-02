@@ -17,7 +17,7 @@ export const defaultPublicSettings: PersistedSettings = {
   nativeNotification: true,
   clipboardMonitorEnabled: false,
   accentColor: undefined,
-  duplicateAction: 'ask',
+  duplicateAction: 'rename',
   uiDensity: 'comfortable',
   reorderAnimations: true,
   interceptMode: 'off',

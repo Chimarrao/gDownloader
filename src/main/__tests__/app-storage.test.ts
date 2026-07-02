@@ -3,7 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { createAppStorage } from '../app-storage'
+import { createAppStorage, defaultPublicSettings } from '../app-storage'
 
 const tempDirs: string[] = []
 
@@ -86,5 +86,11 @@ describe('app-storage legacy migration', () => {
     expect(storage.getTeraboxAccount()?.email).toBe('user@example.com')
     expect(history).toHaveLength(1)
     expect(migrations.map((entry) => entry.version)).toEqual([1, 2])
+  })
+})
+
+describe('defaults públicos', () => {
+  it('usa "rename" (salvar com sufixo) como ação padrão de duplicata', () => {
+    expect(defaultPublicSettings.duplicateAction).toBe('rename')
   })
 })
