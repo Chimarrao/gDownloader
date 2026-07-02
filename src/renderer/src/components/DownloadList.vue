@@ -602,7 +602,7 @@
                 <div v-if="item.networkRoute?.isolated"><span>Circuito</span><strong>{{ item.networkRoute.proxyUsername ?? 'Isolado' }} · {{ item.networkRoute.circuitChanges ?? 0 }} troca(s)</strong></div>
                 <div><span>Adicionado</span><strong>{{ formatDateTime(item.addedAt) }}</strong></div>
                 <div><span>Destino</span><strong>{{ item.outputPath || '-' }}</strong></div>
-                <div class="detail-wide archive-password-editor">
+                <div v-if="itemMayNeedArchivePassword(item)" class="detail-wide archive-password-editor">
                   <span>Senha do arquivo</span>
                   <div>
                     <input
@@ -816,6 +816,7 @@ import {
   type DownloadSortMode,
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatSpeed } from '../utils/format'
+import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 import ErrorState from './ErrorState.vue'
 import VirtualRows from './VirtualRows.vue'
@@ -1973,6 +1974,11 @@ function maybeAutoEngageTor(): void {
       break
     }
   }
+}
+
+function itemMayNeedArchivePassword(item: DownloadItem): boolean {
+  if (isArchiveFilename(item.title)) return true
+  return (item.children ?? []).some((child) => isArchiveFilename(child.filename))
 }
 
 async function saveArchivePasswordFor(id: string): Promise<void> {
