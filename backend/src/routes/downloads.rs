@@ -1702,6 +1702,12 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
     }
 }
 
+/// Decide se um download deve receber uma rota Tor isolada. Puro e testável:
+/// só depende da flag por-download e de o daemon Tor estar rodando (porta runtime).
+fn should_assign_isolated_route(auto_tor_on_limit: bool, isolated_tor_port: Option<u16>) -> bool {
+    auto_tor_on_limit && isolated_tor_port.is_some()
+}
+
 async fn ensure_download_network_route(
     state: &AppState,
     id: &str,
@@ -2648,6 +2654,18 @@ mod tests {
             created_at,
             priority,
         }
+    }
+
+    #[test]
+    fn isolated_route_requires_flag_and_running_tor() {
+        // flag on + tor running => assign
+        assert!(should_assign_isolated_route(true, Some(9150)));
+        // flag on but tor not running => no
+        assert!(!should_assign_isolated_route(true, None));
+        // flag off => no, even with tor running
+        assert!(!should_assign_isolated_route(false, Some(9150)));
+        // flag off + tor off => no
+        assert!(!should_assign_isolated_route(false, None));
     }
 
     #[test]
