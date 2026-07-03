@@ -14,6 +14,7 @@ pub struct FichierProvider;
 
 impl FichierProvider {
     pub fn matches(url: &str) -> bool {
+        //Todo: talvez seja melhor usar regex para pegar subdomínios
         host_matches(url, &["1fichier.com", "www.1fichier.com"])
     }
 
@@ -108,6 +109,7 @@ impl FichierProvider {
             }
         }
         // English text: "wait X minutes/hours"
+        // Todo: isso não tá muito bom, veja no projeto publico do jDownloader como é feito
         let lower = html.to_lowercase();
         if let Some(pos) = lower.find("wait ") {
             let rest = &lower[pos + 5..];
@@ -127,6 +129,7 @@ impl FichierProvider {
             || html.contains("Sign in instantly to continue your download")
     }
 
+    // Cobre PT/FR/EN conhecidos; ampliar quando houver amostras reais de outras línguas.
     /// 1fichier bloqueia IPs de servidor/VPN/proxy/Tor para download gratuito.
     /// A página de bloqueio não tem o formulário de download, então sem isso o
     /// fluxo cairia em um erro genérico de "link não encontrado".
@@ -574,6 +577,7 @@ impl Provider for FichierProvider {
     }
 }
 
+//TODO: mover todos os testes para uma pasta de testes como fazemos no laravel (o mesmo vale para os demais hosts)
 #[cfg(test)]
 mod tests {
     use super::FichierProvider;

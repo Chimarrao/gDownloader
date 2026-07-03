@@ -4,7 +4,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
 
-// ── Hosters conhecidos (usados para detecção e scoring) ──────────────────────
+// Hosters conhecidos para detecção/scoring de mirrors.
 pub static HOSTERS: &[&str] = &[
     // Providers e hosters suportados
     "1fichier.com",
@@ -19,6 +19,24 @@ pub static HOSTERS: &[&str] = &[
     "terabox.com",
     "1024tera.com",
     "akirabox.to",
+    // Hosters premium / pagos populares
+    "1cloudfile.com",
+    "ddownload.com",
+    "drop.download",
+    "filefactory.com",
+    "fikper.com",
+    "hitfile.net",
+    "nitroflare.com",
+    "turbobit.net",
+    "uploadgig.com",
+    // Hosters gratuitos populares
+    "clicknupload.to",
+    "dailyuploads.net",
+    "dropgalaxy.com",
+    "file-upload.org",
+    "send.cm",
+    "userupload.net",
+    "usersdrive.com",
     // Clouds / arquivos públicos
     "drive.google.com",
     "onedrive.live.com",
