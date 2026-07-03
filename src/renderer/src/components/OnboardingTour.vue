@@ -73,43 +73,79 @@ const steps: TourStep[] = [
     tab: 'downloads',
     selector: '[data-tour="download-queue"]',
     title: 'Acompanhe a fila',
-    body: 'A fila mostra progresso, velocidade suavizada, próximos itens e ações rápidas por download. No YouTube, as etapas de vídeo, áudio e mesclagem aparecem separadas.',
-    checklist: ['Clique com o botão direito para ações rápidas', 'Use Q para alternar o painel lateral'],
+    body: 'Veja seus downloads, progresso, velocidade e status em tempo real.',
   },
   {
     tab: 'grabber',
     selector: '[data-tour="link-input"]',
     title: 'Capture links',
-    body: 'Cole uma URL ou uma lista inteira. O capturador detecta arquivos, pastas, playlists e canais públicos do YouTube antes de enviar para a fila.',
-    checklist: ['Aceita vários links por linha', 'Canais grandes podem usar limite opcional'],
+    body: 'Cole ou arraste links aqui; o app lê os metadados e monta a lista.',
+  },
+  {
+    tab: 'grabber',
+    selector: '[data-tour="captured-results"]',
+    title: 'Resultados capturados',
+    body: 'Escolha o que baixar; só o item selecionado sai do capturador.',
+  },
+  {
+    tab: 'downloads',
+    selector: '[data-tour="tab-bar"]',
+    title: 'Navegue pelas abas',
+    body: 'Alterne entre Downloads, Captura, Configurações, Contas e Logs.',
   },
   {
     tab: 'settings',
     selector: '[data-tour="youtube-settings"]',
     title: 'Ajuste o YouTube',
-    body: 'Configure cookies, container final, legendas, múltiplos áudios e capítulos. O capturador reutiliza metadados em cache para iniciar downloads com menos espera.',
-    checklist: ['Cookies ajudam vídeos restritos', 'O formato escolhido vale para o arquivo final'],
+    body: 'Cookies, formato de merge, legendas e atualização do yt-dlp.',
+  },
+  {
+    tab: 'account',
+    selector: '[data-tour="accounts-tab"]',
+    title: 'Conecte contas premium',
+    body: 'Ligue 1fichier e Rapidgator para destravar limites e velocidade.',
   },
   {
     tab: 'downloads',
     selector: '[data-tour="tor-widget"]',
     title: 'Use Tor quando precisar',
-    body: 'O painel Tor conecta, testa a rota e troca identidade sem sair da tela principal. Downloads configurados para Tor mostram o indicador na própria linha.',
-    checklist: ['Teste a saída antes de baixar', 'Nova identidade troca a rota'],
+    body: 'Contorne limites de IP com um circuito Tor isolado por download.',
   },
   {
     tab: 'settings',
     selector: '[data-tour="download-folder"]',
     title: 'Defina o destino padrão',
-    body: 'Escolha a pasta inicial para downloads capturados, importados ou adicionados manualmente. Cada item ainda pode receber destino próprio no capturador.',
-    checklist: ['Use uma pasta com espaço livre', 'Você pode trocar por download quando precisar'],
+    body: 'Escolha onde os arquivos são salvos por padrão.',
+  },
+  {
+    tab: 'settings',
+    selector: '[data-tour="concurrency"]',
+    title: 'Downloads simultâneos',
+    body: 'Controle quantos downloads rodam ao mesmo tempo.',
+  },
+  {
+    tab: 'settings',
+    selector: '[data-tour="duplicates"]',
+    title: 'Duplicatas',
+    body: 'Decida o que fazer quando um arquivo já existe (padrão: salvar com sufixo).',
+  },
+  {
+    tab: 'grabber',
+    selector: '[data-tour="mirrors"]',
+    title: 'Busca de mirrors',
+    body: 'Encontre espelhos alternativos quando um host está indisponível.',
   },
   {
     tab: 'logs',
     selector: '[data-tour="logs-panel"]',
     title: 'Leia os logs',
-    body: 'A tela de logs agrupa nível, módulo e mensagem amigável. O detalhe técnico continua disponível para copiar ou inspecionar quando houver erro.',
-    checklist: ['Filtre por Info, Aviso ou Erro', 'Use a busca para achar um download'],
+    body: 'Acompanhe eventos por nível e módulo; útil para diagnosticar erros.',
+  },
+  {
+    tab: 'settings',
+    selector: '[data-tour="remote-access"]',
+    title: 'Acesso remoto',
+    body: 'Controle o app de outro dispositivo na sua rede local.',
   },
 ]
 
@@ -211,6 +247,18 @@ async function prepareStep(): Promise<void> {
   }
   await nextTick()
   await wait(90)
+  const target = document.querySelector<HTMLElement>(step.selector)
+  if (!target) {
+    // Selector not found: skip forward (or backward when going back) to next valid step
+    const direction = stepIndex.value < steps.length - 1 ? 1 : -1
+    const next = stepIndex.value + direction
+    if (next >= 0 && next < steps.length) {
+      stepIndex.value = next
+    } else {
+      finish()
+    }
+    return
+  }
   await refreshTarget()
 }
 
