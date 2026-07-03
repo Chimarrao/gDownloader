@@ -1,5 +1,5 @@
 <template>
-  <div class="captured-panel">
+  <div class="captured-panel" data-tour="captured-results">
     <div class="status-chips">
       <span class="status-chip">
         {{ t('linkGrabberStatusAll') }}
@@ -225,6 +225,7 @@
               class="row-action-btn is-mirror"
               :class="{ 'is-active': activeMirrorRowUrl === row.url }"
               :title="t('linkGrabberOpenMirrorsTitle')"
+              data-tour="mirrors"
               @click="emit('open-mirrors', row)"
             >
               <i class="pi pi-sitemap"></i>

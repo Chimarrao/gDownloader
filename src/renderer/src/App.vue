@@ -114,7 +114,7 @@
       </div>
     </header>
 
-    <nav class="tab-bar">
+    <nav class="tab-bar" data-tour="tab-bar">
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'downloads' }"
@@ -146,6 +146,7 @@
       <button
         class="tab-btn"
         :class="{ active: activeTab === 'account' }"
+        data-tour="accounts-tab"
         @click="activeTab = 'account'"
       >
         <i class="pi pi-user"></i>

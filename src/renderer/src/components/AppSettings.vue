@@ -28,7 +28,7 @@
         </div>
       </div>
 
-      <div class="setting-row">
+      <div class="setting-row" data-tour="concurrency">
         <div class="setting-info">
           <span class="setting-label">{{ t('concurrentDownloads') }}</span>
           <span class="setting-desc">{{ t('concurrentDownloadsDesc') }}</span>
@@ -85,7 +85,7 @@
         </div>
       </div>
 
-      <div class="setting-row">
+      <div class="setting-row" data-tour="duplicates">
         <div class="setting-info">
           <span class="setting-label">Duplicatas padrão</span>
           <span class="setting-desc">Ação padrão quando o arquivo já existe na fila ou no histórico</span>
@@ -331,7 +331,7 @@
     </div>
 
     <!-- Remote access section -->
-    <div class="settings-section">
+    <div class="settings-section" data-tour="remote-access">
       <h3 class="section-title">Acesso remoto local</h3>
 
       <div class="setting-row">
