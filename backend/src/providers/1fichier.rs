@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 use crate::models::{FileChildInfo, FileInfo};
 use super::{
-    apply_speed_limit, capabilities_for_provider_name, extract_wait_seconds_from_text, host_matches,
+    apply_speed_limit, capabilities_for_provider_name, extract_wait_seconds_from_text,
     rate_limit_error, unsupported_error, ProgressUpdate, Provider, ProviderDefaults,
 };
 
@@ -14,8 +14,10 @@ pub struct FichierProvider;
 
 impl FichierProvider {
     pub fn matches(url: &str) -> bool {
-        //Todo: talvez seja melhor usar regex para pegar subdomínios
-        host_matches(url, &["1fichier.com", "www.1fichier.com"])
+        super::parse_url(url)
+            .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+            .map(|host| host == "1fichier.com" || host.ends_with(".1fichier.com"))
+            .unwrap_or(false)
     }
 
     fn extract_download_page(url: &str) -> Option<String> {
@@ -109,7 +111,6 @@ impl FichierProvider {
             }
         }
         // English text: "wait X minutes/hours"
-        // Todo: isso não tá muito bom, veja no projeto publico do jDownloader como é feito
         let lower = html.to_lowercase();
         if let Some(pos) = lower.find("wait ") {
             let rest = &lower[pos + 5..];
