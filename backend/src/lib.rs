@@ -4,6 +4,7 @@
 
 pub mod db;        // Persistência SQLite
 pub mod hash_verify;
+pub(crate) mod migrations; // Migrações do banco de dados SQLite
 pub mod mirrors;   // Busca de mirrors (SSE streaming)
 pub mod models;    // Structs e enums de dados (Download, FileInfo, WsEvent, etc.)
 pub mod proxy_intercept;
