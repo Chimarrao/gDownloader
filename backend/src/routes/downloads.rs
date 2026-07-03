@@ -1843,12 +1843,39 @@ async fn refresh_download_tor_exit(state: AppState, id: String, route: DownloadN
         return;
     }
 
+    let country_code = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        async {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(6))
+                .build()
+                .ok()?;
+            let json = client
+                .get(format!("https://ipapi.co/{ip}/json/"))
+                .send()
+                .await
+                .ok()?
+                .json::<serde_json::Value>()
+                .await
+                .ok()?;
+            json.get("country_code")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        },
+    )
+    .await
+    .ok()
+    .flatten();
+
     {
         let mut map = state.downloads.lock().await;
         if let Some(download) = map.get_mut(&id) {
             if let Some(current) = download.network_route.as_mut() {
                 if current.proxy_username == route.proxy_username {
                     current.exit_ip = Some(ip.clone());
+                    if let Some(cc) = country_code.clone() {
+                        current.exit_country_code = Some(cc);
+                    }
                     current.last_checked_at = Some(current_unix_secs());
                 }
             }
