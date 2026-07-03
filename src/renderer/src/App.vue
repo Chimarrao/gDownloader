@@ -68,7 +68,10 @@
                 class="tor-node"
                 :class="{ active: torState.state === 'connected' || torState.state === 'connecting', pulse: torState.state === 'connecting' && index === torPulseIndex }"
               >
-                <span class="tor-node-dot">{{ node.code }}</span>
+                <span class="tor-node-dot">
+                  <span v-if="flagClass(node.code)" :class="flagClass(node.code)"></span>
+                  <span v-else>{{ node.code }}</span>
+                </span>
                 <strong>{{ node.role }}</strong>
                 <em>{{ node.country }}</em>
               </div>
@@ -208,6 +211,7 @@ import OnboardingTour from './components/OnboardingTour.vue'
 import { setLocale, useI18n } from './i18n'
 import { applyUiPreferences, useTheme, type ThemeId } from './themes'
 import { pushRingBuffer } from './utils/ring-buffer'
+import { flagClass } from './utils/flag'
 import torIconSvg from './assets/tor.svg?raw'
 
 type AppTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
@@ -925,6 +929,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   gap: 5px;
   padding: 4px;
   text-align: center;
+  transition: transform 0.25s ease, opacity 0.25s ease;
 }
 
 .tor-node-dot {
@@ -939,6 +944,8 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 900;
+  transition: transform 0.25s ease, opacity 0.25s ease;
+  overflow: hidden;
 }
 
 .tor-node.active .tor-node-dot {
@@ -948,7 +955,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 .tor-node.pulse .tor-node-dot {
-  animation: tor-pulse 0.9s ease-in-out infinite;
+  animation: tor-pulse 1.2s ease-in-out infinite;
 }
 
 .tor-node strong {
@@ -1049,9 +1056,14 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 @keyframes tor-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
   50% {
     transform: scale(1.08);
-    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.14);
+    opacity: 1;
   }
 }
 

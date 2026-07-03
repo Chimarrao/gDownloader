@@ -432,6 +432,7 @@
             <!-- Tor ao atingir limite: chip discreto (engajamento automático) -->
             <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-chip">
               <span class="row-tor-icon" v-html="torIconSvg"></span>
+              <span v-if="flagClass(item.networkRoute?.exitCountryCode)" :class="flagClass(item.networkRoute?.exitCountryCode)"></span>
               <span class="tor-chip-text">Contornando limite via Tor<template v-if="item.networkRoute?.circuitChanges"> · circuito #{{ item.networkRoute.circuitChanges }}</template></span>
               <button class="tor-chip-off" title="Desativar Tor para este download" @click.stop="disableAutoTor(item)">Desativar</button>
             </div>
@@ -801,6 +802,7 @@ import { formatBytes, formatEta, formatSpeed } from '../utils/format'
 import { effectiveSize } from '../utils/display-size'
 import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
+import { flagClass } from '../utils/flag'
 import ErrorState from './ErrorState.vue'
 import VirtualRows from './VirtualRows.vue'
 

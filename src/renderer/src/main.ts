@@ -5,6 +5,7 @@ import ToastService from 'primevue/toastservice'
 import Tooltip from 'primevue/tooltip'
 import App from './App.vue'
 import 'primeicons/primeicons.css'
+import 'flag-icons/css/flag-icons.min.css'
 import './assets/main.css'
 
 const app = createApp(App)
