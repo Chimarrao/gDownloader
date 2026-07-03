@@ -429,29 +429,11 @@
               ]"
             />
 
-            <!-- Tor ao atingir limite: ativo (rotacionando circuitos) -->
-            <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-banner active">
+            <!-- Tor ao atingir limite: chip discreto (engajamento automático) -->
+            <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-chip">
               <span class="row-tor-icon" v-html="torIconSvg"></span>
-              <span class="tor-limit-text">
-                Baixando via Tor<template v-if="item.networkRoute?.circuitChanges != null"> · circuito #{{ item.networkRoute.circuitChanges }}</template><template v-if="item.networkRoute?.exitIp"> · saída {{ item.networkRoute.exitIp }}</template>
-                — trocando de IP até concluir.
-              </span>
-              <button class="tor-limit-off" title="Desativar Tor para este download" @click.stop="disableAutoTor(item)">
-                Desativar
-              </button>
-            </div>
-
-            <!-- Tor ao atingir limite: oferta (download bateu no limite) -->
-            <div v-else-if="!item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-banner">
-              <span class="row-tor-icon" v-html="torIconSvg"></span>
-              <span class="tor-limit-text">
-                Limite atingido. Dá pra continuar baixando via Tor (troca de IP e
-                segue até concluir).
-              </span>
-              <button class="tor-limit-cta" :disabled="torEngaging.has(item.id)" @click.stop="engageTorForDownload(item)">
-                <i class="pi" :class="torEngaging.has(item.id) ? 'pi-spin pi-spinner' : 'pi-bolt'"></i>
-                {{ torEngaging.has(item.id) ? (torBootstrapPercent > 0 && torBootstrapPercent < 100 ? `Conectando ao Tor… ${torBootstrapPercent}%` : 'Conectando…') : 'Continuar via Tor' }}
-              </button>
+              <span class="tor-chip-text">Contornando limite via Tor<template v-if="item.networkRoute?.circuitChanges"> · circuito #{{ item.networkRoute.circuitChanges }}</template></span>
+              <button class="tor-chip-off" title="Desativar Tor para este download" @click.stop="disableAutoTor(item)">Desativar</button>
             </div>
 
             <div
@@ -1666,6 +1648,9 @@ onMounted(async () => {
         if (ev.status && ev.status !== DownloadStatusEnum.RateLimited) {
           torCircuitRetryIds.delete(ev.id)
         }
+        if (ev.status === DownloadStatusEnum.RateLimited) {
+          maybeAutoEngageTor()
+        }
         scheduleHydrate(900)
       } else {
         scheduleHydrate(300)
@@ -1960,23 +1945,18 @@ async function disableAutoTor(item: DownloadItem): Promise<void> {
   setItemAutoTor(item.id, false)
 }
 
-// Auto: quando um download com a flag ligada bate no limite e o Tor ainda não
-// está conectado, dispara a conexão automaticamente (uma vez por download).
+// Auto: quando qualquer download bate no limite, dispara o Tor isolado
+// automaticamente (uma vez por download, independente do proxy global).
 function maybeAutoEngageTor(): void {
-  if (torActive.value) {
-    autoTorAttempted.clear()
-    return
-  }
   for (const item of items.value) {
     if (
-      item.autoTorOnLimit &&
       showTorLimitHint(item) &&
+      !item.autoTorOnLimit &&
       !torEngaging.value.has(item.id) &&
       !autoTorAttempted.has(item.id)
     ) {
       autoTorAttempted.add(item.id)
       void engageTorForDownload(item)
-      break
     }
   }
 }
@@ -3564,77 +3544,49 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   display: block;
 }
 
-/* ── Banner "Continuar via Tor" no card de download ───────────── */
-.tor-limit-banner {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 8px;
-  padding: 9px 11px;
-  border-radius: 9px;
-  border: 1px solid color-mix(in srgb, #7d4698 38%, transparent);
-  background: color-mix(in srgb, #7d4698 9%, var(--bg-card));
-}
-
-.tor-limit-banner.active {
-  border-color: color-mix(in srgb, #22c55e 42%, transparent);
-  background: color-mix(in srgb, #22c55e 9%, var(--bg-card));
-}
-
-.tor-limit-banner .row-tor-icon {
-  width: 17px;
-  height: 17px;
-  color: #7d4698;
-}
-
-.tor-limit-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1.35;
-  color: var(--text-primary);
-}
-
-.tor-limit-cta {
-  flex: 0 0 auto;
+/* ── Chip discreto "Contornando limite via Tor" ───────────────── */
+.tor-limit-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: #7d4698;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter 0.15s ease;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 20px;
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.06));
+  border: 1px solid color-mix(in srgb, #7d4698 22%, transparent);
 }
 
-.tor-limit-cta:hover:not(:disabled) {
-  filter: brightness(1.1);
+.tor-limit-chip .row-tor-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: #7d4698;
+  opacity: 0.85;
 }
 
-.tor-limit-cta:disabled {
-  opacity: 0.7;
-  cursor: default;
-}
-
-.tor-limit-off {
-  flex: 0 0 auto;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-muted);
+.tor-chip-text {
   font-size: 11px;
-  cursor: pointer;
+  color: var(--text-secondary, var(--text-muted));
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
-.tor-limit-off:hover {
-  color: var(--text-primary);
+.tor-chip-off {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 0 0 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: color 0.15s, text-decoration-color 0.15s;
+}
+
+.tor-chip-off:hover {
+  color: var(--text-secondary, var(--text-muted));
+  text-decoration-color: currentColor;
 }
 
 .ctx-tor-icon {
