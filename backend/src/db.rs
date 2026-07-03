@@ -1,7 +1,9 @@
 use anyhow::Result;
 use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 
-use crate::migrations::{column_exists, MIGRATIONS};
+use crate::migrations::MIGRATIONS;
+#[cfg(test)]
+use crate::migrations::column_exists;
 use crate::models::{
     ArchivePassword, CachedFileInfo, Download, DownloadEvent, DownloadStatus, DuplicateDownload,
     DuplicateGroup, FileChildInfo, HistoryItem, LegacyConfigMigration, PublicSettings,
