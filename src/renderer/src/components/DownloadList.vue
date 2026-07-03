@@ -324,11 +324,11 @@
                 </span>
               </template>
 
-              <template v-if="item.size > 0 && hasColumn('size')">
+              <template v-if="displayTotal(item) > 0 && hasColumn('size')">
                 <span class="meta-sep">·</span>
                 <span class="meta-size">
-                  {{ formatBytes(Math.floor((item.percent / 100) * item.size)) }}
-                  / {{ formatBytes(item.size) }}
+                  {{ formatBytes(Math.floor((item.percent / 100) * displayTotal(item))) }}
+                  / {{ formatBytes(displayTotal(item)) }}
                 </span>
               </template>
 
@@ -816,6 +816,7 @@ import {
   type DownloadSortMode,
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatSpeed } from '../utils/format'
+import { effectiveSize } from '../utils/display-size'
 import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 import ErrorState from './ErrorState.vue'
@@ -985,6 +986,10 @@ const rateLimitedItems = computed(() =>
     .sort((left, right) => (left.retryAt ?? 0) - (right.retryAt ?? 0))
     .slice(0, 8)
 )
+
+function displayTotal(item: DownloadItem): number {
+  return effectiveSize(item.size, item.children, item.isFolder)
+}
 
 function itemTypeTag(item: DownloadItem): { id: string; label: string; color: string } {
   if (item.isFolder) {
