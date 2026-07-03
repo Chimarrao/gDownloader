@@ -2049,7 +2049,19 @@ async fn persist_download_snapshot(state: &AppState, id: &str) {
 
     if let Some(download) = snapshot {
         if let Ok(db) = state.db.lock() {
-            let _ = crate::db::upsert(&db, &download);
+            if let Err(error) = crate::db::upsert(&db, &download) {
+                warn!(
+                    target: "gdownloader_backend::downloads",
+                    "falha ao persistir download id={} status={:?}: {}",
+                    id, download.status, error
+                );
+            }
+        } else {
+            warn!(
+                target: "gdownloader_backend::downloads",
+                "falha ao obter lock do DB para persistir download id={}",
+                id
+            );
         }
     }
 }
@@ -2328,8 +2340,29 @@ async fn update_error(state: &AppState, id: &str, message: &str) {
 pub async fn recover_downloads_from_db(state: AppState) {
     let downloads = {
         let Ok(db) = state.db.lock() else { return };
-        crate::db::load_all_downloads(&db).unwrap_or_default()
+        match crate::db::load_all_downloads(&db) {
+            Ok(list) => list,
+            Err(error) => {
+                warn!(
+                    target: "gdownloader_backend::downloads",
+                    "falha ao carregar downloads do SQLite na inicialização: {}",
+                    error
+                );
+                Vec::new()
+            }
+        }
     };
+
+    let complete_count = downloads
+        .iter()
+        .filter(|d| matches!(d.status, DownloadStatus::Complete))
+        .count();
+    info!(
+        target: "gdownloader_backend::downloads",
+        "carregados {} downloads do SQLite ({} concluídos)",
+        downloads.len(),
+        complete_count
+    );
 
     for mut download in downloads {
         download.speed_bps = 0;
