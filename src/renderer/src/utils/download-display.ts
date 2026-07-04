@@ -133,10 +133,16 @@ export function compareDownloads(
     case 'active_first': {
       const priorityDiff = activePriority(left) - activePriority(right)
       if (priorityDiff !== 0) return priorityDiff
-      const rightSpeedBucket = Math.floor(effectiveSpeed(right, nowTick) / (256 * 1024))
-      const leftSpeedBucket = Math.floor(effectiveSpeed(left, nowTick) / (256 * 1024))
-      if (rightSpeedBucket !== leftSpeedBucket) {
-        return rightSpeedBucket - leftSpeedBucket
+      // YouTube tem velocidade sintética que oscila muito (fases vídeo/áudio/merge),
+      // então ordenar por velocidade faria a lista trocar de posição o tempo todo.
+      // Para YouTube, ignora a velocidade e mantém ordem estável por data.
+      const involvesYouTube = left.moduleId === 'youtube' || right.moduleId === 'youtube'
+      if (!involvesYouTube) {
+        const rightSpeedBucket = Math.floor(effectiveSpeed(right, nowTick) / (256 * 1024))
+        const leftSpeedBucket = Math.floor(effectiveSpeed(left, nowTick) / (256 * 1024))
+        if (rightSpeedBucket !== leftSpeedBucket) {
+          return rightSpeedBucket - leftSpeedBucket
+        }
       }
       return right.addedAt - left.addedAt
     }
