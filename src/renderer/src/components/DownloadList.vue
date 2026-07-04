@@ -1947,18 +1947,40 @@ async function disableAutoTor(item: DownloadItem): Promise<void> {
   setItemAutoTor(item.id, false)
 }
 
-// Auto: quando qualquer download bate no limite, dispara o Tor isolado
-// automaticamente (uma vez por download, independente do proxy global).
+// Para downloads que o usuário JÁ marcou p/ usar Tor: garante que o daemon Tor
+// esteja rodando, SEM forçar retry (o backend troca pro Tor sozinho depois de
+// esgotar as tentativas normais — retry reiniciaria o contador de tentativas).
+async function ensureTorDaemonForDownload(item: DownloadItem): Promise<void> {
+  if (torEngaging.value.has(item.id)) return
+  torEngaging.value = new Set(torEngaging.value).add(item.id)
+  startTorBootstrapPolling()
+  try {
+    await window.api.tor.ensureRunning()
+  } catch (error) {
+    const item2 = items.value.find((entry) => entry.id === item.id)
+    if (item2) {
+      item2.error = error instanceof Error ? error.message : 'Falha ao conectar ao Tor'
+    }
+  } finally {
+    const next = new Set(torEngaging.value)
+    next.delete(item.id)
+    torEngaging.value = next
+  }
+}
+
+// Auto: SOMENTE para downloads que o usuário marcou p/ usar Tor (autoTorOnLimit).
+// Garante o daemon rodando quando eles batem no limite; downloads NÃO marcados
+// nunca usam Tor automaticamente.
 function maybeAutoEngageTor(): void {
   for (const item of items.value) {
     if (
+      item.autoTorOnLimit &&
       showTorLimitHint(item) &&
-      !item.autoTorOnLimit &&
       !torEngaging.value.has(item.id) &&
       !autoTorAttempted.has(item.id)
     ) {
       autoTorAttempted.add(item.id)
-      void engageTorForDownload(item)
+      void ensureTorDaemonForDownload(item)
     }
   }
 }

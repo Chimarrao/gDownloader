@@ -1487,21 +1487,25 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 let retry_policy = classify_retry_policy(&provider_name, &err_str, attempt);
                 let is_rate_limit = err_str.starts_with("RATE_LIMIT:");
                 let is_premium_required = err_str.starts_with("PREMIUM_REQUIRED:");
-                let should_retry = !is_premium_required && (is_rate_limit || attempt < max_retries);
+                // Flag por-download: "usar Tor ao atingir o limite". Só entra em
+                // cena DEPOIS de esgotar as tentativas normais (attempt >= max_retries):
+                // primeiro tenta o máximo pela rede normal, só então troca pro Tor.
+                let download_auto_tor = {
+                    let map = state.downloads.lock().await;
+                    map.get(&id).map(|d| d.auto_tor_on_limit).unwrap_or(false)
+                };
+                let isolated_tor_port = *state.isolated_tor_port.lock().await;
+                let normal_retries_exhausted = attempt >= max_retries;
+                let isolated_tor_retry = should_assign_isolated_route(download_auto_tor, isolated_tor_port)
+                    && normal_retries_exhausted;
+                // Retenta enquanto: for rate-limit, ainda houver orçamento normal, ou
+                // o download estiver marcado p/ Tor (segue tentando até o Tor entrar).
+                let should_retry = !is_premium_required
+                    && (is_rate_limit || attempt < max_retries || download_auto_tor);
                 if should_retry {
                     let settings = state.db.lock().ok()
                         .and_then(|db| crate::db::load_public_settings(&db).ok())
                         .unwrap_or_default();
-                    // Flag por-download: "usar Tor ao atingir o limite". Quando
-                    // ligada, rotaciona o circuito Tor e retenta — sem exigir o
-                    // ajuste global de reconexão.
-                    let download_auto_tor = {
-                        let map = state.downloads.lock().await;
-                        map.get(&id).map(|d| d.auto_tor_on_limit).unwrap_or(false)
-                    };
-                    let isolated_tor_port = *state.isolated_tor_port.lock().await;
-                    let isolated_tor_retry = is_rate_limit
-                        && should_assign_isolated_route(download_auto_tor, isolated_tor_port);
                     if isolated_tor_retry {
                         tor_limit_retries = tor_limit_retries.saturating_add(1);
                         if tor_limit_retry_exhausted(tor_limit_retries) {
@@ -1571,8 +1575,10 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                         if reconnect_cfg.0 {
                             match crate::reconnect::attempt_reconnect(&reconnect_cfg.1).await {
                                 Ok(true) => {
-                                    // Reconnect succeeded — skip the wait and retry immediately
-                                    if !is_rate_limit {
+                                    // Reconnect succeeded — skip the wait and retry immediately.
+                                    // Downloads marcados p/ Tor contam o rate-limit para
+                                    // avançar rumo à troca pro Tor após as tentativas normais.
+                                    if !is_rate_limit || download_auto_tor {
                                         attempt = attempt.saturating_add(1);
                                     }
                                     continue;
@@ -1604,7 +1610,10 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                             _ => {}
                         }
                     }
-                    if !is_rate_limit {
+                    // Conta a tentativa normal (não durante a fase Tor). Rate-limits
+                    // só contam quando o Tor está ligado p/ o download, para esgotar
+                    // as tentativas normais antes de trocar pro Tor.
+                    if !isolated_tor_retry && (!is_rate_limit || download_auto_tor) {
                         attempt = attempt.saturating_add(1);
                     }
                     continue;
