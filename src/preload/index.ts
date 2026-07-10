@@ -1034,6 +1034,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     moduleId: normalizeModuleId(d.provider),
     title: d.filename,
     size,
+    durationSecs: typeof d.duration_secs === 'number' ? d.duration_secs : undefined,
     isFolder: d.is_folder ?? false,
     children: d.children ?? [],
     status: d.status,

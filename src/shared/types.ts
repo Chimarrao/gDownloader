@@ -15,6 +15,7 @@ export interface AccountInfo {
 export interface FileInfo {
   name: string
   size: number
+  durationSecs?: number
   mimeType?: string
   isFolder?: boolean
   children?: DownloadChild[]
@@ -66,6 +67,7 @@ export interface DownloadItem {
   moduleId: string
   title: string
   size: number
+  durationSecs?: number
   isFolder?: boolean
   children?: DownloadChild[]
   status: DownloadStatus

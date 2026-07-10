@@ -26,8 +26,22 @@ export function formatEta(seconds: number): string {
   return `${hours}h ${String(remainingMinutes).padStart(2, '0')}m`
 }
 
+export function formatMediaDuration(seconds: number): string {
+  if (!seconds || seconds <= 0) return ''
+
+  const totalSeconds = Math.round(seconds)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const remainingSeconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(remainingSeconds).padStart(2, '0')}s`
+  }
+
+  return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`
+}
+
 export function formatDuration(milliseconds: number): string {
   if (!milliseconds || milliseconds <= 0) return '0s'
   return formatEta(Math.max(0, Math.round(milliseconds / 1000)))
 }
-

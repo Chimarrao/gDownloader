@@ -215,6 +215,7 @@ fn cached_file_info_to_file_info(cached: CachedFileInfo) -> FileInfo {
     FileInfo {
         filename: cached.name,
         size: cached.size,
+        duration_secs: cached.duration_secs,
         mime_type: cached.mime_type,
         is_folder: cached.is_folder,
         children: cached.children,
@@ -330,6 +331,7 @@ pub async fn add_download_internal(
                     provider_id,
                     &info.filename,
                     info.size,
+                    info.duration_secs,
                     info.mime_type.as_deref(),
                     info.is_folder,
                     &info.children,
@@ -480,6 +482,7 @@ pub async fn add_download_internal(
         identity_key,
         filename: file_info.filename,
         size: file_info.size,
+        duration_secs: file_info.duration_secs,
         dest_path: dest_path.clone(),
         status: DownloadStatus::Pending,
         bytes_downloaded: 0,

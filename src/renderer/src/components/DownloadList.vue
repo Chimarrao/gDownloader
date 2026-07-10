@@ -332,6 +332,11 @@
                 </span>
               </template>
 
+              <template v-if="item.durationSecs">
+                <span class="meta-sep">·</span>
+                <span class="meta-duration">{{ formatMediaDuration(item.durationSecs) }}</span>
+              </template>
+
               <template v-if="item.isFolder && (item.children?.length ?? 0) > 0">
                 <span class="meta-sep">·</span>
                 <span class="meta-size">{{ item.children?.length }} item(ns)</span>
@@ -579,6 +584,7 @@
                   </strong>
                 </div>
                 <div><span>Tamanho</span><strong>{{ formatBytes(item.size) }}</strong></div>
+                <div v-if="item.durationSecs"><span>Duração</span><strong>{{ formatMediaDuration(item.durationSecs) }}</strong></div>
                 <div><span>Speed</span><strong>{{ formatSpeed(effectiveSpeedValue(item)) }}</strong></div>
                 <div><span>ETA</span><strong>{{ effectiveEtaValue(item) > 0 ? formatEta(effectiveEtaValue(item)) : '-' }}</strong></div>
                 <div><span>Rede</span><strong>{{ networkRouteLabel(item) }}</strong></div>
@@ -798,7 +804,7 @@ import {
   statusText,
   type DownloadSortMode,
 } from '../utils/download-display'
-import { formatBytes, formatEta, formatSpeed } from '../utils/format'
+import { formatBytes, formatEta, formatMediaDuration, formatSpeed } from '../utils/format'
 import { effectiveSize } from '../utils/display-size'
 import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'

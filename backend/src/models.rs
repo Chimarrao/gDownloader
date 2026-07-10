@@ -43,6 +43,8 @@ pub struct Download {
     pub bytes_downloaded: u64,   // Quantidade de bytes já transferidos
     pub speed_bps: u64,          // Velocidade atual em bytes por segundo
     pub eta_secs: u64,           // Tempo estimado para concluir, em segundos
+    #[serde(default)]
+    pub duration_secs: Option<u64>, // Duração da mídia, em segundos
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,
     pub retry_count: u32,
@@ -166,6 +168,8 @@ pub struct FileChildInfo {
 pub struct FileInfo {
     pub filename: String,
     pub size: u64,                    // 0 se o servidor não informar Content-Length
+    #[serde(default)]
+    pub duration_secs: Option<u64>,   // Duração da mídia, em segundos
     pub mime_type: Option<String>,    // Option = Some("video/mp4") ou None — como ?string no PHP
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,
@@ -501,6 +505,8 @@ pub struct CachedFileInfo {
     pub provider_id: String,
     pub name: String,
     pub size: u64,
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
     pub mime_type: Option<String>,
     pub is_folder: bool,
     pub children: Option<Vec<FileChildInfo>>,

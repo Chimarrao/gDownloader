@@ -128,6 +128,7 @@ pub async fn get_file_info(
             providers::provider_id_from_name(provider.name()),
             &info.filename,
             info.size,
+            info.duration_secs,
             info.mime_type.as_deref(),
             info.is_folder,
             &info.children,
@@ -140,6 +141,7 @@ pub async fn get_file_info(
     Ok(Json(serde_json::json!({
         "name": info.filename,
         "size": info.size,
+        "durationSecs": info.duration_secs,
         "mimeType": info.mime_type,
         "isFolder": info.is_folder,
         "children": info.children,

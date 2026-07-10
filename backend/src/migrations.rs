@@ -102,6 +102,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "reensure_download_columns",
         apply: migration_ensure_download_columns,
     },
+    Migration {
+        version: 19,
+        name: "add_media_duration_columns",
+        apply: migration_add_media_duration_columns,
+    },
 ];
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -130,6 +135,7 @@ fn migration_create_core_tables(conn: &Connection) -> Result<()> {
              filename               TEXT NOT NULL DEFAULT '',
              dest_path              TEXT NOT NULL DEFAULT '',
              size                   INTEGER NOT NULL DEFAULT 0,
+             duration_secs          INTEGER,
              bytes_downloaded       INTEGER NOT NULL DEFAULT 0,
              status                 TEXT NOT NULL DEFAULT 'pending',
              is_folder              INTEGER NOT NULL DEFAULT 0,
@@ -232,6 +238,10 @@ fn migration_ensure_download_columns(conn: &Connection) -> Result<()> {
             "network_route_json",
             "ALTER TABLE downloads ADD COLUMN network_route_json TEXT",
         ),
+        (
+            "duration_secs",
+            "ALTER TABLE downloads ADD COLUMN duration_secs INTEGER",
+        ),
     ];
 
     for (column, ddl) in columns {
@@ -330,6 +340,21 @@ fn migration_add_file_cache_media_columns(conn: &Connection) -> Result<()> {
         "ALTER TABLE file_info_cache ADD COLUMN channel_thumbnail_url TEXT",
     )?;
     Ok(())
+}
+
+fn migration_add_media_duration_columns(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "duration_secs",
+        "ALTER TABLE downloads ADD COLUMN duration_secs INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "file_info_cache",
+        "duration_secs",
+        "ALTER TABLE file_info_cache ADD COLUMN duration_secs INTEGER",
+    )
 }
 
 fn migration_create_direct_http_resume_table(conn: &Connection) -> Result<()> {

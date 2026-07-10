@@ -168,8 +168,8 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               parallel_parts, selected_children_json, expected_hash_json,
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
-              completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)
+              completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, duration_secs, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -200,6 +200,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              pinned                 = excluded.pinned,
              network_route_json     = excluded.network_route_json,
              auto_tor_on_limit      = excluded.auto_tor_on_limit,
+             duration_secs          = excluded.duration_secs,
              updated_at             = excluded.updated_at",
         params![
             d.id,
@@ -233,6 +234,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             if d.pinned { 1i64 } else { 0i64 },
             to_json(&d.network_route),
             if d.auto_tor_on_limit { 1i64 } else { 0i64 },
+            d.duration_secs.map(|value| value as i64),
             now_secs(),
         ],
     )?;
@@ -364,7 +366,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 captcha_type, captcha_sitekey, captcha_page_url, captcha_token,
                 error, priority, created_at, started_at, completed_at, last_progress_at,
                 COALESCE(pinned, 0) as pinned, package_id, network_route_json,
-                COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit
+                COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit, duration_secs
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -383,6 +385,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 filename: row.get(4)?,
                 dest_path: row.get(5)?,
                 size: row.get::<_, i64>(6)? as u64,
+                duration_secs: row.get::<_, Option<i64>>(32)?.map(|value| value as u64),
                 bytes_downloaded: row.get::<_, i64>(7)? as u64,
                 status: parse_status(&row.get::<_, String>(8)?),
                 is_folder: row.get::<_, i64>(9)? != 0,
@@ -1008,7 +1011,7 @@ pub fn clear_direct_http_parts(conn: &Connection, download_key: &str) -> Result<
 
 pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<CachedFileInfo>> {
     conn.query_row(
-        "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at
+        "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at, duration_secs
          FROM file_info_cache
          WHERE url = ?1",
         params![url],
@@ -1019,6 +1022,7 @@ pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<Cach
                 provider_id: row.get(1)?,
                 name: row.get(2)?,
                 size: row.get::<_, i64>(3)? as u64,
+                duration_secs: row.get::<_, Option<i64>>(12)?.map(|value| value as u64),
                 mime_type: row.get(4)?,
                 is_folder: row.get::<_, i64>(5)? != 0,
                 children: children_json
@@ -1059,6 +1063,7 @@ pub fn save_cached_file_info(
     provider_id: &str,
     name: &str,
     size: u64,
+    duration_secs: Option<u64>,
     mime_type: Option<&str>,
     is_folder: bool,
     children: &Option<Vec<FileChildInfo>>,
@@ -1069,8 +1074,8 @@ pub fn save_cached_file_info(
     let now = now_secs();
     conn.execute(
         "INSERT INTO file_info_cache
-             (url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+             (url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at, duration_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)
          ON CONFLICT(url) DO UPDATE SET
              provider_id = excluded.provider_id,
              name = excluded.name,
@@ -1081,6 +1086,7 @@ pub fn save_cached_file_info(
              thumbnail_url = excluded.thumbnail_url,
              channel_name = excluded.channel_name,
              channel_thumbnail_url = excluded.channel_thumbnail_url,
+             duration_secs = excluded.duration_secs,
              cached_at = excluded.cached_at,
              last_checked_at = excluded.last_checked_at",
         params![
@@ -1095,6 +1101,7 @@ pub fn save_cached_file_info(
             channel_name,
             channel_thumbnail_url,
             now,
+            duration_secs.map(|value| value as i64),
         ],
     )?;
     Ok(())
@@ -1122,6 +1129,7 @@ mod tests {
             bytes_downloaded: 120,
             speed_bps: 0,
             eta_secs: 0,
+            duration_secs: None,
             is_folder: true,
             children: Some(vec![FileChildInfo {
                 filename: "child.bin".to_string(),

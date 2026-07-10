@@ -526,6 +526,7 @@ impl YouTubeProvider {
         Ok(FileInfo {
             filename,
             size: children.iter().map(|child| child.size).max().unwrap_or(0),
+            duration_secs: (duration_secs > 0).then_some(duration_secs),
             mime_type: Some("video/*".to_string()),
             is_folder: false,
             children: Some(children),

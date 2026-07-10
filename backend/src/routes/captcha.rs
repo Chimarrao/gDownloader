@@ -134,6 +134,7 @@ mod tests {
             bytes_downloaded: 0,
             speed_bps: 0,
             eta_secs: 0,
+            duration_secs: None,
             is_folder: false,
             children: None,
             retry_count: 0,

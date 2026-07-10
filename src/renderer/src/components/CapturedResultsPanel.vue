@@ -194,6 +194,10 @@
               <span v-else-if="row.loading">{{ t('linkGrabberReadingMetadata') }}</span>
               <span v-else-if="row.error">{{ row.error }}</span>
               <span v-else-if="row.info">{{ fmtBytes(effectiveSize(row.info.size, row.info.children, row.info.isFolder)) }}</span>
+              <template v-if="row.info?.durationSecs">
+                <span>·</span>
+                <span>{{ formatMediaDuration(row.info.durationSecs) }}</span>
+              </template>
               <template v-if="selectedQualityLabel(row)">
                 <span>·</span>
                 <span class="quality-chip">{{ selectedQualityLabel(row) }}</span>
@@ -417,6 +421,7 @@ import type { DerivedChildNode } from '../utils/child-tree'
 import VirtualRows from './VirtualRows.vue'
 import type { CapturedRow, SelectableChild } from './link-grabber-model'
 import { effectiveSize } from '../utils/display-size'
+import { formatMediaDuration } from '../utils/format'
 
 const props = defineProps({
   rows: {
