@@ -1187,6 +1187,36 @@ mod tests {
     }
 
     #[test]
+    fn reensure_columns_fixes_legacy_db_missing_expected_hash() {
+        // Simula um DB antigo: v2 já aplicada (marcada em schema_migrations) sem a
+        // coluna expected_hash_json, que só foi pendurada na lista da v2 depois.
+        let path = temp_db_path("legacy-columns");
+        {
+            // Marca só a v2 como aplicada. Assim, ao inicializar, a v1 cria a tabela
+            // `downloads` (sem expected_hash_json), a v2 é pulada (como num DB antigo
+            // que rodou a v2 antes da coluna existir) e o resto roda normalmente.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (2, 'legacy-v2', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // init() deve rodar a v18 e reparar as colunas ausentes.
+        let conn = init(path.to_string_lossy().as_ref()).unwrap();
+        assert!(column_exists(&conn, "downloads", "expected_hash_json").unwrap());
+        assert!(column_exists(&conn, "downloads", "captcha_token").unwrap());
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
     fn persists_complex_download_states_and_clears_terminal_entries() {
         let path = temp_db_path("persistence");
         let conn = init(path.to_string_lossy().as_ref()).unwrap();

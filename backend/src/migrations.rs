@@ -93,6 +93,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "add_download_auto_tor_on_limit",
         apply: migration_add_download_auto_tor_on_limit,
     },
+    // v2 (`ensure_download_columns`) recebeu colunas novas depois que DBs já estavam
+    // acima da v2 — logo elas nunca eram adicionadas em instalações existentes
+    // (ex.: `expected_hash_json` causava "table downloads has no column named ...").
+    // Esta migração re-roda a garantia idempotente de colunas para consertar isso.
+    Migration {
+        version: 18,
+        name: "reensure_download_columns",
+        apply: migration_ensure_download_columns,
+    },
 ];
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
