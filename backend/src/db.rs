@@ -1009,6 +1009,19 @@ pub fn clear_direct_http_parts(conn: &Connection, download_key: &str) -> Result<
     Ok(())
 }
 
+/// Reaponta as linhas de resume do Direct HTTP quando o arquivo é movido de pasta.
+/// A chave é `{url}\n{dest_path}`; trocamos o sufixo do dest_path para que o resume
+/// continue funcionando após "Mover para..." (item 6).
+pub fn remap_direct_http_dest(conn: &Connection, old_dest: &str, new_dest: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE direct_http_parts
+             SET download_key = REPLACE(download_key, char(10) || ?1, char(10) || ?2)
+         WHERE download_key LIKE '%' || char(10) || ?1",
+        params![old_dest, new_dest],
+    )?;
+    Ok(())
+}
+
 pub fn load_cached_file_info(conn: &Connection, url: &str) -> Result<Option<CachedFileInfo>> {
     conn.query_row(
         "SELECT url, provider_id, name, size, mime_type, is_folder, children_json, thumbnail_url, channel_name, channel_thumbnail_url, cached_at, last_checked_at, duration_secs

@@ -406,6 +406,18 @@ const api = {
       })
     },
 
+    move: async (id: string, destDir: string) => {
+      const resp = await fetchBackend(`/downloads/${id}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dest_dir: destDir }),
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }))
+        throw new Error(body.error ?? `HTTP ${resp.status}`)
+      }
+    },
+
     remove: async (id: string) => {
       await fetchBackend(`/downloads/${id}/remove`, { method: 'DELETE' })
     },

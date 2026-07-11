@@ -734,6 +734,7 @@
       </div>
 
       <button @click="setContextSpeedLimit"><i class="pi pi-gauge"></i>Limite de velocidade individual</button>
+      <button v-if="contextMenuItem && !contextMenuItem.isFolder" @click="moveContextDownload"><i class="pi pi-folder"></i>Mover para…</button>
       <button v-if="contextCanTerminal" class="danger" @click="runContextAction('remove')"><i class="pi pi-trash"></i>Remover</button>
       <button v-if="contextCan('canRemoveWithFiles')" class="danger" @click="runContextAction('removeWithFiles')"><i class="pi pi-trash"></i>Remover + arquivos</button>
     </div>
@@ -2216,6 +2217,22 @@ async function setContextPriority(priority: number): Promise<void> {
     await window.api.downloads.setPriority(item.id, priority).catch(() => null)
     const idx = itemIndexById.value[item.id] ?? -1
     if (idx >= 0) patchItemAt(idx, { priority })
+  }
+  await hydrate()
+}
+
+async function moveContextDownload(): Promise<void> {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (!item) return
+  const dir = await window.api.settings.chooseDirectory().catch(() => null)
+  if (!dir) return
+  try {
+    await window.api.downloads.move(item.id, dir)
+  } catch (error) {
+    await window.api.system
+      .notify('Falha ao mover', (error as Error).message)
+      .catch(() => null)
   }
   await hydrate()
 }

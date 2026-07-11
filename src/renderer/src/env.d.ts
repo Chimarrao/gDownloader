@@ -172,6 +172,7 @@ interface RendererApi {
     setPriority: (id: string, priority: number) => Promise<void>
     setAutoTor: (id: string, enabled: boolean) => Promise<void>
     setSpeedLimit: (id: string, speedLimitKib: number) => Promise<void>
+    move: (id: string, destDir: string) => Promise<void>
     remove: (id: string) => Promise<void>
     removeWithFiles: (id: string) => Promise<void>
     clearFinished: () => Promise<void>

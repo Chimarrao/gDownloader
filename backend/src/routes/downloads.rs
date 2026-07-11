@@ -45,6 +45,12 @@ pub struct SpeedLimitRequest {
     pub speed_limit_kib: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MoveRequest {
+    /// Nova pasta de destino do arquivo (o nome do arquivo é preservado).
+    pub dest_dir: String,
+}
+
 fn normalize_identity_url(url: &str) -> String {
     url.split('#').next().unwrap_or(url).trim().to_string()
 }
@@ -1014,6 +1020,142 @@ pub async fn update_download_speed_limit(
     persist_download_snapshot(&state, &id).await;
     record_download_event(&state, &id, "speed_limit", &format!("Limite individual alterado para {} KiB/s", req.speed_limit_kib));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Move o arquivo (parcial ou concluído) de um download para outra pasta, como no
+/// jDownloader (item 6). Funciona durante o download: pausa a task, move os arquivos,
+/// atualiza o dest_path e retoma do ponto onde parou (via Range onde suportado).
+pub async fn move_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<MoveRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let dest_dir = req.dest_dir.trim().to_string();
+    if dest_dir.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, Json(ApiError::new("Pasta de destino inválida"))));
+    }
+
+    let (provider, url, old_dest, is_folder, status, filename) = {
+        let map = state.downloads.lock().await;
+        let Some(d) = map.get(&id) else {
+            return Err((StatusCode::NOT_FOUND, Json(ApiError::new("Download não encontrado"))));
+        };
+        (d.provider.clone(), d.url.clone(), d.dest_path.clone(), d.is_folder, d.status.clone(), d.filename.clone())
+    };
+
+    if is_folder {
+        return Err((StatusCode::BAD_REQUEST, Json(ApiError::new("Mover downloads de pasta ainda não é suportado"))));
+    }
+
+    let file_name = std::path::Path::new(&old_dest)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(filename);
+    let new_dest = std::path::Path::new(&dest_dir).join(&file_name);
+    let new_dest_str = new_dest.to_string_lossy().to_string();
+
+    if new_dest_str == old_dest {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    // Se estiver baixando, aborta a task para liberar o arquivo antes de mover.
+    let was_active = matches!(status, DownloadStatus::Downloading | DownloadStatus::Verifying);
+    if was_active {
+        cancel_provider_sidecar_download(&provider, &url, &old_dest).await;
+        if let Some(handle) = state.active_tasks.lock().await.remove(&id) {
+            handle.abort();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    if let Err(error) = tokio::fs::create_dir_all(&dest_dir).await {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new(format!("Falha ao criar a pasta de destino: {error}")))));
+    }
+    if let Err(error) = move_download_files(&old_dest, &new_dest_str).await {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new(format!("Falha ao mover o arquivo: {error}")))));
+    }
+
+    // Remapeia o resume do Direct HTTP e atualiza o caminho no modelo.
+    if let Ok(db) = state.db.lock() {
+        let _ = crate::db::remap_direct_http_dest(&db, &old_dest, &new_dest_str);
+    }
+    {
+        let mut map = state.downloads.lock().await;
+        if let Some(d) = map.get_mut(&id) {
+            d.dest_path = new_dest_str.clone();
+            // Atualiza o path do filho único (single-file com children).
+            if let Some(children) = d.children.as_mut() {
+                if children.len() == 1 {
+                    children[0].path = Some(new_dest_str.clone());
+                }
+            }
+            if was_active && matches!(d.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
+                d.status = DownloadStatus::Pending;
+                d.speed_bps = 0;
+                d.eta_secs = 0;
+            }
+        }
+    }
+
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "moved", &format!("Arquivo movido para {dest_dir}"));
+    if was_active {
+        schedule_pending_downloads(state.clone()).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Move o arquivo principal e seus arquivos-parte irmãos (`base.partN`) para o novo
+/// caminho, usando rename e caindo para copiar+apagar entre volumes diferentes.
+async fn move_download_files(old_dest: &str, new_dest: &str) -> std::io::Result<()> {
+    let old = std::path::Path::new(old_dest);
+    let new = std::path::Path::new(new_dest);
+    let old_parent = old.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let new_parent = new.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let base = match old.file_name().and_then(|name| name.to_str()) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => return Ok(()),
+    };
+    let new_base = match new.file_name().and_then(|name| name.to_str()) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => return Ok(()),
+    };
+
+    let mut entries = match tokio::fs::read_dir(old_parent).await {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()), // pasta antiga sumiu; nada a mover
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        // Só arquivos (o dir `.parts` do download paralelo é recriado ao retomar).
+        if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy().to_string();
+        let is_main = name == base;
+        let is_part = name.starts_with(&base) && name[base.len()..].starts_with(".part");
+        if !is_main && !is_part {
+            continue;
+        }
+        let suffix = &name[base.len()..];
+        let target = new_parent.join(format!("{new_base}{suffix}"));
+        move_fs_file(&entry.path(), &target).await?;
+    }
+    Ok(())
+}
+
+async fn move_fs_file(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = to.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if tokio::fs::rename(from, to).await.is_ok() {
+        return Ok(());
+    }
+    // Volumes diferentes (EXDEV): copia e remove o original.
+    tokio::fs::copy(from, to).await?;
+    let _ = tokio::fs::remove_file(from).await;
+    Ok(())
 }
 
 // --- Executa o download em background ---
