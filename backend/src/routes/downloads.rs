@@ -705,6 +705,7 @@ pub async fn remove_download(
     };
 
     if removed {
+        state.speed_limits.lock().await.remove(&id);
         if let Ok(db) = state.db.lock() {
             let _ = crate::db::insert_download_event(&db, &id, "removed", "Removido da lista");
             let _ = crate::db::delete(&db, &id);
@@ -755,6 +756,7 @@ pub async fn remove_download_with_files(
         let mut map = state.downloads.lock().await;
         map.remove(&id);
     }
+    state.speed_limits.lock().await.remove(&id);
 
     if let Ok(db) = state.db.lock() {
         let _ = crate::db::insert_download_event(&db, &id, "removed_files", "Removido com arquivos físicos");
@@ -788,6 +790,15 @@ pub async fn clear_finished_downloads(
                 && (download.size == 0 || download.bytes_downloaded < download.size);
             is_active || has_resumable_progress
         });
+    }
+    {
+        // Descarta handles de limite vivo de downloads que saíram da lista.
+        let map = state.downloads.lock().await;
+        state
+            .speed_limits
+            .lock()
+            .await
+            .retain(|id, _| map.contains_key(id));
     }
     if let Ok(db) = state.db.lock() {
         let _ = crate::db::delete_finished(&db);
@@ -991,6 +1002,15 @@ pub async fn update_download_speed_limit(
         ));
     }
 
+    // Aplica ao vivo no download em execução (se houver): o loop de streaming lê
+    // este atômico a cada iteração, então o novo limite vale imediatamente.
+    if let Some(limit) = state.speed_limits.lock().await.get(&id) {
+        limit.store(
+            req.speed_limit_kib.saturating_mul(1024),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     persist_download_snapshot(&state, &id).await;
     record_download_event(&state, &id, "speed_limit", &format!("Limite individual alterado para {} KiB/s", req.speed_limit_kib));
     Ok(StatusCode::NO_CONTENT)
@@ -1000,7 +1020,7 @@ pub async fn update_download_speed_limit(
 // Esta função roda em uma task separada do tokio
 // É como um Worker ou uma Promise longa rodando em paralelo
 async fn run_download(state: AppState, id: String, url: String, dest_path: String) {
-    let (max_retries, speed_limit_bps, parallel_parts, selected_children) = {
+    let (max_retries, speed_limit_kib, parallel_parts, selected_children) = {
         {
             let mut map = state.downloads.lock().await;
             if let Some(d) = map.get_mut(&id) {
@@ -1014,9 +1034,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         }
         let map = state.downloads.lock().await;
         let max_retries = map.get(&id).map(|d| d.max_retries).unwrap_or(0);
-        let speed_limit_bps = map
-            .get(&id)
-            .and_then(|d| if d.speed_limit_kib > 0 { Some(d.speed_limit_kib * 1024) } else { None });
+        let speed_limit_kib = map.get(&id).map(|d| d.speed_limit_kib).unwrap_or(0);
         let parallel_parts = map
             .get(&id)
             .map(|d| d.parallel_parts.max(1))
@@ -1024,8 +1042,17 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
         let selected_children = map
             .get(&id)
             .and_then(|d| d.selected_children.clone());
-        (max_retries, speed_limit_bps, parallel_parts, selected_children)
+        (max_retries, speed_limit_kib, parallel_parts, selected_children)
     };
+
+    // Handle de limite de velocidade vivo: a UI altera este valor atômico via PATCH
+    // e o loop de streaming do provider lê a cada iteração (efeito em tempo real).
+    let speed_limit = providers::speed_limit_from_kib(speed_limit_kib);
+    state
+        .speed_limits
+        .lock()
+        .await
+        .insert(id.clone(), speed_limit.clone());
 
     persist_download_snapshot(&state, &id).await;
 
@@ -1139,6 +1166,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
 
         let url_clone = url.clone();
         let dest_clone = dest_path.clone();
+        let speed_limit_clone = speed_limit.clone();
         let selected_children_clone = selected_children.clone();
         let request_headers = {
             let map = state.downloads.lock().await;
@@ -1180,7 +1208,7 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                 .download_with_context(
                     &url_clone,
                     &dest_clone,
-                    speed_limit_bps,
+                    speed_limit_clone,
                     effective_parallel_parts,
                     selected_children_clone,
                     progress_tx,

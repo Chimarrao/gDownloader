@@ -53,7 +53,7 @@ pub async fn assert_download_starts_and_can_abort<P: Provider + 'static>(
 
     let handle = tokio::spawn(async move {
         provider
-            .download(&url, &dest_string, None, 1, None, tx)
+            .download(&url, &dest_string, ::std::sync::Arc::new(::std::sync::atomic::AtomicU64::new(0)), 1, None, tx)
             .await
     });
 

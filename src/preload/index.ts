@@ -1054,6 +1054,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     pinned: Boolean(d.pinned),
     packageId: typeof d.package_id === 'string' ? d.package_id : undefined,
     parallelParts: Number(d.parallel_parts ?? 1),
+    speedLimitKib: Number(d.speed_limit_kib ?? 0),
     sequential: Boolean(d.sequential),
     networkRoute: d.network_route ?? undefined,
     addedAt: ((d.created_at as number) ?? 0) * 1000,

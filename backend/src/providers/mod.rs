@@ -478,17 +478,39 @@ pub fn per_file_socks_user(base_user: &str, file_index: usize) -> String {
     format!("{base_user}-f{file_index}")
 }
 
+/// Limite de velocidade vivo de um download, em bytes/s. `0` = ilimitado.
+/// É um `Arc<AtomicU64>` para que a UI possa alterar o valor de um download já em
+/// andamento e o loop de streaming leia o novo valor na próxima iteração.
+pub type SpeedLimitBps = Arc<AtomicU64>;
+
+/// Cria um handle de limite de velocidade a partir de KiB/s (0 = ilimitado).
+pub fn speed_limit_from_kib(kib: u64) -> SpeedLimitBps {
+    Arc::new(AtomicU64::new(kib.saturating_mul(1024)))
+}
+
 pub async fn apply_speed_limit(
     started_at: Instant,
     bytes_downloaded: u64,
-    speed_limit_bps: Option<u64>,
+    speed_limit_bps: &SpeedLimitBps,
 ) {
-    let Some(limit) = speed_limit_bps else {
-        return;
-    };
+    apply_speed_limit_divided(started_at, bytes_downloaded, speed_limit_bps, 1).await;
+}
+
+/// Igual a [`apply_speed_limit`], mas divide o limite global vivo entre `divisor`
+/// conexões paralelas (cada parte recebe a sua fatia). Lê o valor atômico a cada
+/// chamada, então mudanças de limite valem em tempo real.
+pub async fn apply_speed_limit_divided(
+    started_at: Instant,
+    bytes_downloaded: u64,
+    speed_limit_bps: &SpeedLimitBps,
+    divisor: usize,
+) {
+    let limit = speed_limit_bps.load(Ordering::Relaxed);
     if limit == 0 {
         return;
     }
+    // Fatia por conexão; nunca menor que 64KB/s para não travar segundos a fio.
+    let limit = (limit / divisor.max(1) as u64).max(65_536);
 
     let expected_elapsed = bytes_downloaded as f64 / limit as f64;
     let actual_elapsed = started_at.elapsed().as_secs_f64();
@@ -509,7 +531,7 @@ pub async fn try_parallel_download(
     client: &reqwest::Client,
     url: &str,
     dest_path: &str,
-    speed_limit_bps: Option<u64>,
+    speed_limit_bps: &SpeedLimitBps,
     parallel_parts: usize,
     progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
 ) -> Result<Option<u64>> {
@@ -547,17 +569,14 @@ pub async fn try_parallel_download(
     let total_downloaded = Arc::new(AtomicU64::new(0));
     let mut tasks = Vec::with_capacity(part_count);
 
-    // Each task gets an equal share of the global limit.
-    // If the share would be smaller than one 64KB piece/s, cap it at 65_536 to avoid
-    // second-long stalls inside each task at very low speeds.
-    let task_limit = speed_limit_bps.map(|l| (l / part_count as u64).max(65_536));
-
     for part_index in 0..part_count {
         let client = client.clone();
         let url = url.to_string();
         let part_dir = part_dir.clone();
         let progress_tx = progress_tx.clone();
         let total_downloaded = Arc::clone(&total_downloaded);
+        // Cada parte recebe uma fatia do limite global vivo (dividido por part_count).
+        let task_limit = Arc::clone(speed_limit_bps);
         let start = (total_bytes * part_index as u64) / part_count as u64;
         let end = ((total_bytes * (part_index as u64 + 1)) / part_count as u64).saturating_sub(1);
 
@@ -601,7 +620,7 @@ pub async fn try_parallel_download(
                         })
                         .await;
 
-                    apply_speed_limit(started_at, task_session_downloaded, task_limit).await;
+                    apply_speed_limit_divided(started_at, task_session_downloaded, &task_limit, part_count).await;
                 }
             }
 
@@ -665,7 +684,7 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: SpeedLimitBps,
         parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         // Sender do canal de progresso — o provider envia, o handler recebe
@@ -677,7 +696,7 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: SpeedLimitBps,
         parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,

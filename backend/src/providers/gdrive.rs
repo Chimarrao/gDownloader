@@ -587,7 +587,7 @@ impl Provider for GDriveProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -701,7 +701,7 @@ impl Provider for GDriveProvider {
                                 child_eta_secs: Some(child_eta),
                             })
                             .await;
-                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                        apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                     }
 
                     file.flush().await?;
@@ -762,7 +762,7 @@ impl Provider for GDriveProvider {
                         child_eta_secs: None,
                     })
                     .await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
             }
 
             file.flush().await?;

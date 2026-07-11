@@ -738,6 +738,40 @@
       <button v-if="contextCan('canRemoveWithFiles')" class="danger" @click="runContextAction('removeWithFiles')"><i class="pi pi-trash"></i>Remover + arquivos</button>
     </div>
 
+    <div v-if="speedLimitModal.visible" class="speed-modal-backdrop" @click.self="closeSpeedLimitModal">
+      <div class="speed-modal" role="dialog" aria-modal="true" aria-label="Limite de velocidade">
+        <div class="speed-modal-header">
+          <span><i class="pi pi-gauge"></i> Limite de velocidade</span>
+          <button class="action-btn" title="Fechar" @click="closeSpeedLimitModal"><i class="pi pi-times"></i></button>
+        </div>
+        <p class="speed-modal-file" :title="speedLimitModal.title">{{ speedLimitModal.title }}</p>
+
+        <div class="speed-presets">
+          <button :class="{ active: speedLimitModal.amount === 0 }" @click="applySpeedLimitPreset(0)">Sem limite</button>
+          <button @click="applySpeedLimitPreset(1)">1 MB/s</button>
+          <button @click="applySpeedLimitPreset(5)">5 MB/s</button>
+          <button @click="applySpeedLimitPreset(10)">10 MB/s</button>
+        </div>
+
+        <div class="speed-custom">
+          <input
+            v-model.number="speedLimitModal.amount"
+            type="number"
+            min="0"
+            step="0.1"
+            class="speed-input"
+            @keyup.enter="applySpeedLimit"
+          />
+          <select v-model="speedLimitModal.unit" class="speed-unit">
+            <option value="kb">KB/s</option>
+            <option value="mb">MB/s</option>
+          </select>
+          <button class="speed-apply" @click="applySpeedLimit">Aplicar</button>
+        </div>
+        <p class="speed-hint">Aplica em tempo real ao download em andamento. Use 0 para sem limite.</p>
+      </div>
+    </div>
+
     <div v-if="activeCaptchaItem" class="captcha-modal-backdrop" @click.self="closeCaptchaModal">
       <div
         ref="captchaModalRef"
@@ -848,6 +882,16 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; itemId: string
   y: 0,
   itemId: null,
 })
+// Modal de limite de velocidade individual (substitui o antigo window.prompt).
+// `amount` + `unit` são convertidos para KiB/s ao aplicar; presets em MB/s.
+const speedLimitModal = ref<{
+  visible: boolean
+  targetIds: string[]
+  amount: number
+  unit: 'kb' | 'mb'
+  title: string
+}>({ visible: false, targetIds: [], amount: 0, unit: 'mb', title: '' })
+
 const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
 const visibleColumns = ref<string[]>([...defaultColumns])
 const filterStatuses = ref<string[]>([])
@@ -1241,7 +1285,23 @@ function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; tit
   if (item.parallelParts && item.parallelParts > 1) {
     badges.push({ label: `${item.parallelParts} partes`, kind: 'parts', title: 'Download segmentado em partes paralelas' })
   }
+  if (item.speedLimitKib && item.speedLimitKib > 0) {
+    badges.push({
+      label: `≤ ${formatSpeedLimit(item.speedLimitKib)}`,
+      kind: 'speed-limit',
+      title: 'Limite de velocidade individual deste download',
+    })
+  }
   return badges
+}
+
+// Formata um limite em KiB/s de forma legível (MB/s quando ≥ 1 MB/s).
+function formatSpeedLimit(kib: number): string {
+  if (kib >= 1024) {
+    const mb = kib / 1024
+    return `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB/s`
+  }
+  return `${kib} KB/s`
 }
 
 function networkRouteLabel(item: DownloadItem): string {
@@ -2160,14 +2220,39 @@ async function setContextPriority(priority: number): Promise<void> {
   await hydrate()
 }
 
-async function setContextSpeedLimit(): Promise<void> {
-  const raw = window.prompt('Limite em KB/s para o(s) item(ns). Use 0 para sem limite.', '0')
-  if (raw === null) return
-  const value = Math.max(0, Math.trunc(Number(raw) || 0))
+function setContextSpeedLimit(): void {
   const targets = [...contextSelection.value]
+  if (targets.length === 0) return
+  // Valor atual (do primeiro alvo) pré-preenchido, escolhendo a unidade mais legível.
+  const currentKib = targets[0].speedLimitKib ?? 0
+  const useMb = currentKib === 0 || currentKib % 1024 === 0
+  speedLimitModal.value = {
+    visible: true,
+    targetIds: targets.map((item) => item.id),
+    amount: currentKib === 0 ? 0 : useMb ? currentKib / 1024 : currentKib,
+    unit: useMb ? 'mb' : 'kb',
+    title: targets.length > 1 ? `${targets.length} downloads selecionados` : targets[0].title || 'Download',
+  }
   closeContextMenu()
-  for (const item of targets) {
-    await window.api.downloads.setSpeedLimit(item.id, value).catch(() => null)
+}
+
+// Presets rápidos em MB/s (0 = sem limite). Aplicam imediatamente.
+function applySpeedLimitPreset(mb: number): void {
+  speedLimitModal.value.amount = mb
+  speedLimitModal.value.unit = 'mb'
+  void applySpeedLimit()
+}
+
+function closeSpeedLimitModal(): void {
+  speedLimitModal.value.visible = false
+}
+
+async function applySpeedLimit(): Promise<void> {
+  const { targetIds, amount, unit } = speedLimitModal.value
+  const kib = Math.max(0, Math.round((Number(amount) || 0) * (unit === 'mb' ? 1024 : 1)))
+  speedLimitModal.value.visible = false
+  for (const id of targetIds) {
+    await window.api.downloads.setSpeedLimit(id, kib).catch(() => null)
   }
   await hydrate()
 }
@@ -3669,6 +3754,12 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: color-mix(in srgb, var(--bg-primary) 65%, var(--bg-card));
 }
 
+.row-rich-badge.speed-limit {
+  color: #7c3aed;
+  border-color: rgba(124, 58, 237, 0.24);
+  background: rgba(124, 58, 237, 0.1);
+}
+
 .download-card:hover {
   z-index: 14;
 }
@@ -4093,6 +4184,130 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   overflow-wrap: anywhere;
   font-style: normal;
+}
+
+/* ── Modal de limite de velocidade ──────────────────────────── */
+.speed-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.speed-modal {
+  width: min(380px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+}
+
+.speed-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.speed-modal-header i {
+  color: var(--accent-color);
+  margin-right: 6px;
+}
+
+.speed-modal-file {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.speed-presets {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.speed-presets button {
+  padding: 7px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.speed-presets button:hover {
+  border-color: var(--accent-color);
+  color: var(--text-primary);
+}
+
+.speed-presets button.active {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.speed-custom {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.speed-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.speed-unit {
+  padding: 8px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.speed-apply {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent-color);
+  color: #fff;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.speed-apply:hover {
+  filter: brightness(1.05);
+}
+
+.speed-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 /* ── Captcha modal ──────────────────────────────────────────── */

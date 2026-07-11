@@ -396,7 +396,7 @@ impl Provider for MediaFireProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -502,7 +502,7 @@ impl Provider for MediaFireProvider {
                                     child_eta_secs: Some(child_eta),
                                 })
                                 .await;
-                            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                            apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                         }
                     }
 
@@ -525,7 +525,7 @@ impl Provider for MediaFireProvider {
                         &client,
                         &direct_url,
                         dest_path,
-                        speed_limit_bps,
+                        &speed_limit_bps,
                         parallel_parts,
                         progress_tx.clone(),
                     )
@@ -573,7 +573,7 @@ impl Provider for MediaFireProvider {
                             child_eta_secs: None,
                         })
                         .await;
-                    apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                    apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                 }
             }
 

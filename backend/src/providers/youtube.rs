@@ -740,7 +740,7 @@ impl Provider for YouTubeProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -760,7 +760,7 @@ impl Provider for YouTubeProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -829,7 +829,8 @@ impl Provider for YouTubeProvider {
                     Self::output_template(dest_path),
                 ]);
 
-                if let Some(limit) = speed_limit_bps.filter(|value| *value > 0) {
+                let limit = speed_limit_bps.load(std::sync::atomic::Ordering::Relaxed);
+                if limit > 0 {
                     args.push("--limit-rate".to_string());
                     args.push(limit.to_string());
                 }

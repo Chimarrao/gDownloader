@@ -15,8 +15,8 @@ use tokio::time::Instant;
 use crate::models::FileInfo;
 
 use super::{
-    apply_speed_limit, parse_url, DownloadContext, Provider, ProviderCapabilities, ProviderDefaults,
-    ProgressUpdate,
+    apply_speed_limit, apply_speed_limit_divided, parse_url, DownloadContext, Provider,
+    ProviderCapabilities, ProviderDefaults, ProgressUpdate,
 };
 
 pub struct DirectHttpProvider;
@@ -253,7 +253,7 @@ impl DirectHttpProvider {
         client: &reqwest::Client,
         metadata: &DirectHttpMetadata,
         dest_path: &str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
         store: ResumeStore,
         headers: HeaderMap,
@@ -335,7 +335,7 @@ impl DirectHttpProvider {
                         child_eta_secs: None,
                     })
                     .await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
             }
         }
 
@@ -351,7 +351,7 @@ impl DirectHttpProvider {
         client: &reqwest::Client,
         metadata: &DirectHttpMetadata,
         dest_path: &str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
         store: ResumeStore,
@@ -398,7 +398,7 @@ impl DirectHttpProvider {
             Self::save_resume_offset(&store, part, offset).await;
         }
 
-        let task_limit = speed_limit_bps.map(|limit| (limit / parts.len() as u64).max(65_536));
+        let parts_len = parts.len();
         let mut tasks = Vec::with_capacity(parts.len());
 
         for part in parts.clone() {
@@ -416,6 +416,7 @@ impl DirectHttpProvider {
             let headers = headers.clone();
             let total_downloaded = Arc::clone(&initial_downloaded);
             let total_bytes = metadata.size;
+            let task_limit = Arc::clone(&speed_limit_bps);
 
             tasks.push(tokio::spawn(async move {
                 let range_start = part.start.saturating_add(offset);
@@ -461,7 +462,7 @@ impl DirectHttpProvider {
                                 child_eta_secs: None,
                             })
                             .await;
-                        apply_speed_limit(started_at, session_downloaded, task_limit).await;
+                        apply_speed_limit_divided(started_at, session_downloaded, &task_limit, parts_len).await;
                     }
                 }
 
@@ -535,7 +536,7 @@ impl Provider for DirectHttpProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         _selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -555,7 +556,7 @@ impl Provider for DirectHttpProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         _selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,

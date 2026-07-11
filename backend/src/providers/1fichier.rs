@@ -194,7 +194,7 @@ impl FichierProvider {
         client: &reqwest::Client,
         page_url: &str,
         dest_path: &str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
         info!(target: "gdownloader_backend::providers::1fichier", "1Fichier abrindo landing page: {}", page_url);
@@ -257,7 +257,7 @@ impl FichierProvider {
     async fn stream_response_to_file(
         response: reqwest::Response,
         dest_path: &str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
         let total = response.content_length().unwrap_or(0);
@@ -284,7 +284,7 @@ impl FichierProvider {
                 child_speed_bps: None,
                 child_eta_secs: None,
             }).await;
-            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+            apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
         }
 
         file.flush().await?;
@@ -455,7 +455,7 @@ impl Provider for FichierProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -530,7 +530,7 @@ impl Provider for FichierProvider {
                     let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<ProgressUpdate>(64);
                     let child_client = <Self as ProviderDefaults>::http_client_for_file_index(file_index)
                         .unwrap_or_else(|_| client.clone());
-                    let child_speed_limit = speed_limit_bps;
+                    let child_speed_limit = speed_limit_bps.clone();
                     let child_dest = output_path.clone();
 
                     let child_task = tokio::spawn(async move {

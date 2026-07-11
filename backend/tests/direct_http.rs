@@ -133,7 +133,7 @@ async fn direct_http_segmented_download_merges_part_files() {
     let (tx, mut rx) = mpsc::channel(1024);
 
     let bytes = DirectHttpProvider
-        .download(&url, &dest_string, None, 4, None, tx)
+        .download(&url, &dest_string, ::std::sync::Arc::new(::std::sync::atomic::AtomicU64::new(0)), 4, None, tx)
         .await
         .unwrap();
 
@@ -178,7 +178,7 @@ async fn direct_http_resumes_single_stream_from_sqlite_offset() {
         .download_with_context(
             &url,
             &dest_string,
-            None,
+            ::std::sync::Arc::new(::std::sync::atomic::AtomicU64::new(0)),
             1,
             None,
             tx,

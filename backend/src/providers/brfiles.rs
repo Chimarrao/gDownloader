@@ -333,7 +333,7 @@ impl BrfilesProvider {
         url: &str,
         dest_path: &str,
         expected_size: u64,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
         let initial_response = client.get(url).send().await?.error_for_status()?;
@@ -401,7 +401,7 @@ impl BrfilesProvider {
         response: reqwest::Response,
         dest_path: &str,
         expected_size: u64,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
         let total = response.content_length().unwrap_or(expected_size);
@@ -430,7 +430,7 @@ impl BrfilesProvider {
                     child_eta_secs: None,
                 })
                 .await;
-            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+            apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
         }
 
         file.flush().await?;
@@ -502,7 +502,7 @@ impl Provider for BrfilesProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -567,7 +567,7 @@ impl Provider for BrfilesProvider {
                     let child_url = child.source_url.clone();
                     let child_dest_path = output_path.clone();
                     let child_client = client.clone();
-                    let child_speed_limit = speed_limit_bps;
+                    let child_speed_limit = speed_limit_bps.clone();
 
                     let child_task = tokio::spawn(async move {
                         Self::download_single_file(

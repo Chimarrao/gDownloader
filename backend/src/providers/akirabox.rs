@@ -99,7 +99,7 @@ impl Provider for AkiraboxProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        _speed_limit_bps: Option<u64>,
+        _speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         _selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,

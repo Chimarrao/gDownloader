@@ -298,7 +298,7 @@ impl Provider for RapidgatorProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         _selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -375,7 +375,7 @@ impl Provider for RapidgatorProvider {
                             child_speed_bps: None,
                             child_eta_secs: None,
                         }).await;
-                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                        apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                     }
 
                     file.flush().await?;
@@ -475,7 +475,7 @@ impl Provider for RapidgatorProvider {
                                 child_speed_bps: None,
                                 child_eta_secs: None,
                             }).await;
-                            apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                            apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                         }
 
                         file.flush().await?;
@@ -536,7 +536,7 @@ impl Provider for RapidgatorProvider {
                     child_speed_bps: None,
                     child_eta_secs: None,
                 }).await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
             }
 
             file.flush().await?;

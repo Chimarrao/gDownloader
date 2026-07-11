@@ -18,7 +18,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::{FileChildInfo, FileInfo};
-use super::{apply_speed_limit, host_matches, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, apply_speed_limit_divided, host_matches, ProgressUpdate, Provider, ProviderDefaults};
 
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
 type Aes128CbcDec = Decryptor<aes::Aes128>;
@@ -525,7 +525,7 @@ impl MegaProvider {
         total_size: u64,
         aes_key: [u8; 16],
         iv: [u8; 16],
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<Option<u64>> {
@@ -558,6 +558,7 @@ impl MegaProvider {
             let end = ((total_size * (part_index as u64 + 1)) / part_count as u64).saturating_sub(1);
             let aes_key = aes_key;
             let iv = iv;
+            let task_speed_limit = Arc::clone(&speed_limit_bps);
 
             tasks.push(tokio::spawn(async move {
                 let part_path = format!("{part_dir}/part-{part_index:03}");
@@ -598,10 +599,11 @@ impl MegaProvider {
                         })
                         .await;
 
-                    apply_speed_limit(
+                    apply_speed_limit_divided(
                         started_at,
                         total_downloaded.load(Ordering::SeqCst),
-                        speed_limit_bps,
+                        &task_speed_limit,
+                        part_count,
                     )
                     .await;
                 }
@@ -691,7 +693,7 @@ impl Provider for MegaProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -797,7 +799,7 @@ impl Provider for MegaProvider {
                                 child_eta_secs: Some(child_eta),
                             })
                             .await;
-                        apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                        apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
                     }
 
                     file_handle.flush().await?;
@@ -825,7 +827,7 @@ impl Provider for MegaProvider {
                     meta.size,
                     aes_key,
                     iv,
-                    speed_limit_bps,
+                    speed_limit_bps.clone(),
                     parallel_parts,
                     progress_tx.clone(),
                 )
@@ -875,7 +877,7 @@ impl Provider for MegaProvider {
                         child_eta_secs: None,
                     })
                     .await;
-                apply_speed_limit(started_at, session_downloaded, speed_limit_bps).await;
+                apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
             }
 
             file.flush().await?;

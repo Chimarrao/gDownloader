@@ -87,6 +87,7 @@ export interface DownloadItem {
   pinned?: boolean
   packageId?: string
   parallelParts?: number
+  speedLimitKib?: number
   sequential?: boolean
   networkRoute?: DownloadNetworkRoute
   addedAt: number

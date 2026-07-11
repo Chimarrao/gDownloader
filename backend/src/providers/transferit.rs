@@ -196,7 +196,7 @@ impl TransferItProvider {
         dest_path: &str,
         base_downloaded: u64,
         total_bytes: u64,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         started_at: tokio::time::Instant,
         session_downloaded: &mut u64,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -254,7 +254,7 @@ impl TransferItProvider {
                     })
                     .await;
 
-                apply_speed_limit(started_at, *session_downloaded, speed_limit_bps).await;
+                apply_speed_limit(started_at, *session_downloaded, &speed_limit_bps).await;
             }
         }
 
@@ -322,7 +322,7 @@ impl Provider for TransferItProvider {
         &'a self,
         url: &'a str,
         dest_path: &'a str,
-        speed_limit_bps: Option<u64>,
+        speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
         selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
@@ -373,7 +373,7 @@ impl Provider for TransferItProvider {
                     &output_path,
                     downloaded_total,
                     total_bytes,
-                    speed_limit_bps,
+                    speed_limit_bps.clone(),
                     started_at,
                     &mut session_downloaded,
                     progress_tx.clone(),
