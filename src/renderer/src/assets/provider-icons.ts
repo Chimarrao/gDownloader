@@ -68,6 +68,13 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#ff7b00',
     svg: pixeldrainSvg,
   },
+  gofile: {
+    color: '#7b5cff',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#1a1d29"/>
+      <path d="M18 9c-4.97 0-9 4.03-9 9s4.03 9 9 9c3.53 0 6.59-2.03 8.06-4.99H18v-3.6h9.6C27.86 17.9 28 18.94 28 20" stroke="#7b5cff" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>`,
+  },
   transferit: {
     color: '#1D81FF',
     svg: transferitSvg,
@@ -124,6 +131,7 @@ function normalizeProviderKey(moduleId: string): string {
     mediafire: 'mediafire',
     mega: 'mega',
     pixeldrain: 'pixeldrain',
+    gofile: 'gofile',
     transferit: 'transferit',
     transferitt: 'transferit',
     youtube: 'youtube',

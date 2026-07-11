@@ -54,6 +54,7 @@ pub mod katfile;
 pub mod direct_http;
 pub mod mediafire;
 pub mod mega;
+pub mod gofile;
 pub mod pixeldrain;
 pub mod sharepoint;
 pub mod terabox;
@@ -246,6 +247,7 @@ pub fn all_provider_descriptors() -> Vec<ProviderDescriptor> {
         ("MediaFire", "#0062C7"),
         ("Google Drive", "#4285F4"),
         ("PixelDrain", "#ff6600"),
+        ("Gofile", "#1a1d29"),
         ("1Fichier", "#e67e22"),
         ("Drime", "#2ec4b6"),
         ("Rapidgator", "#23a2dc"),
@@ -795,6 +797,7 @@ pub fn provider_id_from_name(name: &str) -> &'static str {
         "MediaFire" => "mediafire",
         "Google Drive" => "gdrive",
         "PixelDrain" => "pixeldrain",
+        "Gofile" => "gofile",
         "1Fichier" => "fichier",
         "Drime" => "drime",
         "Rapidgator" => "rapidgator",
@@ -845,6 +848,9 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if gdrive::GDriveProvider::matches(url) {
         return Some(Box::new(gdrive::GDriveProvider));
+    }
+    if gofile::GofileProvider::matches(url) {
+        return Some(Box::new(gofile::GofileProvider));
     }
     if pixeldrain::PixelDrainProvider::matches(url) {
         return Some(Box::new(pixeldrain::PixelDrainProvider));
