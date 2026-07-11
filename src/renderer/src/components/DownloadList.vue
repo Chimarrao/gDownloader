@@ -262,7 +262,21 @@
 
             <!-- Row 2: progress bar -->
             <div v-if="hasColumn('progress')" class="progress-track">
+              <div v-if="downloadSegments(item)" class="progress-segments">
+                <div
+                  v-for="(seg, i) in downloadSegments(item)"
+                  :key="i"
+                  class="progress-segment"
+                >
+                  <div
+                    class="progress-fill"
+                    :class="{ 'progress-shimmer': item.status === 'downloading' }"
+                    :style="{ width: seg + '%', background: getProgressColor(item) }"
+                  ></div>
+                </div>
+              </div>
               <div
+                v-else
                 class="progress-fill"
                 :class="{ 'progress-shimmer': item.status === 'downloading' || item.status === 'verifying' }"
                 :style="{
@@ -873,6 +887,11 @@ const emit = defineEmits<{
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
 const stageLabels = ref<Record<string, string>>({})
+// Progresso por-parte do download segmentado (id → índiceParte → bytes/total),
+// para desenhar a barra dividida (item 9).
+const partProgress = ref<Record<string, Record<number, { bytes: number; total: number }>>>({})
+// Downloads que pediram partes mas o provedor só permitiu 1 conexão.
+const singleConnectionDownloads = ref<Set<string>>(new Set())
 const packages = ref<DownloadPackage[]>([])
 const selectedPackageId = ref<'all' | 'unassigned' | string>('all')
 const selectedDownloadIds = ref<Set<string>>(new Set())
@@ -1284,7 +1303,15 @@ function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; tit
     })
   }
   if (item.parallelParts && item.parallelParts > 1) {
-    badges.push({ label: `${item.parallelParts} partes`, kind: 'parts', title: 'Download segmentado em partes paralelas' })
+    if (singleConnectionDownloads.value.has(item.id)) {
+      badges.push({
+        label: '1 parte',
+        kind: 'parts',
+        title: 'Baixando em 1 parte — o provedor não permite multi-conexão neste arquivo',
+      })
+    } else {
+      badges.push({ label: `${item.parallelParts} partes`, kind: 'parts', title: 'Download segmentado em partes paralelas' })
+    }
   }
   if (item.speedLimitKib && item.speedLimitKib > 0) {
     badges.push({
@@ -1294,6 +1321,24 @@ function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; tit
     })
   }
   return badges
+}
+
+// Retorna o preenchimento (%) de cada segmento da barra dividida, ou null quando o
+// download não está de fato em partes (aí usa a barra normal).
+function downloadSegments(item: DownloadItem): number[] | null {
+  if (item.status === DownloadStatusEnum.Complete) return null
+  const parts = partProgress.value[item.id]
+  if (!parts) return null
+  const count = item.parallelParts && item.parallelParts > 1
+    ? item.parallelParts
+    : Object.keys(parts).length
+  if (count <= 1) return null
+  const segments: number[] = []
+  for (let i = 0; i < count; i++) {
+    const part = parts[i]
+    segments.push(part && part.total > 0 ? Math.min(100, Math.floor((part.bytes / part.total) * 100)) : 0)
+  }
+  return segments
 }
 
 // Formata um limite em KiB/s de forma legível (MB/s quando ≥ 1 MB/s).
@@ -1492,6 +1537,35 @@ onMounted(async () => {
         const total = rawTotal
         const displaySize = isSyntheticYoutubeProgress ? items.value[idx].size : rawTotal
         const bytes = ev.bytes ?? 0
+
+        // Rastreia progresso por-parte (child_path "part:N") para a barra segmentada.
+        const partMatch = ev.child_path?.match(/^part[:-](\d+)$/)
+        if (partMatch) {
+          const index = Number(partMatch[1])
+          const existing = partProgress.value[ev.id] ?? {}
+          partProgress.value = {
+            ...partProgress.value,
+            [ev.id]: {
+              ...existing,
+              [index]: { bytes: ev.child_bytes ?? 0, total: ev.child_total ?? 0 },
+            },
+          }
+          if (singleConnectionDownloads.value.has(ev.id)) {
+            const next = new Set(singleConnectionDownloads.value)
+            next.delete(ev.id)
+            singleConnectionDownloads.value = next
+          }
+        } else if (
+          (items.value[idx].parallelParts ?? 1) > 1 &&
+          bytes > 262_144 &&
+          !partProgress.value[ev.id] &&
+          !singleConnectionDownloads.value.has(ev.id)
+        ) {
+          // Pediu multi-conexão, mas o provedor está mandando o arquivo inteiro numa
+          // única conexão (não devolveu 206) → informa o usuário.
+          singleConnectionDownloads.value = new Set(singleConnectionDownloads.value).add(ev.id)
+        }
+
         let nextChildren = items.value[idx].children
         if (items.value[idx].moduleId === 'youtube' && ev.child_filename) {
           stageLabels.value = {
@@ -3624,6 +3698,21 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .progress-shimmer {
   background-size: 200% 100% !important;
   animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* Barra dividida do download em partes: cada segmento é uma conexão. */
+.progress-segments {
+  display: flex;
+  height: 100%;
+  gap: 2px;
+}
+
+.progress-segment {
+  flex: 1 1 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--surface-section) 55%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
 }
 
 .row-rich-indicators {

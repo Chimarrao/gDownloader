@@ -579,6 +579,7 @@ pub async fn try_parallel_download(
         let task_limit = Arc::clone(speed_limit_bps);
         let start = (total_bytes * part_index as u64) / part_count as u64;
         let end = ((total_bytes * (part_index as u64 + 1)) / part_count as u64).saturating_sub(1);
+        let part_len = end.saturating_sub(start).saturating_add(1);
 
         tasks.push(tokio::spawn(async move {
             let part_path = format!("{part_dir}/part-{part_index:03}");
@@ -607,14 +608,16 @@ pub async fn try_parallel_download(
                     let downloaded = total_downloaded.fetch_add(piece_len, Ordering::Relaxed)
                         + piece_len;
 
+                    // Reporta o progresso por-parte (child_path "part:N") para a UI
+                    // desenhar a barra segmentada e confirmar que é multi-conexão.
                     let _ = progress_tx
                         .send(ProgressUpdate {
                             bytes_downloaded: downloaded,
                             total_bytes,
-                            child_path: None,
+                            child_path: Some(format!("part:{part_index}")),
                             child_filename: None,
-                            child_bytes_downloaded: None,
-                            child_total_bytes: None,
+                            child_bytes_downloaded: Some(task_session_downloaded),
+                            child_total_bytes: Some(part_len),
                             child_speed_bps: None,
                             child_eta_secs: None,
                         })
