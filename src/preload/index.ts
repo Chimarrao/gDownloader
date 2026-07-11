@@ -943,6 +943,18 @@ const api = {
     }
   },
 
+  // Espaço em disco do volume da pasta de download (widget informativo no topo).
+  getDiskUsage: async (path?: string) => {
+    try {
+      const query = path ? `?path=${encodeURIComponent(path)}` : ''
+      const resp = await fetchBackend(`/system/disk${query}`)
+      if (!resp.ok) return { total: 0, available: 0, used: 0, mount: '' }
+      return resp.json()
+    } catch {
+      return { total: 0, available: 0, used: 0, mount: '' }
+    }
+  },
+
   ytdlp: {
     status: (): Promise<{
       version: string | null

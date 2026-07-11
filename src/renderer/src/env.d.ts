@@ -255,6 +255,12 @@ interface RendererApi {
       per_host_speed: Record<string, number>
     }>
   }>
+  getDiskUsage: (path?: string) => Promise<{
+    total: number
+    available: number
+    used: number
+    mount: string
+  }>
   config: {
     testProxy: () => Promise<{ ip: string; isTor: boolean }>
   }

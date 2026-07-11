@@ -33,6 +33,18 @@
           <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
           <span>{{ formatSpeed(currentSpeed) }}</span>
         </div>
+        <div
+          v-if="diskUsage.total > 0"
+          class="top-disk"
+          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 }"
+          :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados de ${formatBytes(diskUsage.total)} (${formatBytes(diskUsage.available)} livres)`"
+        >
+          <i class="pi pi-database"></i>
+          <div class="top-disk-info">
+            <div class="top-disk-bar"><span :style="{ width: `${diskUsedPercent}%` }"></span></div>
+            <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} livres</span>
+          </div>
+        </div>
         <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
           <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
             <span
@@ -268,6 +280,7 @@ const torState = ref<{
 let currentSettings: Awaited<ReturnType<typeof window.api.settings.load>> | null = null
 let speedTicker: ReturnType<typeof setInterval> | null = null
 let torPulseTimer: ReturnType<typeof setInterval> | null = null
+let diskTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
 let appMounted = true
 
@@ -337,6 +350,7 @@ onUnmounted(() => {
   appMounted = false
   if (speedTicker) clearInterval(speedTicker)
   if (torPulseTimer) clearInterval(torPulseTimer)
+  if (diskTicker) clearInterval(diskTicker)
   disposeClipboardDetected?.()
   window.removeEventListener('stats-tick', statsTickHandler)
   disposeTheme()
@@ -386,6 +400,10 @@ onMounted(async () => {
     setTheme(settings.theme as ThemeId)
   }
   applyUiPreferences(settings)
+  void refreshDiskUsage()
+  diskTicker = setInterval(() => {
+    if (appMounted) void refreshDiskUsage()
+  }, 30_000)
   if (!settings.onboardingCompleted) {
     showOnboarding.value = true
   }
@@ -400,6 +418,33 @@ function formatSpeed(bps: number): string {
   if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
   if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`
   return `${bps} B/s`
+}
+
+// Widget de disco (item 11): total/usado do volume da pasta de download.
+const diskUsage = ref<{ total: number; available: number; used: number; mount: string }>({
+  total: 0,
+  available: 0,
+  used: 0,
+  mount: '',
+})
+const diskUsedPercent = computed(() =>
+  diskUsage.value.total > 0
+    ? Math.min(100, Math.round((diskUsage.value.used / diskUsage.value.total) * 100))
+    : 0,
+)
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${bytes} B`
+}
+
+async function refreshDiskUsage(): Promise<void> {
+  const dir = currentSettings?.outputDir || undefined
+  const usage = await window.api.getDiskUsage(dir).catch(() => null)
+  if (usage) diskUsage.value = usage
 }
 
 function drawTopSpeedChart(): void {
@@ -719,6 +764,61 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   width: 128px;
   height: 28px;
   flex: 0 0 128px;
+}
+
+.top-disk {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.top-disk > i {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.top-disk.warn > i,
+.top-disk.warn .top-disk-label {
+  color: #dc2626;
+}
+
+.top-disk-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 92px;
+}
+
+.top-disk-bar {
+  height: 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--border-color) 60%, transparent);
+  overflow: hidden;
+}
+
+.top-disk-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-color);
+  transition: width 0.4s ease;
+}
+
+.top-disk.warn .top-disk-bar > span {
+  background: #dc2626;
+}
+
+.top-disk-label {
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
 }
 
 .tor-widget {

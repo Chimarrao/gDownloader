@@ -1142,31 +1142,23 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     .max()
                     .unwrap_or(u64::MAX);
 
+                // Aviso, não bloqueio: o usuário pediu para informar quando o arquivo
+                // pode não caber, mas deixar baixar mesmo assim (item 11). Se o disco
+                // realmente encher, a escrita falha naturalmente e o erro aparece.
                 if file_size > 0 && file_size > available {
-                    let error_msg = format!(
-                        "Espaço em disco insuficiente. Necessário: {}MB, Disponível: {}MB",
+                    let warn_msg = format!(
+                        "Pode não caber no disco: necessário ~{}MB, livre ~{}MB. O download vai continuar mesmo assim.",
                         file_size / 1_048_576,
                         available / 1_048_576
                     );
-                    {
-                        let mut map = state.downloads.lock().await;
-                        if let Some(dl) = map.get_mut(&id) {
-                            dl.status = DownloadStatus::DiskFull;
-                            dl.error = Some(error_msg.clone());
-                        }
-                    }
-                    persist_download_snapshot(&state, &id).await;
-                    state.broadcast(WsEvent::StatusChanged {
-                        id: id.clone(),
-                        status: DownloadStatus::DiskFull,
-                        error: Some(error_msg),
-                        retry_at: None,
-                        captcha_type: None,
-                        captcha_sitekey: None,
-                        captcha_page_url: None,
-                    });
-                    reschedule_pending_downloads(state.clone());
-                    return;
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "espaço em disco baixo id={} necessario={}MB livre={}MB (baixando mesmo assim)",
+                        id,
+                        file_size / 1_048_576,
+                        available / 1_048_576
+                    );
+                    record_download_event(&state, &id, "disk_warning", &warn_msg);
                 }
             }
         }

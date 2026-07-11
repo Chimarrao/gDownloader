@@ -12,3 +12,4 @@ pub mod mirrors;
 pub mod packages;
 pub mod providers;
 pub mod stats;
+pub mod system;
