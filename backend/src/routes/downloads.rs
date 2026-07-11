@@ -1062,8 +1062,15 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
     const STALL_TIMEOUT_SECS: u64 = 90;
     const STALL_MAX_RETRIES: u32 = 3;
 
+    // Quedas de conexão (troca de Wi-Fi, cabo, roteador reiniciando) NÃO são culpa do
+    // arquivo: têm um orçamento próprio e generoso de tentativas, com backoff curto,
+    // e não consomem o `max_retries` do usuário. Assim o download não "fica travado"
+    // ao trocar de rede — ele espera a rede voltar e retoma do ponto onde parou.
+    const NETWORK_MAX_RETRIES: u32 = 60;
+
     let mut attempt = 0u32;
     let mut stall_retries = 0u32;
+    let mut network_retries = 0u32;
     let mut tor_limit_retries: u32 = 0;
     loop {
         {
@@ -1513,6 +1520,83 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
                     persist_download_snapshot(&state, &id).await;
                     reschedule_pending_downloads(state.clone());
                     return;
+                }
+
+                // Queda de conexão (troca de rede, roteador reiniciando, cabo solto):
+                // retenta com orçamento próprio e backoff curto, SEM consumir o
+                // `max_retries` do usuário e SEM marcar erro definitivo. O arquivo
+                // parcial é preservado e a próxima tentativa retoma via Range quando o
+                // provider suporta resume. Isso conserta o "foi a zero e travou".
+                if is_connection_error(&err_str)
+                    && !err_str.starts_with("RATE_LIMIT:")
+                    && !err_str.starts_with("PREMIUM_REQUIRED:")
+                {
+                    let status = {
+                        let map = state.downloads.lock().await;
+                        map.get(&id).map(|d| d.status.clone())
+                    };
+                    if matches!(status, Some(DownloadStatus::Paused | DownloadStatus::Cancelled)) {
+                        reschedule_pending_downloads(state.clone());
+                        return;
+                    }
+                    if network_retries < NETWORK_MAX_RETRIES {
+                        network_retries = network_retries.saturating_add(1);
+                        // Backoff curto e limitado (2s→15s): a rede pode voltar a qualquer momento.
+                        let delay = (network_retries as u64).saturating_add(1).min(15);
+                        let retry_at = current_unix_secs().saturating_add(delay);
+                        {
+                            let mut map = state.downloads.lock().await;
+                            if let Some(d) = map.get_mut(&id) {
+                                d.status = DownloadStatus::Pending;
+                                d.speed_bps = 0;
+                                d.eta_secs = delay;
+                                d.retry_at = Some(retry_at);
+                                d.error = Some(
+                                    "Conexão perdida — aguardando a rede voltar para retomar do ponto onde parou…".to_string(),
+                                );
+                                d.completed_at = None;
+                                if let Some(children) = d.children.as_mut() {
+                                    for child in children.iter_mut() {
+                                        child.speed_bps = Some(0);
+                                        child.eta_secs = Some(0);
+                                        if child.status == Some(DownloadStatus::Downloading) {
+                                            child.status = Some(DownloadStatus::Pending);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        persist_download_snapshot(&state, &id).await;
+                        warn!(
+                            target: "gdownloader_backend::downloads",
+                            "queda de conexão id={} provider={} tentativa_rede={} delay={}s err={}",
+                            id, provider_name, network_retries, delay, err_str
+                        );
+                        state.broadcast(WsEvent::StatusChanged {
+                            id: id.clone(),
+                            status: DownloadStatus::Pending,
+                            error: Some("Conexão perdida — retomando quando a rede voltar…".to_string()),
+                            retry_at: Some(retry_at),
+                            captcha_type: None,
+                            captcha_sitekey: None,
+                            captcha_page_url: None,
+                        });
+                        reschedule_pending_downloads(state.clone());
+                        for _ in 0..delay {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            let status = {
+                                let map = state.downloads.lock().await;
+                                map.get(&id).map(|download| download.status.clone())
+                            };
+                            if matches!(status, None | Some(DownloadStatus::Paused | DownloadStatus::Cancelled)) {
+                                reschedule_pending_downloads(state.clone());
+                                return;
+                            }
+                        }
+                        // Não incrementa `attempt`: queda de rede não gasta o orçamento do arquivo.
+                        continue;
+                    }
+                    // Esgotou o orçamento de rede: segue para o tratamento normal abaixo.
                 }
 
                 let retry_policy = classify_retry_policy(&provider_name, &err_str, attempt);
@@ -2632,6 +2716,54 @@ fn parse_captcha_error(message: &str) -> Option<(String, String, String)> {
     None
 }
 
+/// Detecta erros de transporte/rede (queda de conexão) — distintos de erros do host
+/// (403/429/rate-limit) ou do arquivo (404). Usado para retentar indefinidamente com
+/// orçamento próprio ao trocar de rede, sem gastar o `max_retries` do usuário.
+fn is_connection_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    const NEEDLES: &[&str] = &[
+        "error sending request",
+        "connection reset",
+        "connection closed",
+        "connection aborted",
+        "connection refused",
+        "connection error",
+        "connection closed before message completed",
+        "timed out",
+        "timeout",
+        "operation timed out",
+        "dns error",
+        "failed to lookup address",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "network is unreachable",
+        "no route to host",
+        "host unreachable",
+        "broken pipe",
+        "tcp connect error",
+        "request or response body error",
+        "body error",
+        "incomplete message",
+        "unexpected end of file",
+        "early eof",
+        "connection closed before",
+        "download http incompleto",
+        "parte http incompleta",
+        "servidor http ignorou range",
+        // Códigos de erro de socket comuns (macOS/Linux)
+        "os error 51", // ENETUNREACH
+        "os error 54", // ECONNRESET (macOS)
+        "os error 60", // ETIMEDOUT (macOS)
+        "os error 64", // EHOSTDOWN
+        "os error 65", // EHOSTUNREACH (macOS)
+        "os error 104", // ECONNRESET (Linux)
+        "os error 110", // ETIMEDOUT (Linux)
+        "os error 111", // ECONNREFUSED (Linux)
+        "os error 113", // EHOSTUNREACH (Linux)
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
 fn classify_retry_policy(provider: &str, message: &str, attempt: u32) -> RetryPolicy {
     // Format: RATE_LIMIT:{secs}:{human_message}
     if message.starts_with("RATE_LIMIT:") {
@@ -2900,5 +3032,29 @@ mod tests {
         );
 
         assert_eq!(policy.retry_delay_secs, 8109);
+    }
+
+    #[test]
+    fn detects_connection_errors_for_dedicated_retry_budget() {
+        // Quedas de rede reais (mensagens de reqwest/hyper/io) devem ser retentadas.
+        assert!(is_connection_error(
+            "error reading a body from connection: Connection reset by peer (os error 54)"
+        ));
+        assert!(is_connection_error("error sending request for url (https://x/y)"));
+        assert!(is_connection_error("operation timed out"));
+        assert!(is_connection_error("dns error: failed to lookup address information"));
+        assert!(is_connection_error("connection closed before message completed"));
+        assert!(is_connection_error("Download HTTP incompleto: 1024/4096 bytes"));
+        assert!(is_connection_error("network is unreachable (os error 51)"));
+    }
+
+    #[test]
+    fn does_not_flag_host_or_file_errors_as_connection_drops() {
+        // Erros do host/arquivo NÃO devem entrar no orçamento de rede (têm seu próprio fluxo).
+        assert!(!is_connection_error("403 Forbidden"));
+        assert!(!is_connection_error("429 Too Many Requests"));
+        assert!(!is_connection_error("RATE_LIMIT:3600:aguarde"));
+        assert!(!is_connection_error("Arquivo não encontrado (404)"));
+        assert!(!is_connection_error("CAPTCHA_REQUIRED:recaptcha2:sitekey:url"));
     }
 }

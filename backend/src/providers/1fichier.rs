@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
+use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::time::Duration;
 use tracing::{debug, info, warn};
@@ -228,7 +229,9 @@ impl FichierProvider {
 
         if Self::is_binary_response(&response) {
             info!(target: "gdownloader_backend::providers::1fichier", "1Fichier respondeu binário direto: {}", page_url);
-            return Self::stream_response_to_file(response, dest_path, speed_limit_bps, progress_tx).await;
+            // Caminho binário direto: a resposta do POST já veio sem Range, então
+            // não há como retomar aqui (recomeça do zero).
+            return Self::stream_response_to_file(response, dest_path, 0, speed_limit_bps, progress_tx).await;
         }
 
         let html = response.text().await?;
@@ -245,25 +248,55 @@ impl FichierProvider {
             .ok_or_else(|| unsupported_error("1Fichier"))?;
         info!(target: "gdownloader_backend::providers::1fichier", "1Fichier link final extraído para {}", page_url);
 
-        let resp = client
-            .get(&direct_url)
-            .header("Referer", page_url)
-            .send()
-            .await?
-            .error_for_status()?;
-        Self::stream_response_to_file(resp, dest_path, speed_limit_bps, progress_tx).await
+        // Resume: se já existe um arquivo parcial no disco (retomada após pausa ou
+        // queda de conexão), pede só o que falta via Range e continua de onde parou.
+        let existing = tokio::fs::metadata(dest_path)
+            .await
+            .ok()
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        let mut request = client.get(&direct_url).header("Referer", page_url);
+        if existing > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        }
+        let resp = request.send().await?;
+        // Arquivo já estava completo (o servidor rejeita o Range além do fim): pronto.
+        if existing > 0 && resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok(existing);
+        }
+        let resp = resp.error_for_status()?;
+        // Só retoma se o servidor confirmou o Range (206). Senão, começa do zero.
+        let resume_from = if existing > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            existing
+        } else {
+            0
+        };
+        Self::stream_response_to_file(resp, dest_path, resume_from, speed_limit_bps, progress_tx).await
     }
 
     async fn stream_response_to_file(
         response: reqwest::Response,
         dest_path: &str,
+        resume_from: u64,
         speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> Result<u64> {
-        let total = response.content_length().unwrap_or(0);
-        let mut file = tokio::fs::File::create(dest_path).await?;
+        let content_len = response.content_length().unwrap_or(0);
+        // Quando retomamos, content_len é só o que falta; o total é parcial + restante.
+        let total = if resume_from > 0 {
+            resume_from.saturating_add(content_len)
+        } else {
+            content_len
+        };
+        let mut file = if resume_from > 0 {
+            OpenOptions::new().create(true).append(true).open(dest_path).await?
+        } else {
+            tokio::fs::File::create(dest_path).await?
+        };
         let mut stream = response.bytes_stream();
-        let mut downloaded = 0u64;
+        let mut downloaded = resume_from;
         let mut session_downloaded = 0u64;
         let started_at = tokio::time::Instant::now();
 
