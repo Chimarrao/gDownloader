@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'crypto'
+import { createReadStream, statSync } from 'fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
 
@@ -286,6 +287,73 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     }
   }
 
+  // Transmite o arquivo de um download para o dispositivo que acessa via rede.
+  // Suporta Range (206) para retomada automática do navegador em conexões instáveis.
+  async function serveDownloadFile(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+    const downloads = await backendJson<DownloadRow[]>('/downloads').catch(() => [] as DownloadRow[])
+    const download = downloads.find((row) => row.id === id)
+    if (!download?.dest_path) {
+      jsonResponse(res, 404, { error: 'Arquivo não encontrado' })
+      return
+    }
+
+    let stat
+    try {
+      stat = statSync(download.dest_path)
+    } catch {
+      jsonResponse(res, 404, { error: 'Arquivo ainda não está disponível no disco' })
+      return
+    }
+    if (!stat.isFile()) {
+      jsonResponse(res, 404, { error: 'Arquivo indisponível' })
+      return
+    }
+
+    const fileSize = stat.size
+    const filename = download.filename || download.title || 'download'
+    const baseHeaders: Record<string, string> = {
+      'Content-Type': 'application/octet-stream',
+      'Accept-Ranges': 'bytes',
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      'Cache-Control': 'no-store',
+    }
+
+    const rangeHeader = req.headers.range
+    let start = 0
+    let end = fileSize - 1
+    let status = 200
+    if (rangeHeader) {
+      const match = /bytes=(\d*)-(\d*)/.exec(rangeHeader)
+      if (match) {
+        if (match[1]) start = Number.parseInt(match[1], 10)
+        if (match[2]) end = Number.parseInt(match[2], 10)
+      }
+      if (Number.isNaN(start) || start < 0) start = 0
+      if (Number.isNaN(end) || end >= fileSize) end = fileSize - 1
+      if (start > end || start >= fileSize) {
+        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` })
+        res.end()
+        return
+      }
+      status = 206
+      baseHeaders['Content-Range'] = `bytes ${start}-${end}/${fileSize}`
+    }
+    baseHeaders['Content-Length'] = String(end - start + 1)
+
+    res.writeHead(status, baseHeaders)
+    if (req.method === 'HEAD') {
+      res.end()
+      return
+    }
+
+    const stream = createReadStream(download.dest_path, { start, end })
+    stream.on('error', () => {
+      if (!res.headersSent) jsonResponse(res, 500, { error: 'Falha ao ler o arquivo' })
+      else res.destroy()
+    })
+    stream.pipe(res)
+  }
+
   async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
     if (req.method === 'GET' && pathname === '/api/state') {
       const [downloads, settings, packages, stats] = await Promise.all([
@@ -397,6 +465,14 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     }
 
     try {
+      // Servir o arquivo baixado de volta para o dispositivo (celular), com suporte a
+      // Range/resume — assim o navegador retoma sozinho se o roteador oscilar.
+      const fileMatch = url.pathname.match(/^\/api\/downloads\/([^/]+)\/file$/)
+      if ((req.method === 'GET' || req.method === 'HEAD') && fileMatch) {
+        await serveDownloadFile(req, res, decodeURIComponent(fileMatch[1]))
+        return
+      }
+
       if (url.pathname.startsWith('/api/')) {
         await handleApi(req, res, url.pathname)
         return
@@ -536,6 +612,8 @@ function remoteHtml(): string {
     .status-complete .fill { background:var(--ok); }
     .status-error .fill, .status-corrupted .fill, .status-disk_full .fill { background:var(--danger); }
     .actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+    .device-dl { display:inline-flex; align-items:center; justify-content:center; gap:4px; background:var(--accent); color:#fff; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600; text-decoration:none; border:none; cursor:pointer; }
+    .device-dl:hover { filter:brightness(1.06); }
     .hidden { display:none; }
     .empty { color:var(--muted); text-align:center; padding:26px; }
     .toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:var(--text); color:var(--surface); padding:10px 14px; border-radius:8px; opacity:0; pointer-events:none; transition:.2s; }
@@ -549,7 +627,8 @@ function remoteHtml(): string {
       .card { padding:12px; }
       .download { grid-template-columns:1fr; padding:11px; }
       .actions { justify-content:flex-start; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); }
-      .actions button { width:100%; min-height:38px; }
+      .actions button, .actions .device-dl { width:100%; min-height:38px; box-sizing:border-box; }
+      .device-dl { grid-column:1 / -1; }
       .meta { gap:6px; }
       .settings-grid { grid-template-columns:1fr; }
       input, select, button { min-height:40px; }
@@ -614,6 +693,7 @@ function remoteHtml(): string {
           '<div class="meta"><span>' + escapeHtml(d.provider || 'provider') + '</span><span>' + d.status + '</span><span>' + fmtBytes(d.bytes_downloaded || 0) + ' / ' + fmtBytes(d.size || 0) + '</span><span>' + fmtBytes(d.speed_bps || 0) + '/s</span></div>' +
           '<div class="bar"><div class="fill" style="width:' + progress + '%"></div></div></div>' +
           '<div class="actions">' +
+          (d.status === 'complete' ? '<a class="device-dl" href="/api/downloads/' + encodeURIComponent(d.id) + '/file" download>⬇ Este dispositivo</a>' : '') +
           '<button data-action="pause" data-id="' + d.id + '">Pausar</button>' +
           '<button data-action="resume" data-id="' + d.id + '">Retomar</button>' +
           '<button data-action="force" data-id="' + d.id + '">Forçar</button>' +
