@@ -10,21 +10,21 @@ describe('file-type app icons', () => {
 
   it('mapeia arquivos compactados', () => {
     expect(getFileTypeAppIcon('pacote.rar')?.app).toBe('winrar')
-    expect(getFileTypeAppIcon('backup.zip')?.app).toBe('archive')
-    expect(getFileTypeAppIcon('x.7z')?.app).toBe('archive')
+    expect(getFileTypeAppIcon('backup.zip')?.app).toBe('zip')
+    expect(getFileTypeAppIcon('x.7z')?.app).toBe('zip')
   })
 
   it('mapeia documentos e instaladores', () => {
     expect(getFileTypeAppIcon('doc.pdf')?.app).toBe('pdf')
-    expect(getFileTypeAppIcon('planilha.xlsx')?.app).toBe('excel')
+    expect(getFileTypeAppIcon('planilha.xlsx')?.app).toBe('xls')
     expect(getFileTypeAppIcon('app.apk')?.app).toBe('android')
-    expect(getFileTypeAppIcon('setup.exe')?.app).toBe('windows')
-    expect(getFileTypeAppIcon('imagem.iso')?.app).toBe('disk')
+    expect(getFileTypeAppIcon('setup.exe')?.app).toBe('exe')
+    expect(getFileTypeAppIcon('imagem.iso')?.app).toBe('iso')
   })
 
   it('mapeia e-book, fonte, torrent e banco de dados', () => {
     expect(getFileTypeAppIcon('livro.epub')?.app).toBe('ebook')
-    expect(getFileTypeAppIcon('Roboto.ttf')?.app).toBe('font')
+    expect(getFileTypeAppIcon('Roboto.ttf')?.app).toBe('otf')
     expect(getFileTypeAppIcon('filme.torrent')?.app).toBe('torrent')
     expect(getFileTypeAppIcon('dados.sqlite')?.app).toBe('database')
   })
