@@ -399,7 +399,10 @@ impl DirectHttpProvider {
         }
 
         let parts_len = parts.len();
-        let mut tasks = Vec::with_capacity(parts.len());
+        // JoinSet em vez de spawns soltos: se esta função for cancelada/dropada
+        // (usuário cancelou o download, ou houve retry), o JoinSet é dropado e ABORTA
+        // todas as partes — sem tasks órfãs escrevendo nos .partN e piscando progresso.
+        let mut tasks = tokio::task::JoinSet::new();
 
         for part in parts.clone() {
             let offset = *normalized_offsets.get(&part.index).unwrap_or(&0);
@@ -418,7 +421,7 @@ impl DirectHttpProvider {
             let total_bytes = metadata.size;
             let task_limit = Arc::clone(&speed_limit_bps);
 
-            tasks.push(tokio::spawn(async move {
+            tasks.spawn(async move {
                 let range_start = part.start.saturating_add(offset);
                 let response = client
                     .get(&url)
@@ -476,11 +479,12 @@ impl DirectHttpProvider {
                     ));
                 }
                 Ok::<(), anyhow::Error>(())
-            }));
+            });
         }
 
-        for task in tasks {
-            task.await??;
+        // Se qualquer parte falhar, `?` retorna e o JoinSet é dropado → aborta o resto.
+        while let Some(joined) = tasks.join_next().await {
+            joined??;
         }
 
         let _ = tokio::fs::remove_file(dest_path).await;

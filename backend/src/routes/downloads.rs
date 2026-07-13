@@ -1159,9 +1159,27 @@ async fn move_fs_file(from: &std::path::Path, to: &std::path::Path) -> std::io::
 }
 
 // --- Executa o download em background ---
+// Wrapper com guarda anti-dupla-execução: se já existe uma execução viva para este
+// `id`, retorna imediatamente (evita duas tasks concorrentes escrevendo o mesmo
+// arquivo e "piscando" o progresso). Remove o marcador ao terminar, em qualquer saída.
+async fn run_download(state: AppState, id: String, url: String, dest_path: String) {
+    {
+        let mut running = state.running_downloads.lock().await;
+        if !running.insert(id.clone()) {
+            warn!(
+                target: "gdownloader_backend::downloads",
+                "ignorando execução duplicada de download id={}", id
+            );
+            return;
+        }
+    }
+    run_download_inner(state.clone(), id.clone(), url, dest_path).await;
+    state.running_downloads.lock().await.remove(&id);
+}
+
 // Esta função roda em uma task separada do tokio
 // É como um Worker ou uma Promise longa rodando em paralelo
-async fn run_download(state: AppState, id: String, url: String, dest_path: String) {
+async fn run_download_inner(state: AppState, id: String, url: String, dest_path: String) {
     let (max_retries, speed_limit_kib, parallel_parts, selected_children) = {
         {
             let mut map = state.downloads.lock().await;
@@ -2355,7 +2373,12 @@ pub async fn schedule_pending_downloads(state: AppState) {
     let limit = *state.max_concurrent_downloads.lock().await;
     let active_task_ids = {
         let tasks = state.active_tasks.lock().await;
-        tasks.keys().cloned().collect::<std::collections::HashSet<_>>()
+        let running = state.running_downloads.lock().await;
+        tasks
+            .keys()
+            .chain(running.iter())
+            .cloned()
+            .collect::<std::collections::HashSet<_>>()
     };
     let to_start = {
         let mut map = state.downloads.lock().await;

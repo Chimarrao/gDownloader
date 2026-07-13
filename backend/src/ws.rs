@@ -29,6 +29,10 @@ pub struct AppState {
     /// O handler PATCH atualiza o valor atômico e o loop de streaming do provider lê
     /// na próxima iteração — logo mudanças valem em tempo real (inclusive Mega).
     pub speed_limits: Arc<Mutex<HashMap<String, crate::providers::SpeedLimitBps>>>,
+    /// IDs com uma execução de `run_download` viva. Backstop contra dupla execução:
+    /// impede que a corrida entre o loop de retry e o wakeup timer spawne duas tasks
+    /// para o mesmo download (o que causava progresso "piscando" e cancelamento parcial).
+    pub running_downloads: Arc<Mutex<std::collections::HashSet<String>>>,
     pub max_concurrent_downloads: Arc<Mutex<usize>>,
     pub db: Arc<StdMutex<rusqlite::Connection>>,
     pub db_path: Option<String>,
@@ -61,6 +65,7 @@ impl AppState {
             downloads: Arc::new(Mutex::new(HashMap::new())),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             speed_limits: Arc::new(Mutex::new(HashMap::new())),
+            running_downloads: Arc::new(Mutex::new(std::collections::HashSet::new())),
             max_concurrent_downloads: Arc::new(Mutex::new(max_concurrent_downloads.max(1))),
             db: Arc::new(StdMutex::new(db)),
             db_path,

@@ -546,7 +546,8 @@ impl MegaProvider {
 
         let started_at = tokio::time::Instant::now();
         let total_downloaded = Arc::new(AtomicU64::new(0));
-        let mut tasks = Vec::with_capacity(part_count);
+        // JoinSet aborta todas as partes se a função for cancelada/dropada (sem órfãos).
+        let mut tasks = tokio::task::JoinSet::new();
 
         for part_index in 0..part_count {
             let client = client.clone();
@@ -560,7 +561,7 @@ impl MegaProvider {
             let iv = iv;
             let task_speed_limit = Arc::clone(&speed_limit_bps);
 
-            tasks.push(tokio::spawn(async move {
+            tasks.spawn(async move {
                 let part_path = format!("{part_dir}/part-{part_index:03}");
                 let resp = client
                     .get(&download_url)
@@ -610,11 +611,11 @@ impl MegaProvider {
 
                 file.flush().await?;
                 Ok::<(), anyhow::Error>(())
-            }));
+            });
         }
 
-        for task in tasks {
-            task.await??;
+        while let Some(joined) = tasks.join_next().await {
+            joined??;
         }
 
         let _ = tokio::fs::remove_file(dest_path).await;

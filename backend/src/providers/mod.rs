@@ -569,7 +569,9 @@ pub async fn try_parallel_download(
 
     let started_at = Instant::now();
     let total_downloaded = Arc::new(AtomicU64::new(0));
-    let mut tasks = Vec::with_capacity(part_count);
+    // JoinSet aborta todas as partes se esta função for cancelada/dropada (evita
+    // tasks órfãs continuando o download após cancelar/retentar).
+    let mut tasks = tokio::task::JoinSet::new();
 
     for part_index in 0..part_count {
         let client = client.clone();
@@ -583,7 +585,7 @@ pub async fn try_parallel_download(
         let end = ((total_bytes * (part_index as u64 + 1)) / part_count as u64).saturating_sub(1);
         let part_len = end.saturating_sub(start).saturating_add(1);
 
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let part_path = format!("{part_dir}/part-{part_index:03}");
             let resp = client
                 .get(&url)
@@ -631,11 +633,11 @@ pub async fn try_parallel_download(
 
             file.flush().await?;
             Ok::<(), anyhow::Error>(())
-        }));
+        });
     }
 
-    for task in tasks {
-        task.await??;
+    while let Some(joined) = tasks.join_next().await {
+        joined??;
     }
 
     let _ = tokio::fs::remove_file(dest_path).await;

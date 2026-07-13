@@ -148,6 +148,54 @@ async fn direct_http_segmented_download_merges_part_files() {
 }
 
 #[tokio::test]
+async fn direct_http_segmented_download_aborts_parts_on_cancel() {
+    // Regressão: cancelar um download em partes deve ABORTAR todas as conexões.
+    // Antes, as partes eram tokio::spawn soltas e viravam órfãs (continuavam
+    // baixando e "piscando" o progresso após o cancelamento).
+    let data = test_data(8 * 1024 * 1024);
+    let url = spawn_fixture_server(data).await;
+    let dest = temp_test_path("gdownloader-direct-http-abort").join("sample.bin");
+    tokio::fs::create_dir_all(dest.parent().unwrap()).await.unwrap();
+    let dest_string = dest.to_string_lossy().to_string();
+
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+    // Limite baixo (~200KB/s) para o download demorar e dar tempo de cancelar no meio.
+    let limit = ::std::sync::Arc::new(::std::sync::atomic::AtomicU64::new(200_000));
+    let dest_for_task = dest_string.clone();
+    let handle = tokio::spawn(async move {
+        DirectHttpProvider
+            .download(&url, &dest_for_task, limit, 4, None, tx)
+            .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+    handle.abort();
+    let _ = handle.await;
+
+    let part_bytes = || {
+        (0..4)
+            .filter_map(|i| std::fs::metadata(format!("{dest_string}.part{i}")).ok())
+            .map(|meta| meta.len())
+            .sum::<u64>()
+    };
+
+    // Deixa qualquer escrita em voo assentar, então confirma que NÃO cresce mais.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let before = part_bytes();
+    assert!(before > 0, "as partes deveriam ter começado a baixar");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let after = part_bytes();
+    assert_eq!(before, after, "partes órfãs continuaram baixando após o cancelamento");
+
+    for i in 0..4 {
+        let _ = tokio::fs::remove_file(format!("{dest_string}.part{i}")).await;
+    }
+    let _ = tokio::fs::remove_file(&dest).await;
+}
+
+#[tokio::test]
 async fn direct_http_resumes_single_stream_from_sqlite_offset() {
     let data = test_data(256 * 1024);
     let url = spawn_fixture_server(data.clone()).await;
