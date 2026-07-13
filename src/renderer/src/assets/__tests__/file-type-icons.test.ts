@@ -22,6 +22,13 @@ describe('file-type app icons', () => {
     expect(getFileTypeAppIcon('imagem.iso')?.app).toBe('disk')
   })
 
+  it('mapeia e-book, fonte, torrent e banco de dados', () => {
+    expect(getFileTypeAppIcon('livro.epub')?.app).toBe('ebook')
+    expect(getFileTypeAppIcon('Roboto.ttf')?.app).toBe('font')
+    expect(getFileTypeAppIcon('filme.torrent')?.app).toBe('torrent')
+    expect(getFileTypeAppIcon('dados.sqlite')?.app).toBe('database')
+  })
+
   it('ignora query/hash e sem extensão', () => {
     expect(getFileTypeAppIcon('video.mkv?token=abc#x')?.app).toBe('vlc')
     expect(getFileTypeAppIcon('semextensao')).toBeNull()

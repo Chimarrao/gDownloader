@@ -46,6 +46,18 @@ const APP_ICONS: Record<string, string> = {
   text: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="#fafafa" d="M13 4h15l8 8v30a2 2 0 0 1-2 2H13a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path fill="#cfd8dc" d="M28 4l8 8h-8z"/><path stroke="#90a4ae" stroke-width="2" stroke-linecap="round" d="M16 21h13M16 26h13M16 31h8"/></svg>`,
 
   subtitle: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="5" y="11" width="38" height="26" rx="5" fill="#455a64"/><rect x="10" y="26" width="13" height="4" rx="2" fill="#fff176"/><rect x="26" y="26" width="12" height="4" rx="2" fill="#fff176"/><rect x="10" y="19" width="8" height="3.5" rx="1.75" fill="#b0bec5"/><rect x="21" y="19" width="17" height="3.5" rx="1.75" fill="#b0bec5"/></svg>`,
+
+  // E-book (epub, mobi, azw…) — livro aberto.
+  ebook: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><path fill="#8d6e63" d="M6 11c5-2.5 11-2.5 18 0v27c-7-2.5-13-2.5-18 0z"/><path fill="#6d4c41" d="M42 11c-5-2.5-11-2.5-18 0v27c7-2.5 13-2.5 18 0z"/><path fill="#efebe9" d="M9 14c4-1.7 8.5-1.7 13 0v22c-4.5-1.7-9-1.7-13 0zM39 14c-4-1.7-8.5-1.7-13 0v22c4.5-1.7 9-1.7 13 0z"/><path stroke="#bcaaa4" stroke-width="1.5" stroke-linecap="round" d="M12 19h7M12 23h7M29 19h7M29 23h7"/></svg>`,
+
+  // Fonte tipográfica (ttf, otf, woff…).
+  font: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="6" y="6" width="36" height="36" rx="6" fill="#3f51b5"/><path fill="#fff" d="M15 15h18v4h-6.8v14h-4.4V19H15z"/><path fill="#c5cae9" d="M28 27h9v3.2h-3.4V38h-2.4v-7.8H28z"/></svg>`,
+
+  // Torrent (.torrent).
+  torrent: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="19" fill="#5c6bc0"/><path fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" d="M24 10v13a9 9 0 0 0 9 9h4"/><path fill="none" stroke="#c5cae9" stroke-width="3.4" stroke-linecap="round" d="M24 19a5 5 0 0 0 5 5h4"/></svg>`,
+
+  // Banco de dados (sql, db, sqlite…).
+  database: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><ellipse cx="24" cy="12" rx="15" ry="6" fill="#ff8f00"/><path fill="#ffa000" d="M9 12v10c0 3.3 6.7 6 15 6s15-2.7 15-6V12c0 3.3-6.7 6-15 6S9 15.3 9 12z"/><path fill="#ffb300" d="M9 22v10c0 3.3 6.7 6 15 6s15-2.7 15-6V22c0 3.3-6.7 6-15 6S9 25.3 9 22z"/></svg>`,
 }
 
 // Extensão → chave de app. Cobre os formatos mais comuns de download.
@@ -73,6 +85,11 @@ const EXT_TO_APP: Record<string, string> = {
   iso: 'disk', img: 'disk', dmg: 'disk', vhd: 'disk', vhdx: 'disk', vmdk: 'disk',
   exe: 'windows', msi: 'windows', bat: 'windows', cmd: 'windows',
   apk: 'android', xapk: 'android', aab: 'android',
+  // E-books / fontes / torrent / banco de dados
+  epub: 'ebook', mobi: 'ebook', azw: 'ebook', azw3: 'ebook', fb2: 'ebook', cbz: 'ebook', cbr: 'ebook',
+  ttf: 'font', otf: 'font', woff: 'font', woff2: 'font', eot: 'font',
+  torrent: 'torrent',
+  sql: 'database', db: 'database', sqlite: 'database', sqlite3: 'database', db3: 'database', mdb: 'database',
   // Legendas / texto / código
   srt: 'subtitle', vtt: 'subtitle', ass: 'subtitle', ssa: 'subtitle', sub: 'subtitle',
   txt: 'text', md: 'text', log: 'text', nfo: 'text', ini: 'text', cfg: 'text',
