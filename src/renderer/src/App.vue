@@ -401,9 +401,11 @@ onMounted(async () => {
   }
   applyUiPreferences(settings)
   void refreshDiskUsage()
+  // Atualiza com frequência (statvfs é um único syscall, não pesa) para refletir
+  // rápido o espaço consumido durante os downloads.
   diskTicker = setInterval(() => {
     if (appMounted) void refreshDiskUsage()
-  }, 30_000)
+  }, 5_000)
   if (!settings.onboardingCompleted) {
     showOnboarding.value = true
   }

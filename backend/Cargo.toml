@@ -62,6 +62,11 @@ crc32fast = "1"
 sysinfo = "0.33"
 rcgen = "0.13"
 
+# Espaço em disco preciso via statvfs no caminho exato (unix). O sysinfo casa por
+# ponto de montagem, o que erra no macOS (firmlinks p/ /System/Volumes/Data).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Para testes HTTP
 tower = { version = "0.4", features = ["util"] }

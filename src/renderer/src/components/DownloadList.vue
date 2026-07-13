@@ -262,7 +262,7 @@
 
             <!-- Row 2: progress bar -->
             <div v-if="hasColumn('progress')" class="progress-track">
-              <div v-if="downloadSegments(item)" class="progress-segments">
+              <div v-if="isDetailExpanded(item.id) && downloadSegments(item)" class="progress-segments">
                 <div
                   v-for="(seg, i) in downloadSegments(item)"
                   :key="i"
