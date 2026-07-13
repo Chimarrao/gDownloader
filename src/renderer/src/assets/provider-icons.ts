@@ -148,6 +148,12 @@ export function getProviderIcon(moduleId: string): ProviderIcon {
   return ICONS[key] ?? ICONS.default
 }
 
+// Existe um ícone de marca específico para este provedor? (false para Direct HTTP e
+// desconhecidos, onde preferimos mostrar um ícone por formato de arquivo.)
+export function hasProviderIcon(moduleId: string): boolean {
+  return normalizeProviderKey(moduleId) in ICONS
+}
+
 export function getProviderColor(moduleId: string): string {
   return getProviderIcon(moduleId).color
 }

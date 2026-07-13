@@ -204,8 +204,8 @@
           <div
             v-else-if="hasColumn('host')"
             class="provider-icon"
-            v-html="getIcon(item.moduleId).svg"
-            :style="providerIconStyle(item.moduleId)"
+            v-html="leadingIconSvg(item)"
+            :style="leadingIconStyle(item)"
             :title="moduleLabel(item.moduleId)"
           ></div>
 
@@ -835,7 +835,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadChild, DownloadEvent, DownloadItem, DownloadPackage } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
-import { getProviderIcon, getProviderColor } from '../assets/provider-icons'
+import { getFileTypeAppIcon } from '../assets/file-type-icons'
+import { getProviderIcon, getProviderColor, hasProviderIcon } from '../assets/provider-icons'
 import torIconSvg from '../assets/tor.svg?raw'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import {
@@ -1264,6 +1265,25 @@ function providerIconStyle(moduleId: string): Record<string, string> {
     borderColor: `${color}44`,
     background: `color-mix(in srgb, ${color} 12%, var(--bg-card))`,
   }
+}
+
+// Ícone principal (à esquerda) da linha: usa o SVG de marca do provedor quando
+// existe; senão (Direct HTTP / desconhecido) tenta um ícone de app pelo formato do
+// arquivo (MKV→VLC, RAR→WinRAR…); por fim, cai no ícone padrão do provedor.
+function leadingIconSvg(item: DownloadItem): string {
+  if (!hasProviderIcon(item.moduleId)) {
+    const fileIcon = getFileTypeAppIcon(item.title || item.url)
+    if (fileIcon) return fileIcon.svg
+  }
+  return getIcon(item.moduleId).svg
+}
+
+function leadingIconStyle(item: DownloadItem): Record<string, string> {
+  // Ícones de app são coloridos por conta própria: não aplicamos o tom do provedor.
+  if (!hasProviderIcon(item.moduleId) && getFileTypeAppIcon(item.title || item.url)) {
+    return { background: 'var(--bg-card)', borderColor: 'var(--border-color)' }
+  }
+  return providerIconStyle(item.moduleId)
 }
 
 function isPremiumProvider(moduleId: string): boolean {
