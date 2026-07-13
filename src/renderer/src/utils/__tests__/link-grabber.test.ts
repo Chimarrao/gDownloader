@@ -39,6 +39,25 @@ describe('link-grabber utils', () => {
     ])
   })
 
+  it('aceita links sem esquema (IP:porta/caminho) prefixando http://', () => {
+    expect(
+      normalizeUrlCandidate('151.247.155.169:3000/download/abc/letters.mkv'),
+    ).toBe('http://151.247.155.169:3000/download/abc/letters.mkv')
+    expect(normalizeUrlCandidate('http://151.247.155.169:3000/download/abc/letters.mkv')).toBe(
+      'http://151.247.155.169:3000/download/abc/letters.mkv',
+    )
+  })
+
+  it('não confunde nome de arquivo solto com url', () => {
+    expect(normalizeUrlCandidate('video.mkv')).toBe('')
+    expect(normalizeUrlCandidate('arquivo final.rar')).toBe('')
+  })
+
+  it('extrai link cru com caminho de um texto', () => {
+    const urls = parseUrls('baixe em exemplo.com/pasta/arquivo.zip agora')
+    expect(urls).toEqual(['http://exemplo.com/pasta/arquivo.zip'])
+  })
+
   it('trunca urls longas pelo último segmento útil', () => {
     expect(truncateUrl('https://brfiles.com/f/MoQFnG5r/Hannibal.S02e01.1080P.WEB-DL.DUAL.DUBLASERIES.TV.mkv'))
       .toContain('Hannibal')

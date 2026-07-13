@@ -1,10 +1,26 @@
+// Casa uma URL com esquema (http/https) OU "crua" — ou seja, sem `http://`:
+//  - IP (com porta opcional) + caminho:  151.247.155.169:3000/download/arquivo.mkv
+//  - domínio (com porta opcional) + caminho:  exemplo.com/pasta/arquivo
+// A exigência de um caminho `/...` (ou porta) na forma crua evita casar nomes de
+// arquivo soltos como "video.mkv" no meio de um texto.
+const URL_CANDIDATE_RE =
+  /(?:https?:\/\/\S+)|(?:(?:\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?\/\S*)/gi
+
+// Garante um esquema: prefixa http:// quando o candidato vem "cru". Usamos http://
+// (e não https://) porque servidores diretos por IP:porta costumam ser http; sites
+// que exigem https redirecionam sozinhos.
+function ensureScheme(candidate: string): string {
+  return /^https?:\/\//i.test(candidate) ? candidate : `http://${candidate}`
+}
+
 export function normalizeUrlCandidate(line: string): string {
   const trimmed = line.trim()
   if (!trimmed) return ''
-  const match = trimmed.match(/https?:\/\/\S+/i)
+  const match = trimmed.match(URL_CANDIDATE_RE)
   if (!match) return ''
+  const candidate = ensureScheme(match[0].replace(/[),.;]+$/, ''))
   try {
-    const parsed = new URL(match[0].replace(/[),.;]+$/, ''))
+    const parsed = new URL(candidate)
     const isMega = /(^|\.)mega\.(nz|co\.nz)$/i.test(parsed.hostname)
     if (!isMega) {
       parsed.hash = ''
@@ -14,13 +30,13 @@ export function normalizeUrlCandidate(line: string): string {
     }
     return parsed.toString()
   } catch {
-    return match[0].replace(/[),.;]+$/, '')
+    return candidate.replace(/[),.;]+$/, '')
   }
 }
 
 export function parseUrls(text: string): string[] {
   const seen = new Set<string>()
-  const matches = text.match(/https?:\/\/\S+/gi) ?? []
+  const matches = text.match(URL_CANDIDATE_RE) ?? []
   for (const match of matches) {
     const url = normalizeUrlCandidate(match)
     if (url) seen.add(url)
