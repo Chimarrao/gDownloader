@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { getFileTypeAppIcon } from '../file-type-icons'
 
 describe('file-type app icons', () => {
-  it('mapeia vídeo para o VLC', () => {
-    expect(getFileTypeAppIcon('filme.mkv')?.app).toBe('vlc')
-    expect(getFileTypeAppIcon('a/b/clip.MP4')?.app).toBe('vlc')
+  it('mapeia vídeo para o ícone de vídeo', () => {
+    expect(getFileTypeAppIcon('filme.mkv')?.app).toBe('video')
+    expect(getFileTypeAppIcon('a/b/clip.MP4')?.app).toBe('video')
   })
 
   it('mapeia arquivos compactados', () => {
@@ -30,7 +30,7 @@ describe('file-type app icons', () => {
   })
 
   it('ignora query/hash e sem extensão', () => {
-    expect(getFileTypeAppIcon('video.mkv?token=abc#x')?.app).toBe('vlc')
+    expect(getFileTypeAppIcon('video.mkv?token=abc#x')?.app).toBe('video')
     expect(getFileTypeAppIcon('semextensao')).toBeNull()
     expect(getFileTypeAppIcon('desconhecido.xyz')).toBeNull()
   })
