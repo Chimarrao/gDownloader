@@ -170,16 +170,22 @@ async fn direct_http_segmented_download_aborts_parts_on_cancel() {
             .await
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-    handle.abort();
-    let _ = handle.await;
-
     let part_bytes = || {
         (0..4)
             .filter_map(|i| std::fs::metadata(format!("{dest_string}.part{i}")).ok())
             .map(|meta| meta.len())
             .sum::<u64>()
     };
+
+    // Espera de forma determinística as partes COMEÇAREM a baixar (sem sleep fixo
+    // que pode falhar sob carga), depois cancela.
+    let mut waited_ms = 0;
+    while part_bytes() == 0 && waited_ms < 10_000 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited_ms += 50;
+    }
+    handle.abort();
+    let _ = handle.await;
 
     // Deixa qualquer escrita em voo assentar, então confirma que NÃO cresce mais.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
