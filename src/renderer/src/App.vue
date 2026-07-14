@@ -36,12 +36,19 @@
         <div
           v-if="diskUsage.total > 0"
           class="top-disk"
-          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 }"
-          :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados de ${formatBytes(diskUsage.total)} (${formatBytes(diskUsage.available)} livres)`"
+          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
+          :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados · ${formatBytes(queuedBytes)} na fila · ${formatBytes(diskUsage.available)} livres de ${formatBytes(diskUsage.total)}${diskQueueOverflows ? ' — a fila NÃO cabe no espaço livre!' : ''}`"
         >
           <i class="pi pi-database"></i>
           <div class="top-disk-info">
-            <div class="top-disk-bar"><span :style="{ width: `${diskUsedPercent}%` }"></span></div>
+            <div class="top-disk-bar">
+              <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
+              <span
+                class="seg-queued"
+                :class="{ overflow: diskQueueOverflows }"
+                :style="{ width: `${diskQueuedPercent}%` }"
+              ></span>
+            </div>
             <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} livres</span>
           </div>
         </div>
@@ -178,6 +185,7 @@
           @count-change="onDownloadCountChange"
           @download-complete="onDownloadComplete"
           @global-speed="onGlobalSpeed"
+          @queued-bytes="onQueuedBytes"
           @open-grabber="activeTab = 'grabber'"
           @tor-changed="refreshTorStatus"
         />
@@ -422,18 +430,35 @@ function formatSpeed(bps: number): string {
   return `${bps} B/s`
 }
 
-// Widget de disco (item 11): total/usado do volume da pasta de download.
+// Widget de disco: total/usado do volume da pasta de download.
 const diskUsage = ref<{ total: number; available: number; used: number; mount: string }>({
   total: 0,
   available: 0,
   used: 0,
   mount: '',
 })
+// Bytes que ainda serão gravados pelos downloads na fila (segmento amarelo).
+const queuedBytes = ref(0)
+
 const diskUsedPercent = computed(() =>
   diskUsage.value.total > 0
-    ? Math.min(100, Math.round((diskUsage.value.used / diskUsage.value.total) * 100))
+    ? Math.min(100, (diskUsage.value.used / diskUsage.value.total) * 100)
     : 0,
 )
+// Segmento amarelo: espaço que a fila vai ocupar, limitado ao que ainda está livre.
+const diskQueuedPercent = computed(() => {
+  if (diskUsage.value.total <= 0) return 0
+  const willUse = Math.min(queuedBytes.value, diskUsage.value.available)
+  return Math.min(100 - diskUsedPercent.value, (willUse / diskUsage.value.total) * 100)
+})
+// A fila não cabe no espaço livre? (barra amarela fica vermelha + aviso.)
+const diskQueueOverflows = computed(
+  () => diskUsage.value.total > 0 && queuedBytes.value > diskUsage.value.available,
+)
+
+function onQueuedBytes(bytes: number): void {
+  queuedBytes.value = Math.max(0, bytes)
+}
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`
@@ -803,17 +828,27 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   border-radius: 3px;
   background: color-mix(in srgb, var(--border-color) 60%, transparent);
   overflow: hidden;
+  display: flex;
 }
 
-.top-disk-bar > span {
-  display: block;
+/* Azul = usado, Amarelo = a fila vai ocupar, Branco (fundo) = livre depois. */
+.top-disk-bar .seg-used {
   height: 100%;
-  border-radius: 3px;
   background: var(--accent-color);
   transition: width 0.4s ease;
 }
 
-.top-disk.warn .top-disk-bar > span {
+.top-disk-bar .seg-queued {
+  height: 100%;
+  background: #f5b301;
+  transition: width 0.4s ease;
+}
+
+.top-disk-bar .seg-queued.overflow {
+  background: #dc2626;
+}
+
+.top-disk.warn .top-disk-bar .seg-used {
   background: #dc2626;
 }
 

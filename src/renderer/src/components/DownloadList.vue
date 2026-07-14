@@ -881,6 +881,8 @@ const emit = defineEmits<{
   (e: 'count-change', count: number): void
   (e: 'download-complete', payload: { id: string; outputPath: string; url?: string; title?: string; sha256Hash?: string }): void
   (e: 'global-speed', bps: number): void
+  // Bytes que ainda serão gravados no disco pelos downloads não-terminais da fila.
+  (e: 'queued-bytes', bytes: number): void
   (e: 'open-grabber'): void
   (e: 'tor-changed'): void
 }>()
@@ -1501,6 +1503,11 @@ onMounted(async () => {
       .filter((item) => item.status === DownloadStatusEnum.Downloading)
       .reduce((sum, item) => sum + effectiveSpeedValue(item), 0)
     emit('global-speed', totalSpeed)
+    // Espaço que ainda será ocupado no disco pela fila (segmento amarelo do disco).
+    const queuedBytes = items.value
+      .filter((item) => !isTerminal(item.status))
+      .reduce((sum, item) => sum + Math.max(0, (item.size ?? 0) * (1 - (item.percent ?? 0) / 100)), 0)
+    emit('queued-bytes', Math.round(queuedBytes))
   }, 1000)
   hydrateTimer = window.setInterval(() => {
     if (!isMounted) return
