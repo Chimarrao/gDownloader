@@ -59,8 +59,14 @@
       @toggle-expanded="toggleExpanded"
       @open-mirrors="openMirrors"
       @choose-destination="chooseRowDestination"
+      @rename-row="onRenameRow"
       @filtered-change="visibleFilteredUrls = new Set($event)"
     />
+
+    <p v-if="capacityShortfall > 0" class="capacity-warn">
+      <i class="pi pi-exclamation-triangle"></i>
+      Os downloads selecionados somam {{ fmtBytes(totalSelectedBytes) }} e podem não caber no disco — faltam ~{{ fmtBytes(capacityShortfall) }} de espaço livre.
+    </p>
 
     <p v-if="lastError" class="error-msg">
       <i class="pi pi-exclamation-triangle"></i>
@@ -489,6 +495,7 @@ interface QueueEntry {
   destDir: string
   selectedChildren?: string[]
   expectedHash?: ExpectedHash
+  filename?: string
 }
 
 const selectableRows = computed(() => rows.value.filter((row) => rowSelectableUnitCount(row) > 0))
@@ -522,6 +529,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           selectedChildren: [buildYouTubeSelectionUrl(row, child)]
             .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
           expectedHash: row.expectedHash,
+          filename: row.customName,
         })
         continue
       }
@@ -535,6 +543,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           sourceLabel: row.module.name,
           destDir: row.destDir || defaultOutputDir(),
           expectedHash: row.expectedHash,
+          filename: row.customName,
         })
         continue
       }
@@ -550,6 +559,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           .map((child) => child.sourceUrl)
           .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
         expectedHash: row.expectedHash,
+        filename: row.customName,
       })
       continue
     }
@@ -563,6 +573,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         sourceLabel: row.module.name,
         destDir: row.destDir || defaultOutputDir(),
         expectedHash: row.expectedHash,
+        filename: row.customName,
       })
     }
   }
@@ -570,6 +581,24 @@ const selectedEntries = computed<QueueEntry[]>(() => {
   return entries
 })
 const selectedCount = computed(() => selectedEntries.value.length)
+// Espaço em disco livre na pasta de destino padrão (mesmo cálculo da barra do topo),
+// usado para avisar se o TOTAL selecionado não cabe (A1 parte 2).
+const captureDiskFreeBytes = ref(0)
+async function refreshCaptureDiskFree(): Promise<void> {
+  const settings = currentSettings.value ?? (await window.api.settings.load().catch(() => null))
+  const dir = settings?.outputDir || '~/Downloads'
+  const disk = await window.api.system.diskSpace(dir).catch(() => null)
+  captureDiskFreeBytes.value = disk?.freeBytes ?? 0
+}
+const totalSelectedBytes = computed(() =>
+  selectedEntries.value.reduce((sum, entry) => sum + (entry.size || 0), 0),
+)
+const capacityShortfall = computed(() =>
+  captureDiskFreeBytes.value > 0 && totalSelectedBytes.value > captureDiskFreeBytes.value
+    ? totalSelectedBytes.value - captureDiskFreeBytes.value
+    : 0,
+)
+watch(() => rows.value.length, () => void refreshCaptureDiskFree())
 const availableCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectableUnitCount(row), 0))
 const selectedUnitCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0))
 const allSelectableChecked = computed(() => availableCount.value > 0 && selectedUnitCount.value === availableCount.value)
@@ -591,6 +620,7 @@ const addButtonLabel = computed(() => {
 onMounted(async () => {
   currentSettings.value = await window.api.settings.load().catch(() => null)
   globalDestDir.value = defaultOutputDir()
+  void refreshCaptureDiskFree()
   for (const row of rows.value) {
     row.destDir ||= defaultOutputDir()
   }
@@ -839,7 +869,9 @@ async function addAll(): Promise<void> {
         entry.size,
         entry.destDir,
         entry.selectedChildren,
-        entry.expectedHash
+        entry.expectedHash,
+        undefined,
+        entry.filename
       )
       addedCount += 1
       addQueueDone.value = addedCount
@@ -999,6 +1031,13 @@ async function chooseRowDestination(row: CapturedRow): Promise<void> {
   if (!chosen) return
   row.destDir = chosen
   await applyDiskAvailability(row)
+}
+
+// Renomear antes de baixar (A3): guarda o nome custom (ou limpa se voltar ao original).
+function onRenameRow(payload: { row: CapturedRow; name: string }): void {
+  const name = payload.name.trim()
+  const original = payload.row.info?.name ?? payload.row.displayName
+  payload.row.customName = name && name !== original ? name : undefined
 }
 
 async function chooseGlobalDestination(): Promise<void> {
@@ -1821,6 +1860,20 @@ function truncateUrl(url: string): string {
   margin: 0;
   color: #ef5350;
   font-size: 12px;
+}
+
+.capacity-warn {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #b45309;
+  background: color-mix(in srgb, #f5b301 16%, transparent);
+  border: 1px solid color-mix(in srgb, #f5b301 45%, transparent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ── Mirrors modal ─────────────────────────────────────────────────────── */

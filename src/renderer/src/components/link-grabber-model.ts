@@ -26,6 +26,8 @@ export interface CapturedRow {
   cachedInfo: boolean
   selected: boolean
   expanded: boolean
+  // Nome escolhido pelo usuário (renomear antes de baixar). Vazio = usa o detectado.
+  customName?: string
   sourceUrls: string[]
   sourceLabels: string[]
   destDir?: string

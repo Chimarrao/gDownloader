@@ -606,6 +606,10 @@ pub enum WsEvent {
 pub struct AddDownloadRequest {
     pub url: String,
     pub dest_dir: String,  // Diretório de destino (sem o nome do arquivo)
+    /// Nome de arquivo escolhido pelo usuário (renomear antes de baixar). Quando
+    /// presente, sobrescreve o nome detectado, preservando a extensão original.
+    #[serde(default)]
+    pub filename: Option<String>,
     pub max_retries: Option<u32>,
     pub speed_limit_kib: Option<u64>,
     pub parallel_parts: Option<u32>,

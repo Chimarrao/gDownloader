@@ -223,6 +223,7 @@ async fn enqueue_intercept(
         created_at: current_unix_secs(),
     };
     let add_req = AddDownloadRequest {
+        filename: None,
         url: req.url,
         dest_dir: settings.output_dir,
         max_retries: Some(settings.max_retries_per_download.saturating_sub(1)),

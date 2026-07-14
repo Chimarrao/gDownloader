@@ -55,6 +55,28 @@ fn normalize_identity_url(url: &str) -> String {
     url.split('#').next().unwrap_or(url).trim().to_string()
 }
 
+/// Aplica um nome escolhido pelo usuário preservando a extensão original quando ele
+/// não digitou uma. Remove separadores de caminho e caracteres inválidos.
+fn apply_custom_filename(original: &str, custom: &str) -> String {
+    let cleaned: String = custom
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '\0' | '<' | '>' | '|' | '"' | '?' | '*'))
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return original.to_string();
+    }
+    let original_ext = std::path::Path::new(original)
+        .extension()
+        .and_then(|ext| ext.to_str());
+    let custom_has_ext = std::path::Path::new(cleaned).extension().is_some();
+    match (original_ext, custom_has_ext) {
+        // Usuário digitou "Meu Filme" e o original era .mkv → "Meu Filme.mkv".
+        (Some(ext), false) => format!("{cleaned}.{ext}"),
+        _ => cleaned.to_string(),
+    }
+}
+
 fn expected_hash_from_url_fragment(url: &str) -> Option<ExpectedHash> {
     let fragment = url.split('#').nth(1)?;
     for part in fragment.split('&') {
@@ -398,6 +420,16 @@ pub async fn add_download_internal(
             Json(ApiError::new(format!("Falha ao preparar a pasta de destino: {e}"))),
         )
     })?;
+
+    // Renomear antes de baixar (A3): o usuário pode ter escolhido outro nome.
+    if let Some(custom) = req.filename.as_deref() {
+        if !file_info.is_folder {
+            let renamed = apply_custom_filename(&file_info.filename, custom);
+            if !renamed.is_empty() {
+                file_info.filename = renamed;
+            }
+        }
+    }
 
     let identity_key = download_identity_key(
         provider.name(),
@@ -3189,6 +3221,20 @@ mod tests {
         );
 
         assert_eq!(policy.retry_delay_secs, 8109);
+    }
+
+    #[test]
+    fn custom_filename_preserves_extension_and_sanitizes() {
+        // Sem extensão digitada → mantém a original.
+        assert_eq!(apply_custom_filename("filme.mkv", "Meu Filme"), "Meu Filme.mkv");
+        // Com extensão digitada → usa a do usuário.
+        assert_eq!(apply_custom_filename("filme.mkv", "Meu Filme.mp4"), "Meu Filme.mp4");
+        // Remove separadores/caracteres inválidos.
+        assert_eq!(apply_custom_filename("a.zip", "pas/ta\\x?:y"), "pastaxy.zip");
+        // Vazio após limpeza → mantém o original.
+        assert_eq!(apply_custom_filename("orig.bin", "   "), "orig.bin");
+        // Original sem extensão.
+        assert_eq!(apply_custom_filename("semext", "novo"), "novo");
     }
 
     #[test]

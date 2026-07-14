@@ -162,6 +162,7 @@ interface RendererApi {
       selectedChildren?: string[],
       expectedHash?: { algorithm: string; value: string },
       duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download',
+      filename?: string,
     ) => Promise<DownloadItem>
     cancel: (id: string) => Promise<void>
     pause: (id: string) => Promise<void>

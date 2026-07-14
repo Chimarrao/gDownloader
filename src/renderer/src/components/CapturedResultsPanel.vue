@@ -154,14 +154,42 @@
           <span
             v-else
             class="row-icon"
-            :class="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).className"
-            :aria-label="getFileIcon(row.info?.name ?? row.displayName, row.info?.mimeType, row.info?.isFolder).alt"
+            :class="getFileIcon(effectiveName(row), row.info?.mimeType, row.info?.isFolder).className"
+            :aria-label="getFileIcon(effectiveName(row), row.info?.mimeType, row.info?.isFolder).alt"
             role="img"
           ></span>
 
           <div class="row-copy">
             <div class="row-title-line">
-              <div class="row-title">{{ row.info?.name ?? row.displayName }}</div>
+              <template v-if="renamingUrl === row.url">
+                <input
+                  class="row-rename-input"
+                  type="text"
+                  v-model="renameDraft"
+                  @keyup.enter="commitRename(row)"
+                  @keyup.esc="cancelRename"
+                  @blur="commitRename(row)"
+                />
+              </template>
+              <template v-else>
+                <div class="row-title" :title="effectiveName(row)">{{ effectiveName(row) }}</div>
+                <button
+                  class="row-name-btn"
+                  type="button"
+                  title="Renomear arquivo antes de baixar"
+                  @click.stop="startRename(row)"
+                >
+                  <i class="pi pi-pencil"></i>
+                </button>
+                <button
+                  class="row-name-btn"
+                  type="button"
+                  :title="copiedUrl === row.url ? 'Copiado!' : 'Copiar nome do arquivo'"
+                  @click.stop="copyName(row)"
+                >
+                  <i class="pi" :class="copiedUrl === row.url ? 'pi-check' : 'pi-copy'"></i>
+                </button>
+              </template>
               <span
                 class="row-badge"
                 :class="{
@@ -412,7 +440,7 @@
 
 <script setup lang="ts">
 import type { PropType } from 'vue'
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 
 import { useI18n } from '../i18n'
 import { getFileIcon } from '../assets/file-icons'
@@ -533,10 +561,52 @@ const emit = defineEmits<{
   (e: 'toggle-expanded', row: CapturedRow): void
   (e: 'open-mirrors', row: CapturedRow): void
   (e: 'choose-destination', row: CapturedRow): void
+  (e: 'rename-row', payload: { row: CapturedRow; name: string }): void
   (e: 'filtered-change', urls: string[]): void
 }>()
 
 const { t } = useI18n()
+
+// ── Renomear (A3) e copiar nome (A4) ──────────────────────────────────────────
+const renamingUrl = ref<string | null>(null)
+const renameDraft = ref('')
+const copiedUrl = ref<string | null>(null)
+
+function effectiveName(row: CapturedRow): string {
+  return row.customName || row.info?.name || row.displayName
+}
+
+function startRename(row: CapturedRow): void {
+  renamingUrl.value = row.url
+  renameDraft.value = effectiveName(row)
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>('.row-rename-input')
+    input?.focus()
+    input?.select()
+  })
+}
+
+function commitRename(row: CapturedRow): void {
+  if (renamingUrl.value !== row.url) return
+  emit('rename-row', { row, name: renameDraft.value })
+  renamingUrl.value = null
+}
+
+function cancelRename(): void {
+  renamingUrl.value = null
+}
+
+async function copyName(row: CapturedRow): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(effectiveName(row))
+    copiedUrl.value = row.url
+    window.setTimeout(() => {
+      if (copiedUrl.value === row.url) copiedUrl.value = null
+    }, 1200)
+  } catch {
+    // clipboard indisponível — ignora silenciosamente
+  }
+}
 
 const youtubeOutputFormats = [
   { value: 'mp4', label: 'MP4' },
@@ -979,6 +1049,43 @@ function suffixFps(source: string, label: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+.row-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-primary, var(--surface-section));
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
+.row-name-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s ease;
+}
+
+.row-name-btn:hover {
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.row-name-btn .pi-check {
+  color: #16a34a;
 }
 
 .quality-chip {

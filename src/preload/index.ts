@@ -283,6 +283,7 @@ const api = {
       selectedChildren?: string[],
       expectedHash?: { algorithm: string; value: string },
       duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download',
+      filename?: string,
     ) => {
       const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
       const resp = await fetchBackend('/downloads', {
@@ -291,6 +292,7 @@ const api = {
         body: JSON.stringify({
           url,
           dest_dir: destDir,
+          filename: filename?.trim() || undefined,
           max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0) - 1),
           speed_limit_kib: settings?.speedLimitKib ?? 0,
           parallel_parts: _moduleId === 'youtube' ? 1 : settings?.parallelPartsPerDownload ?? 1,
@@ -318,6 +320,7 @@ const api = {
               selectedChildren,
               expectedHash,
               'always_download',
+              filename,
             )
           }
           if (choice === '2') {
@@ -336,6 +339,7 @@ const api = {
               selectedChildren,
               expectedHash,
               'rename',
+              filename,
             )
           }
         }

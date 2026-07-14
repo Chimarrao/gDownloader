@@ -80,6 +80,7 @@ async fn handle_clicknload(kind: &'static str, state: AppState, form: ClickNLoad
 
     for url in urls {
         let req = AddDownloadRequest {
+            filename: None,
             url: url.clone(),
             dest_dir: defaults.dest_dir.clone(),
             max_retries: Some(defaults.max_retries),
