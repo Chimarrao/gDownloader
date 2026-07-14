@@ -4,6 +4,7 @@
 
 pub mod db;        // Persistência SQLite
 pub mod hash_verify;
+pub mod integrity; // Verificação leve de integridade pós-download
 pub(crate) mod migrations; // Migrações do banco de dados SQLite
 pub mod mirrors;   // Busca de mirrors (SSE streaming)
 pub mod models;    // Structs e enums de dados (Download, FileInfo, WsEvent, etc.)
@@ -179,6 +180,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/mirrors/search", get(routes::mirrors::search_mirrors))
         .route("/stats/realtime", get(routes::stats::get_realtime_stats))
         .route("/system/disk", get(routes::system::disk_usage))
+        .route("/system/disks", get(routes::system::list_disks))
         .route("/packages",      get(routes::packages::list_packages))
         .route("/packages",      post(routes::packages::create_package))
         .route("/packages/:id",  delete(routes::packages::delete_package))

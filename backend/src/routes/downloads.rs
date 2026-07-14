@@ -1306,10 +1306,13 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
         };
         info!(
             target: "gdownloader_backend::downloads",
-            "iniciando tentativa de download id={} provider={} attempt={} dest={}",
+            "iniciando tentativa id={} provider={} attempt={}/{} parts={} limite_kib={} dest={}",
             id,
             provider_name,
             attempt,
+            max_retries,
+            effective_parallel_parts,
+            speed_limit.load(std::sync::atomic::Ordering::Relaxed) / 1024,
             dest_path
         );
 
@@ -1592,6 +1595,53 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     }
                 }
 
+                // Verificação leve de integridade (tamanho, HTML de erro, assinatura do
+                // formato). Só para arquivo único — pega o caso "página de erro salva
+                // como .mkv" e formatos claramente corrompidos.
+                let is_folder = {
+                    let map = state.downloads.lock().await;
+                    map.get(&id).map(|d| d.is_folder).unwrap_or(false)
+                };
+                if !is_folder {
+                    let integrity = crate::integrity::check_file(&dest_path, bytes).await;
+                    if let Some(reason) = integrity.reason() {
+                        warn!(
+                            target: "gdownloader_backend::downloads",
+                            "integridade suspeita id={} provider={} bytes={} motivo={}",
+                            id, provider_name, bytes, reason
+                        );
+                        {
+                            let mut map = state.downloads.lock().await;
+                            if let Some(d) = map.get_mut(&id) {
+                                d.status = DownloadStatus::Corrupted;
+                                d.bytes_downloaded = bytes;
+                                d.speed_bps = 0;
+                                d.eta_secs = 0;
+                                d.error = Some(format!("Arquivo possivelmente corrompido: {reason}"));
+                                d.completed_at = Some(current_unix_secs());
+                            }
+                        }
+                        state.active_tasks.lock().await.remove(&id);
+                        persist_download_snapshot(&state, &id).await;
+                        record_download_event(&state, &id, "corrupted", &format!("Integridade suspeita: {reason}"));
+                        state.broadcast(WsEvent::StatusChanged {
+                            id: id.clone(),
+                            status: DownloadStatus::Corrupted,
+                            error: Some(format!("Arquivo possivelmente corrompido: {reason}")),
+                            retry_at: None,
+                            captcha_type: None,
+                            captcha_sitekey: None,
+                            captcha_page_url: None,
+                        });
+                        reschedule_pending_downloads(state.clone());
+                        return;
+                    }
+                    info!(
+                        target: "gdownloader_backend::downloads",
+                        "integridade ok id={} bytes={}", id, bytes
+                    );
+                }
+
                 {
                     let mut map = state.downloads.lock().await;
                     if let Some(d) = map.get_mut(&id) {
@@ -1753,8 +1803,14 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                         persist_download_snapshot(&state, &id).await;
                         warn!(
                             target: "gdownloader_backend::downloads",
-                            "queda de conexão id={} provider={} tentativa_rede={} delay={}s err={}",
-                            id, provider_name, network_retries, delay, err_str
+                            "queda de conexão id={} provider={} tentativa_rede={} bytes={} delay={}s err={}",
+                            id, provider_name, network_retries, max_bytes_seen, delay, err_str
+                        );
+                        record_download_event(
+                            &state,
+                            &id,
+                            "network_retry",
+                            &format!("Queda de conexão (tentativa {network_retries}) em {max_bytes_seen} bytes — retomando em {delay}s"),
                         );
                         state.broadcast(WsEvent::StatusChanged {
                             id: id.clone(),
@@ -1846,12 +1902,24 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     persist_download_snapshot(&state, &id).await;
                     warn!(
                         target: "gdownloader_backend::downloads",
-                        "download reagendado id={} provider={} delay={}s status={} reason={}",
+                        "download reagendado id={} provider={} attempt={}/{} delay={}s status={} reason={}",
                         id,
                         provider_name,
+                        attempt,
+                        max_retries,
                         retry_delay_secs,
                         if is_rate_limit { "rate_limited" } else { "pending" },
                         retry_policy.wait_message
+                    );
+                    record_download_event(
+                        &state,
+                        &id,
+                        if is_rate_limit { "rate_limited" } else { "retry" },
+                        &format!(
+                            "Reagendado (tentativa {attempt}/{max_retries}) em {delay}s: {}",
+                            retry_policy.wait_message,
+                            delay = retry_delay_secs
+                        ),
                     );
                     state.broadcast(WsEvent::StatusChanged {
                         id: id.clone(),
