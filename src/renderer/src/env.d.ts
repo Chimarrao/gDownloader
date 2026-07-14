@@ -263,6 +263,17 @@ interface RendererApi {
     used: number
     mount: string
   }>
+  getAllDisks: () => Promise<
+    Array<{
+      name: string
+      mount: string
+      total: number
+      available: number
+      used: number
+      removable: boolean
+      kind: string
+    }>
+  >
   config: {
     testProxy: () => Promise<{ ip: string; isTor: boolean }>
   }

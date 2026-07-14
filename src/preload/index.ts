@@ -971,6 +971,17 @@ const api = {
     }
   },
 
+  // Lista todos os discos/volumes montados (multi-disco) para o balão do widget.
+  getAllDisks: async () => {
+    try {
+      const resp = await fetchBackend('/system/disks')
+      if (!resp.ok) return []
+      return resp.json()
+    } catch {
+      return []
+    }
+  },
+
   ytdlp: {
     status: (): Promise<{
       version: string | null

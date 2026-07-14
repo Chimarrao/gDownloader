@@ -33,23 +33,63 @@
           <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
           <span>{{ formatSpeed(currentSpeed) }}</span>
         </div>
-        <div
-          v-if="diskUsage.total > 0"
-          class="top-disk"
-          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
-          :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados · ${formatBytes(queuedBytes)} na fila · ${formatBytes(diskUsage.available)} livres de ${formatBytes(diskUsage.total)}${diskQueueOverflows ? ' — a fila NÃO cabe no espaço livre!' : ''}`"
-        >
-          <i class="pi pi-database"></i>
-          <div class="top-disk-info">
-            <div class="top-disk-bar">
-              <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
-              <span
-                class="seg-queued"
-                :class="{ overflow: diskQueueOverflows }"
-                :style="{ width: `${diskQueuedPercent}%` }"
-              ></span>
+        <div v-if="diskUsage.total > 0" class="top-disk-wrap">
+          <button
+            type="button"
+            class="top-disk"
+            :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
+            :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados · ${formatBytes(queuedBytes)} na fila · ${formatBytes(diskUsage.available)} livres de ${formatBytes(diskUsage.total)}${diskQueueOverflows ? ' — a fila NÃO cabe no espaço livre!' : ''} (clique para ver todos os discos)`"
+            @click="toggleDisksPopover"
+          >
+            <i class="pi pi-database"></i>
+            <div class="top-disk-info">
+              <div class="top-disk-bar">
+                <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
+                <span
+                  class="seg-queued"
+                  :class="{ overflow: diskQueueOverflows }"
+                  :style="{ width: `${diskQueuedPercent}%` }"
+                ></span>
+              </div>
+              <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} livres</span>
             </div>
-            <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} livres</span>
+          </button>
+
+          <div v-if="disksPopoverOpen" class="disks-popover" @click.stop>
+            <div class="disks-popover-head">
+              <span>Discos e volumes</span>
+              <button class="disks-popover-close" @click="disksPopoverOpen = false"><i class="pi pi-times"></i></button>
+            </div>
+            <div class="disks-legend">
+              <span><i class="dot used"></i>Usado</span>
+              <span><i class="dot queued"></i>Fila (disco atual)</span>
+              <span><i class="dot free"></i>Livre</span>
+            </div>
+            <div v-if="allDisks.length === 0" class="disks-empty">Sem informação de discos.</div>
+            <div
+              v-for="disk in allDisks"
+              :key="disk.mount"
+              class="disk-row"
+              :class="{ active: disk.mount === diskUsage.mount }"
+            >
+              <div class="disk-row-head">
+                <i class="pi" :class="disk.removable ? 'pi-usb' : 'pi-database'"></i>
+                <span class="disk-name" :title="disk.mount">{{ disk.name }}</span>
+                <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ' · removível' : '' }}</span>
+              </div>
+              <div class="disk-row-bar">
+                <span class="seg-used" :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"></span>
+                <span
+                  v-if="disk.mount === diskUsage.mount && queuedBytes > 0"
+                  class="seg-queued"
+                  :style="{ width: `${diskPercent(Math.min(queuedBytes, disk.available), disk.total)}%` }"
+                ></span>
+              </div>
+              <div class="disk-row-sub">
+                <span>{{ formatBytes(disk.used) }} usados</span>
+                <span>{{ formatBytes(disk.available) }} livres de {{ formatBytes(disk.total) }}</span>
+              </div>
+            </div>
           </div>
         </div>
         <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
@@ -439,6 +479,31 @@ const diskUsage = ref<{ total: number; available: number; used: number; mount: s
 })
 // Bytes que ainda serão gravados pelos downloads na fila (segmento amarelo).
 const queuedBytes = ref(0)
+
+// Multi-disco: balão com todos os discos/volumes ao clicar no widget.
+const disksPopoverOpen = ref(false)
+const allDisks = ref<
+  Array<{
+    name: string
+    mount: string
+    total: number
+    available: number
+    used: number
+    removable: boolean
+    kind: string
+  }>
+>([])
+
+function diskPercent(part: number, total: number): number {
+  return total > 0 ? Math.min(100, (part / total) * 100) : 0
+}
+
+async function toggleDisksPopover(): Promise<void> {
+  disksPopoverOpen.value = !disksPopoverOpen.value
+  if (disksPopoverOpen.value) {
+    allDisks.value = await window.api.getAllDisks().catch(() => [])
+  }
+}
 
 const diskUsedPercent = computed(() =>
   diskUsage.value.total > 0
@@ -856,6 +921,146 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1;
+}
+
+.top-disk-wrap {
+  position: relative;
+}
+
+.top-disk {
+  cursor: pointer;
+  font: inherit;
+}
+
+.disks-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.disks-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.disks-popover-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.disks-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.disks-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.disks-legend .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.disks-legend .dot.used {
+  background: var(--accent-color);
+}
+.disks-legend .dot.queued {
+  background: #f5b301;
+}
+.disks-legend .dot.free {
+  background: color-mix(in srgb, var(--border-color) 60%, transparent);
+}
+
+.disks-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 6px 0;
+}
+
+.disk-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+}
+
+.disk-row.active {
+  border-color: color-mix(in srgb, var(--accent-color) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+}
+
+.disk-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.disk-row-head .disk-name {
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.disk-row-head .disk-kind {
+  font-size: 10px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.disk-row-bar {
+  height: 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border-color) 60%, transparent);
+  overflow: hidden;
+  display: flex;
+}
+
+.disk-row-bar .seg-used {
+  height: 100%;
+  background: var(--accent-color);
+}
+.disk-row-bar .seg-queued {
+  height: 100%;
+  background: #f5b301;
+}
+
+.disk-row-sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .tor-widget {

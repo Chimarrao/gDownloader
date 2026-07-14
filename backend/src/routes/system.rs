@@ -63,6 +63,74 @@ pub async fn disk_usage(Query(query): Query<DiskQuery>) -> Json<DiskUsage> {
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct DiskEntry {
+    pub name: String,
+    pub mount: String,
+    pub total: u64,
+    pub available: u64,
+    pub used: u64,
+    pub removable: bool,
+    pub kind: String,
+}
+
+/// Lista todos os discos/volumes montados (HD, SSD, pendrive…) com sua alocação.
+/// Alimenta o balão do widget de disco (multi-disco).
+pub async fn list_disks() -> Json<Vec<DiskEntry>> {
+    let disks = Disks::new_with_refreshed_list();
+    let mut seen_mount = std::collections::HashSet::new();
+    let mut seen_volume = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+
+    for disk in disks.iter() {
+        let mount = disk.mount_point().to_string_lossy().to_string();
+        let total = disk.total_space();
+        if total == 0 || !seen_mount.insert(mount.clone()) {
+            continue;
+        }
+        // Filtra volumes internos irrelevantes do macOS. No APFS, `/` e
+        // `/System/Volumes/Data` são o mesmo volume físico — ignoramos o /Data.
+        if mount.starts_with("/System/Volumes/") {
+            continue;
+        }
+        if mount.starts_with("/private/") || mount == "/dev" {
+            continue;
+        }
+
+        // Disponível via statvfs (preciso); cai para o sysinfo se falhar.
+        let available = statvfs_usage(&mount)
+            .map(|(_, avail)| avail)
+            .unwrap_or_else(|| disk.available_space());
+
+        // Dedupe por assinatura do volume (mesmo disco montado em 2 pontos).
+        let name = disk.name().to_string_lossy().to_string();
+        if !seen_volume.insert(format!("{name}|{total}|{available}")) {
+            continue;
+        }
+        let name = {
+            let raw = disk.name().to_string_lossy().to_string();
+            if raw.trim().is_empty() { mount.clone() } else { raw }
+        };
+        let kind = match disk.kind() {
+            sysinfo::DiskKind::SSD => "SSD",
+            sysinfo::DiskKind::HDD => "HDD",
+            _ => "Desconhecido",
+        };
+        entries.push(DiskEntry {
+            name,
+            mount,
+            total,
+            available,
+            used: total.saturating_sub(available),
+            removable: disk.is_removable(),
+            kind: kind.to_string(),
+        });
+    }
+
+    entries.sort_by(|a, b| b.total.cmp(&a.total));
+    Json(entries)
+}
+
 /// Espaço (total, disponível) em bytes do sistema de arquivos que contém `path`,
 /// via `statvfs` — o mesmo mecanismo do `df`, então resolve firmlinks do macOS
 /// corretamente (ao contrário de casar ponto de montagem). `None` fora de unix.
