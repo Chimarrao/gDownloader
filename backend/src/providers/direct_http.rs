@@ -15,8 +15,8 @@ use tokio::time::Instant;
 use crate::models::FileInfo;
 
 use super::{
-    apply_speed_limit, apply_speed_limit_divided, parse_url, DownloadContext, Provider,
-    ProviderCapabilities, ProviderDefaults, ProgressUpdate,
+    apply_speed_limit, apply_speed_limit_divided, merge_parts_into, parse_url, DownloadContext,
+    Provider, ProviderCapabilities, ProviderDefaults, ProgressUpdate,
 };
 
 pub struct DirectHttpProvider;
@@ -487,18 +487,11 @@ impl DirectHttpProvider {
             joined??;
         }
 
-        let _ = tokio::fs::remove_file(dest_path).await;
-        let mut output = tokio::fs::File::create(dest_path).await?;
-        for part in &parts {
-            let part_path = format!("{dest_path}.part{}", part.index);
-            let mut part_file = OpenOptions::new().read(true).open(&part_path).await?;
-            tokio::io::copy(&mut part_file, &mut output).await?;
-        }
-        output.flush().await?;
-
-        for part in &parts {
-            let _ = tokio::fs::remove_file(format!("{dest_path}.part{}", part.index)).await;
-        }
+        merge_parts_into(
+            dest_path,
+            &parts.iter().map(|part| format!("{dest_path}.part{}", part.index)).collect::<Vec<_>>(),
+        )
+        .await?;
         Self::clear_resume_offsets(&store).await;
         Ok(metadata.size)
     }

@@ -529,6 +529,35 @@ fn parse_content_range_total(resp: &reqwest::Response) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
+/// Junta os arquivos-parte no destino final usando ~1x de espaço em disco: renomeia
+/// a 1ª parte para um temporário `.merging` e vai ANEXANDO + APAGANDO as demais (em
+/// vez de copiar tudo pra um arquivo novo, o que exigia 2x o tamanho e fazia downloads
+/// grandes "quebrarem a 100%" por falta de espaço). No fim, faz um rename atômico do
+/// temporário para o destino — um crash no meio nunca deixa o arquivo final quebrado.
+pub async fn merge_parts_into(dest_path: &str, part_paths: &[String]) -> Result<()> {
+    if part_paths.is_empty() {
+        return Err(anyhow!("nenhuma parte para juntar"));
+    }
+    let merging = format!("{dest_path}.merging");
+    let _ = tokio::fs::remove_file(&merging).await;
+    // Move a 1ª parte para o temporário (instantâneo, mesmo volume) — 0 cópia.
+    tokio::fs::rename(&part_paths[0], &merging).await?;
+    {
+        let mut output = OpenOptions::new().append(true).open(&merging).await?;
+        for part_path in &part_paths[1..] {
+            let mut part_file = OpenOptions::new().read(true).open(part_path).await?;
+            tokio::io::copy(&mut part_file, &mut output).await?;
+            drop(part_file);
+            let _ = tokio::fs::remove_file(part_path).await; // libera espaço já
+        }
+        output.flush().await?;
+    }
+    // Rename atômico para o destino final.
+    let _ = tokio::fs::remove_file(dest_path).await;
+    tokio::fs::rename(&merging, dest_path).await?;
+    Ok(())
+}
+
 pub async fn try_parallel_download(
     client: &reqwest::Client,
     url: &str,
@@ -640,14 +669,10 @@ pub async fn try_parallel_download(
         joined??;
     }
 
-    let _ = tokio::fs::remove_file(dest_path).await;
-    let mut output = tokio::fs::File::create(dest_path).await?;
-    for part_index in 0..part_count {
-        let part_path = format!("{part_dir}/part-{part_index:03}");
-        let mut part = OpenOptions::new().read(true).open(&part_path).await?;
-        tokio::io::copy(&mut part, &mut output).await?;
-    }
-    output.flush().await?;
+    let part_paths: Vec<String> = (0..part_count)
+        .map(|part_index| format!("{part_dir}/part-{part_index:03}"))
+        .collect();
+    merge_parts_into(dest_path, &part_paths).await?;
     let _ = tokio::fs::remove_dir_all(&part_dir).await;
 
     Ok(Some(total_bytes))
