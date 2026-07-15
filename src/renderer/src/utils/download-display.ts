@@ -131,19 +131,12 @@ export function compareDownloads(
     case 'oldest':
       return left.addedAt - right.addedAt || left.title.localeCompare(right.title)
     case 'active_first': {
+      // Ordena só pelo GRUPO de status (baixando > fila > pausado > erro…), que muda
+      // raramente, e depois por data. NÃO usa velocidade: ordenar por velocidade
+      // (que oscila a cada segundo) fazia a lista trocar de posição freneticamente
+      // enquanto os downloads rodavam. Estabilidade > micro-otimização de ordem.
       const priorityDiff = activePriority(left) - activePriority(right)
       if (priorityDiff !== 0) return priorityDiff
-      // YouTube tem velocidade sintética que oscila muito (fases vídeo/áudio/merge),
-      // então ordenar por velocidade faria a lista trocar de posição o tempo todo.
-      // Para YouTube, ignora a velocidade e mantém ordem estável por data.
-      const involvesYouTube = left.moduleId === 'youtube' || right.moduleId === 'youtube'
-      if (!involvesYouTube) {
-        const rightSpeedBucket = Math.floor(effectiveSpeed(right, nowTick) / (256 * 1024))
-        const leftSpeedBucket = Math.floor(effectiveSpeed(left, nowTick) / (256 * 1024))
-        if (rightSpeedBucket !== leftSpeedBucket) {
-          return rightSpeedBucket - leftSpeedBucket
-        }
-      }
       return right.addedAt - left.addedAt
     }
     case 'name_asc':

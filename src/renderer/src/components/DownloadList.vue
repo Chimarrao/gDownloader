@@ -101,6 +101,26 @@
             {{ currentSortLabel }}
           </button>
           <button
+            v-if="hasActiveDownloads"
+            class="toolbar-btn"
+            :disabled="bulkPauseBusy"
+            title="Pausar todos os downloads (preserva o progresso)"
+            @click="pauseAllDownloads"
+          >
+            <i class="pi pi-pause"></i>
+            Pausar todos
+          </button>
+          <button
+            v-else-if="hasPausedDownloads"
+            class="toolbar-btn"
+            :disabled="bulkPauseBusy"
+            title="Retomar todos os downloads pausados"
+            @click="resumeAllDownloads"
+          >
+            <i class="pi pi-play"></i>
+            Retomar todos
+          </button>
+          <button
             class="toolbar-btn"
             :disabled="finishedCount === 0"
             title="Remover downloads encerrados da lista"
@@ -889,6 +909,11 @@ const emit = defineEmits<{
 
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
+// Throttle da EXIBIÇÃO de tempo/velocidade por download (id → último update ms).
+// O percent/barra atualiza sempre; os NÚMEROS (velocidade e ETA) só a cada ~1.2s,
+// pra não ficarem piscando — inclusive com várias partes (mostra o ETA agregado).
+const timeDisplayThrottle = new Map<string, number>()
+const TIME_DISPLAY_INTERVAL_MS = 1200
 const stageLabels = ref<Record<string, string>>({})
 // Progresso por-parte do download segmentado (id → índiceParte → bytes/total),
 // para desenhar a barra dividida (item 9).
@@ -957,6 +982,10 @@ let hydrateInFlight = false
 let isMounted = false
 let lastSpeedEmit = 0
 const nowTick = ref(Date.now())
+// Tick lento (5s) só para a ORDENAÇÃO. Assim a lista não re-ordena a cada segundo
+// nem a cada evento de progresso — evita as linhas "trocando de lugar" o tempo todo.
+const sortTick = ref(Date.now())
+let sortTickCounter = 0
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 let scheduledHydrateTimer: number | null = null
@@ -1012,12 +1041,50 @@ const orderedItems = computed(() =>
     // Pinned items float to the top
     const pinnedDiff = (right.pinned ? 1 : 0) - (left.pinned ? 1 : 0)
     if (pinnedDiff !== 0) return pinnedDiff
-    return compareDownloads(left, right, sortMode.value, nowTick.value)
+    // Usa o tick lento: a ordem só se atualiza a cada 5s (relevante apenas para
+    // os modos por velocidade/progresso; os demais são estáveis por natureza).
+    return compareDownloads(left, right, sortMode.value, sortTick.value)
   })
 )
 const finishedCount = computed(() =>
   items.value.filter((item) => isClearable(item)).length
 )
+// Pausar/retomar todos (item 6).
+const bulkPauseBusy = ref(false)
+const hasActiveDownloads = computed(() =>
+  items.value.some((item) =>
+    item.status === DownloadStatusEnum.Downloading
+    || item.status === DownloadStatusEnum.Pending
+    || item.status === DownloadStatusEnum.Verifying
+    || item.status === DownloadStatusEnum.RateLimited
+    || item.status === DownloadStatusEnum.WaitingCaptcha
+  )
+)
+const hasPausedDownloads = computed(() =>
+  items.value.some((item) => item.status === DownloadStatusEnum.Paused)
+)
+
+async function pauseAllDownloads(): Promise<void> {
+  if (bulkPauseBusy.value) return
+  bulkPauseBusy.value = true
+  try {
+    await window.api.downloads.pauseAll().catch(() => null)
+    await hydrate()
+  } finally {
+    bulkPauseBusy.value = false
+  }
+}
+
+async function resumeAllDownloads(): Promise<void> {
+  if (bulkPauseBusy.value) return
+  bulkPauseBusy.value = true
+  try {
+    await window.api.downloads.resumeAll().catch(() => null)
+    await hydrate()
+  } finally {
+    bulkPauseBusy.value = false
+  }
+}
 const activeCaptchaItem = computed(() =>
   items.value.find((item) => item.id === activeCaptchaId.value && item.status === DownloadStatusEnum.WaitingCaptcha) ?? null
 )
@@ -1494,6 +1561,10 @@ onMounted(async () => {
   window.addEventListener('keydown', onQueuePanelHotkey)
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
+    if (++sortTickCounter >= 5) {
+      sortTickCounter = 0
+      sortTick.value = nowTick.value
+    }
     for (const item of items.value) {
       if (item.status === DownloadStatusEnum.Downloading) {
         recordSpeedSample(item.id, effectiveSpeedValue(item))
@@ -1652,11 +1723,16 @@ onMounted(async () => {
           ? Math.floor((total - aggregatedChildBytes) / aggregatedChildSpeed)
           : 0
 
+        // Barra/percent atualiza sempre; velocidade e ETA só a cada ~1.2s (anti-flicker).
+        const nowMs = Date.now()
+        const showTimes = nowMs - (timeDisplayThrottle.get(ev.id) ?? 0) >= TIME_DISPLAY_INTERVAL_MS
+        if (showTimes) timeDisplayThrottle.set(ev.id, nowMs)
         patchItemAt(idx, {
           percent: aggregatedPercent,
-          speedBps: aggregatedChildSpeed,
-          etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0),
-          lastProgressAt: Date.now(),
+          ...(showTimes
+            ? { speedBps: aggregatedChildSpeed, etaSec: isFolder ? aggregatedEta : (ev.eta ?? 0) }
+            : {}),
+          lastProgressAt: nowMs,
           status: (ev.status as DownloadItem['status']) ?? items.value[idx].status,
           size: displaySize > 0 ? displaySize : items.value[idx].size,
           // Keep parent bytes implicit in percent/size, but base folder progress on the sum of children.

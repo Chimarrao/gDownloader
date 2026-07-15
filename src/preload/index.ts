@@ -410,6 +410,18 @@ const api = {
       })
     },
 
+    pauseAll: async (): Promise<{ paused: number }> => {
+      const resp = await fetchBackend('/downloads/pause-all', { method: 'POST' })
+      if (!resp.ok) return { paused: 0 }
+      return resp.json()
+    },
+
+    resumeAll: async (): Promise<{ resumed: number }> => {
+      const resp = await fetchBackend('/downloads/resume-all', { method: 'POST' })
+      if (!resp.ok) return { resumed: 0 }
+      return resp.json()
+    },
+
     move: async (id: string, destDir: string) => {
       const resp = await fetchBackend(`/downloads/${id}/move`, {
         method: 'POST',

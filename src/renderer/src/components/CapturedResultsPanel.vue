@@ -664,9 +664,16 @@ const filteredRows = computed(() => {
   })
 })
 
+// Debounce do 'filtered-change': ao processar muitos links de uma vez (ex.: 60), o
+// filteredRows muda a cada linha e emitir toda hora fazia o capturador piscar.
+let filteredChangeTimer: ReturnType<typeof setTimeout> | null = null
 watch(
   filteredRows,
-  (rows) => emit('filtered-change', rows.map((row) => row.url)),
+  (rows) => {
+    if (filteredChangeTimer) clearTimeout(filteredChangeTimer)
+    const urls = rows.map((row) => row.url)
+    filteredChangeTimer = setTimeout(() => emit('filtered-change', urls), 250)
+  },
   { immediate: true }
 )
 

@@ -41,22 +41,21 @@ describe('download-display helpers', () => {
     expect(statusText(item, now)).toBe('Conectando')
   })
 
-  it('ordena ativos primeiro e depois por velocidade', () => {
+  it('ordena por grupo de status (ativos primeiro), estável — sem depender da velocidade', () => {
     const now = 10_000
-    const fast = makeItem({
-      id: 'fast',
-      status: DownloadStatus.Downloading,
-      speedBps: 1024 * 1024,
-      lastProgressAt: now,
-    })
-    const slow = makeItem({
-      id: 'slow',
-      status: DownloadStatus.Downloading,
-      speedBps: 128 * 1024,
-      lastProgressAt: now,
-    })
+    const downloading = makeItem({ id: 'dl', status: DownloadStatus.Downloading, addedAt: 100 })
+    const paused = makeItem({ id: 'pause', status: DownloadStatus.Paused, addedAt: 200 })
+    // Baixando vem antes de pausado, independentemente da data.
+    expect(compareDownloads(downloading, paused, 'active_first', now)).toBeLessThan(0)
 
-    expect(compareDownloads(fast, slow, 'active_first', now)).toBeLessThan(0)
+    // Mesmo grupo (ambos baixando): ordem estável por data (mais novo primeiro);
+    // a velocidade NÃO reordena (evita as linhas trocando de lugar o tempo todo).
+    const older = makeItem({ id: 'older', status: DownloadStatus.Downloading, speedBps: 5 * 1024 * 1024, addedAt: 100 })
+    const newer = makeItem({ id: 'newer', status: DownloadStatus.Downloading, speedBps: 1024, addedAt: 200 })
+    expect(compareDownloads(newer, older, 'active_first', now)).toBeLessThan(0)
+    older.speedBps = 0
+    newer.speedBps = 10 * 1024 * 1024
+    expect(compareDownloads(newer, older, 'active_first', now)).toBeLessThan(0)
   })
 
   it('expõe contagem regressiva de retry', () => {
