@@ -67,6 +67,22 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         });
     }
 
+    // Checkpoint periódico do WAL (a cada 2 min) para o arquivo não inchar mesmo com
+    // escrita contínua. Trava o mutex do DB só por um instante; ignora qualquer erro.
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(120));
+            interval.tick().await; // pula o disparo imediato
+            loop {
+                interval.tick().await;
+                if let Ok(conn) = db.lock() {
+                    crate::db::checkpoint_wal(&conn);
+                }
+            }
+        });
+    }
+
     // Initialize proxy settings from DB
     {
         let settings = state.db.lock().ok()

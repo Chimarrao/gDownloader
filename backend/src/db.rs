@@ -19,6 +19,12 @@ pub fn init(db_path: &str) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
+         -- Faz checkpoint automático a cada ~1000 páginas e LIMITA o WAL a 64MB.
+         -- Sem isso o WAL crescia sem parar (chegou a 565MB), pesando e arriscando
+         -- corromper. journal_size_limit trunca o WAL de volta após cada checkpoint.
+         PRAGMA wal_autocheckpoint=1000;
+         PRAGMA journal_size_limit=67108864;
+         PRAGMA busy_timeout=5000;
          CREATE TABLE IF NOT EXISTS schema_migrations (
              version     INTEGER PRIMARY KEY,
              name        TEXT NOT NULL,
@@ -27,8 +33,21 @@ pub fn init(db_path: &str) -> Result<Connection> {
     )?;
     apply_migrations(&mut conn)?;
     reindex_history_fts(&conn)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA journal_size_limit=67108864;",
+    )?;
+    // Consolida/limpa qualquer WAL herdado de sessões anteriores (inclusive o
+    // gigante). Ignora erro (ex.: leitor concorrente) — é só higiene.
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     Ok(conn)
+}
+
+/// Faz um checkpoint TRUNCATE do WAL (mantém o arquivo pequeno). Chamado
+/// periodicamente pelo backend. Nunca propaga erro (é higiene, não crítico).
+pub fn checkpoint_wal(conn: &Connection) {
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
 }
 
 fn apply_migrations(conn: &mut Connection) -> Result<()> {
