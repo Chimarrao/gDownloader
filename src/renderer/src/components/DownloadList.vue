@@ -199,12 +199,9 @@
           </div>
         </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
-        <TransitionGroup
-          tag="div"
-          name="reorder"
-          class="items-stack-rows"
-          :class="{ 'reorder-animate': reorderAnimationEnabled }"
-        >
+        <!-- Lista sem TransitionGroup: virtualização + animação FLIP eram incompatíveis
+             (as linhas 'sumiam e apareciam' ao rolar e a animação ficava repetindo). -->
+        <div class="items-stack-rows">
         <div
           v-for="item in visibleItems"
           :key="item.id"
@@ -667,7 +664,7 @@
             </div>
           </div>
         </div>
-        </TransitionGroup>
+        </div>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
       </div>
     </div>
@@ -1514,24 +1511,19 @@ function rateLimitCountdown(item: DownloadItem): string {
   return formatEta(Math.ceil((item.retryAt - nowTick.value) / 1000))
 }
 
-const hasExpandedDownloadRows = computed(() =>
-  Object.values(expandedFolders.value).some(Boolean) || Object.values(expandedDetails.value).some(Boolean)
-)
 const virtualizationEnabled = computed(() => orderedItems.value.length > 40)
-// Animação suave de reordenação: só quando a lista não está virtualizada
-// (a virtualização monta/desmonta linhas no scroll, o que brigaria com o FLIP)
-// e quando o usuário não desativou nas configurações.
-const reorderAnimationEnabled = computed(
-  () => reorderAnimations.value && !virtualizationEnabled.value
-)
-const estimatedRowHeight = computed(() => hasExpandedDownloadRows.value ? 260 : 148)
-const overscan = 6
+// Altura FIXA por linha (o caso comum, recolhido). Antes virava 260 para TODAS as
+// linhas quando qualquer uma abria, superdimensionando os espaçadores e causando o
+// drift (linhas "sumindo/aparecendo") ao rolar. Uma linha aberta só fica mais alta
+// que o slot dela na janela — não quebra a virtualização das visíveis.
+const estimatedRowHeight = 148
+const overscan = 8
 const visibleRange = computed(() => {
   if (!virtualizationEnabled.value) {
     return { start: 0, end: orderedItems.value.length }
   }
   const viewportHeight = itemsContainerRef.value?.clientHeight ?? 900
-  const rowHeight = estimatedRowHeight.value
+  const rowHeight = estimatedRowHeight
   const start = Math.max(0, Math.floor(listScrollTop.value / rowHeight) - overscan)
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
   return {
@@ -1545,11 +1537,11 @@ const visibleItems = computed(() =>
     : orderedItems.value
 )
 const topSpacerHeight = computed(() =>
-  virtualizationEnabled.value ? visibleRange.value.start * estimatedRowHeight.value : 0
+  virtualizationEnabled.value ? visibleRange.value.start * estimatedRowHeight : 0
 )
 const bottomSpacerHeight = computed(() =>
   virtualizationEnabled.value
-    ? Math.max(0, (orderedItems.value.length - visibleRange.value.end) * estimatedRowHeight.value)
+    ? Math.max(0, (orderedItems.value.length - visibleRange.value.end) * estimatedRowHeight)
     : 0
 )
 
@@ -2108,8 +2100,17 @@ function rebuildItemIndex(): void {
   itemIndexById.value = Object.fromEntries(items.value.map((item, index) => [item.id, index]))
 }
 
+// Scroll com throttle via requestAnimationFrame: o evento dispara dezenas de vezes
+// por segundo; atualizar a fatia visível a cada frame (máx ~60/s) deixa a rolagem
+// bem mais leve com muitos downloads.
+let scrollRafPending = false
 function onListScroll(): void {
-  listScrollTop.value = itemsContainerRef.value?.scrollTop ?? 0
+  if (scrollRafPending) return
+  scrollRafPending = true
+  requestAnimationFrame(() => {
+    scrollRafPending = false
+    listScrollTop.value = itemsContainerRef.value?.scrollTop ?? 0
+  })
 }
 
 // ── Actions ────────────────────────────────────────────────
