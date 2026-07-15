@@ -844,13 +844,13 @@ pub async fn clear_finished_downloads(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn pause_download(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let sidecar_download = {
+/// Pausa um único download (aborta a task, mata o sidecar, marca Paused). Fonte de
+/// verdade compartilhada entre o pause individual e o "pausar todos". NÃO reescalona
+/// a fila (quem chama decide). Retorna `false` se o id não existir.
+async fn pause_one(state: &AppState, id: &str, reason: &str) -> bool {
+    let sidecar = {
         let map = state.downloads.lock().await;
-        map.get(&id).map(|download| {
+        map.get(id).map(|download| {
             (
                 download.provider.clone(),
                 download.url.clone(),
@@ -858,23 +858,17 @@ pub async fn pause_download(
             )
         })
     };
-
-    let Some((provider, url, dest_path)) = sidecar_download else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new("Download não encontrado")),
-        ));
+    let Some((provider, url, dest_path)) = sidecar else {
+        return false;
     };
 
     cancel_provider_sidecar_download(&provider, &url, &dest_path).await;
-
-    if let Some(handle) = state.active_tasks.lock().await.remove(&id) {
+    if let Some(handle) = state.active_tasks.lock().await.remove(id) {
         handle.abort();
     }
-
-    let found = {
+    {
         let mut map = state.downloads.lock().await;
-        if let Some(download) = map.get_mut(&id) {
+        if let Some(download) = map.get_mut(id) {
             download.status = DownloadStatus::Paused;
             download.speed_bps = 0;
             download.eta_secs = 0;
@@ -889,27 +883,99 @@ pub async fn pause_download(
                     }
                 }
             }
-            true
         } else {
-            false
+            return false;
         }
-    };
+    }
+    persist_download_snapshot(state, id).await;
+    record_download_event(state, id, "paused", reason);
+    state.broadcast(WsEvent::Status {
+        id: id.to_string(),
+        status: DownloadStatus::Paused,
+    });
+    true
+}
 
-    if !found {
+pub async fn pause_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    if !pause_one(&state, &id, "Pausado pelo usuário").await {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ApiError::new("Download não encontrado")),
         ));
     }
-
-    persist_download_snapshot(&state, &id).await;
-    record_download_event(&state, &id, "paused", "Pausado pelo usuário");
-    state.broadcast(WsEvent::Status {
-        id: id.clone(),
-        status: DownloadStatus::Paused,
-    });
     schedule_pending_downloads(state).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Pausa TODOS os downloads em andamento/na fila. Não reescalona (senão os pendentes
+/// voltariam a iniciar). Cuidado: preserva o progresso parcial de cada um.
+pub async fn pause_all_downloads(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let ids: Vec<String> = {
+        let map = state.downloads.lock().await;
+        map.values()
+            .filter(|d| {
+                matches!(
+                    d.status,
+                    DownloadStatus::Downloading
+                        | DownloadStatus::Pending
+                        | DownloadStatus::Verifying
+                        | DownloadStatus::RateLimited
+                        | DownloadStatus::WaitingCaptcha
+                )
+            })
+            .map(|d| d.id.clone())
+            .collect()
+    };
+    let mut paused = 0usize;
+    for id in &ids {
+        if pause_one(&state, id, "Pausado (pausar todos)").await {
+            paused += 1;
+        }
+    }
+    info!(target: "gdownloader_backend::downloads", "pausar todos: {paused} downloads pausados");
+    Json(serde_json::json!({ "paused": paused }))
+}
+
+/// Retoma TODOS os downloads pausados marcando-os como Pending e deixando o scheduler
+/// iniciá-los respeitando o limite de concorrência (não dispara todos de uma vez).
+pub async fn resume_all_downloads(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let ids: Vec<String> = {
+        let map = state.downloads.lock().await;
+        map.values()
+            .filter(|d| d.status == DownloadStatus::Paused)
+            .map(|d| d.id.clone())
+            .collect()
+    };
+    let mut resumed = 0usize;
+    for id in &ids {
+        let ok = {
+            let mut map = state.downloads.lock().await;
+            if let Some(d) = map.get_mut(id) {
+                if d.status == DownloadStatus::Paused {
+                    d.status = DownloadStatus::Pending;
+                    d.error = None;
+                    d.retry_at = None;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if ok {
+            persist_download_snapshot(&state, id).await;
+            record_download_event(&state, id, "resumed", "Retomado (retomar todos)");
+            resumed += 1;
+        }
+    }
+    info!(target: "gdownloader_backend::downloads", "retomar todos: {resumed} downloads na fila");
+    // Um único schedule inicia até o limite; o resto fica Pending e entra depois.
+    schedule_pending_downloads(state.clone()).await;
+    Json(serde_json::json!({ "resumed": resumed }))
 }
 
 pub async fn resume_download(
