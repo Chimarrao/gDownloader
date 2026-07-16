@@ -2514,6 +2514,28 @@ async fn verify_completed_download(
     dest_path: &str,
     expected_hash: ExpectedHash,
 ) -> anyhow::Result<bool> {
+    // Entra na fila de processamento pesada (hash lê o arquivo inteiro). Se não há
+    // vaga agora, avisa o usuário ("Na fila de processamento…") e aguarda — assim
+    // várias verificações não saturam CPU/disco ao mesmo tempo.
+    let _permit = match providers::finalization_semaphore().try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            record_download_event(state, id, "queued_processing", "Na fila de processamento…");
+            state.broadcast(WsEvent::StatusChanged {
+                id: id.to_string(),
+                status: DownloadStatus::Verifying,
+                error: None,
+                retry_at: None,
+                captcha_type: None,
+                captcha_sitekey: None,
+                captcha_page_url: None,
+            });
+            providers::finalization_semaphore()
+                .acquire()
+                .await
+                .map_err(|e| anyhow::anyhow!("semáforo de finalização fechado: {e}"))?
+        }
+    };
     {
         let mut map = state.downloads.lock().await;
         if let Some(download) = map.get_mut(id) {

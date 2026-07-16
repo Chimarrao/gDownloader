@@ -534,10 +534,28 @@ fn parse_content_range_total(resp: &reqwest::Response) -> Option<u64> {
 /// vez de copiar tudo pra um arquivo novo, o que exigia 2x o tamanho e fazia downloads
 /// grandes "quebrarem a 100%" por falta de espaço). No fim, faz um rename atômico do
 /// temporário para o destino — um crash no meio nunca deixa o arquivo final quebrado.
+/// Semáforo GLOBAL que serializa as operações PESADAS de finalização (juntar as
+/// partes e verificar o hash) entre TODOS os downloads. Sem isso, vários downloads
+/// terminando ao mesmo tempo disparam merges/hashes simultâneos que leem/gravam o
+/// disco inteiro de uma vez e saturam CPU e I/O. Permite algumas em paralelo —
+/// metade dos núcleos, no mínimo 1 e no máximo 4.
+pub fn finalization_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2);
+        let permits = (cores / 2).clamp(1, 4);
+        tokio::sync::Semaphore::new(permits)
+    })
+}
+
 pub async fn merge_parts_into(dest_path: &str, part_paths: &[String]) -> Result<()> {
     if part_paths.is_empty() {
         return Err(anyhow!("nenhuma parte para juntar"));
     }
+    // Espera uma vaga na fila de finalização antes de mexer no disco pesado.
+    let _permit = finalization_semaphore().acquire().await;
     let merging = format!("{dest_path}.merging");
     let _ = tokio::fs::remove_file(&merging).await;
     // Move a 1ª parte para o temporário (instantâneo, mesmo volume) — 0 cópia.
