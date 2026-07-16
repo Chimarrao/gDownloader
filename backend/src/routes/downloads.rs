@@ -716,7 +716,7 @@ pub async fn remove_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let removed = {
+    let removed_dest = {
         let mut map = state.downloads.lock().await;
         let Some(download) = map.get(&id) else {
             return Err((
@@ -739,13 +739,18 @@ pub async fn remove_download(
             ));
         }
 
-        map.remove(&id).is_some()
+        let dest_path = download.dest_path.clone();
+        map.remove(&id).map(|_| dest_path)
     };
 
-    if removed {
+    if let Some(dest_path) = removed_dest {
         state.speed_limits.lock().await.remove(&id);
+        // Remove da lista preserva o arquivo final, mas limpa temporários e o
+        // estado de resume — senão sobram `.part`/`.parts`/`.merging` e linhas órfãs.
+        cleanup_temp_artifacts(&dest_path).await;
         if let Ok(db) = state.db.lock() {
             let _ = crate::db::insert_download_event(&db, &id, "removed", "Removido da lista");
+            let _ = crate::db::clear_direct_http_parts_for_dest(&db, &dest_path);
             let _ = crate::db::delete(&db, &id);
         }
         return Ok(StatusCode::NO_CONTENT);
@@ -789,6 +794,8 @@ pub async fn remove_download_with_files(
             Json(ApiError::new(format!("Falha ao apagar os arquivos físicos: {error}"))),
         )
     })?;
+    // Também limpa os temporários (partes/merge) que o passo acima não cobre.
+    cleanup_temp_artifacts(&download.dest_path).await;
 
     {
         let mut map = state.downloads.lock().await;
@@ -798,6 +805,7 @@ pub async fn remove_download_with_files(
 
     if let Ok(db) = state.db.lock() {
         let _ = crate::db::insert_download_event(&db, &id, "removed_files", "Removido com arquivos físicos");
+        let _ = crate::db::clear_direct_http_parts_for_dest(&db, &download.dest_path);
         let _ = crate::db::delete(&db, &id);
     }
 
@@ -807,9 +815,10 @@ pub async fn remove_download_with_files(
 pub async fn clear_finished_downloads(
     State(state): State<AppState>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    {
+    // Decide o que fica e coleta os que saem (para limpar temporários + resume).
+    let removed: Vec<(String, String)> = {
         let mut map = state.downloads.lock().await;
-        map.retain(|_, download| {
+        let keep = |download: &Download| {
             // Mantém estados ativos/em espera.
             let is_active = matches!(
                 download.status,
@@ -827,8 +836,15 @@ pub async fn clear_finished_downloads(
                 && download.bytes_downloaded > 0
                 && (download.size == 0 || download.bytes_downloaded < download.size);
             is_active || has_resumable_progress
-        });
-    }
+        };
+        let removed: Vec<(String, String)> = map
+            .values()
+            .filter(|d| !keep(d))
+            .map(|d| (d.id.clone(), d.dest_path.clone()))
+            .collect();
+        map.retain(|_, download| keep(download));
+        removed
+    };
     {
         // Descarta handles de limite vivo de downloads que saíram da lista.
         let map = state.downloads.lock().await;
@@ -838,7 +854,15 @@ pub async fn clear_finished_downloads(
             .await
             .retain(|id, _| map.contains_key(id));
     }
+    // Limpa temporários (partes/merge) dos que saíram — os concluídos não têm, mas
+    // os interrompidos sem progresso resumível podem ter deixado lixo.
+    for (_, dest_path) in &removed {
+        cleanup_temp_artifacts(dest_path).await;
+    }
     if let Ok(db) = state.db.lock() {
+        for (_, dest_path) in &removed {
+            let _ = crate::db::clear_direct_http_parts_for_dest(&db, dest_path);
+        }
         let _ = crate::db::delete_finished(&db);
     }
     Ok(StatusCode::NO_CONTENT)
@@ -2919,6 +2943,36 @@ async fn restart_download_internal(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Remove os arquivos TEMPORÁRIOS de um download (merge em andamento, diretório de
+/// partes do download paralelo e arquivos-parte irmãos `{base}.partN`), preservando
+/// sempre o arquivo final. Usado ao excluir/limpar downloads. Best-effort: erros
+/// (arquivo já ausente) são ignorados.
+async fn cleanup_temp_artifacts(dest_path: &str) {
+    let _ = tokio::fs::remove_file(format!("{dest_path}.merging")).await;
+    let _ = tokio::fs::remove_dir_all(format!("{dest_path}.parts")).await;
+
+    let path = FsPath::new(dest_path);
+    if let (Some(parent), Some(base)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let file_name = entry.file_name();
+                if let Some(name) = file_name.to_str() {
+                    // Só irmãos `{base}.partN` — nunca o arquivo final `{base}`.
+                    if name.len() > base.len()
+                        && name.starts_with(base)
+                        && name[base.len()..].starts_with(".part")
+                    {
+                        let _ = tokio::fs::remove_file(entry.path()).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn delete_download_artifacts_for_download(
     download: &Download,
     preserve_root: bool,
@@ -3461,6 +3515,35 @@ mod tests {
             created_at,
             priority,
         }
+    }
+
+    #[tokio::test]
+    async fn cleanup_temp_artifacts_removes_temps_but_keeps_final_file() {
+        let dir = std::env::temp_dir().join(format!("gdl_cleanup_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let dest = dir.join("video.mp4");
+        let dest_str = dest.to_str().unwrap().to_string();
+
+        // Arquivo final + temporários que devem sumir.
+        tokio::fs::write(&dest, b"final").await.unwrap();
+        tokio::fs::write(dir.join("video.mp4.part0"), b"a").await.unwrap();
+        tokio::fs::write(dir.join("video.mp4.part1"), b"b").await.unwrap();
+        tokio::fs::write(dir.join("video.mp4.merging"), b"m").await.unwrap();
+        tokio::fs::create_dir_all(dir.join("video.mp4.parts")).await.unwrap();
+        tokio::fs::write(dir.join("video.mp4.parts/part-000"), b"p").await.unwrap();
+        // Arquivo vizinho não relacionado — NÃO pode ser tocado.
+        tokio::fs::write(dir.join("outro.mp4"), b"x").await.unwrap();
+
+        cleanup_temp_artifacts(&dest_str).await;
+
+        assert!(dest.exists(), "arquivo final deve ser preservado");
+        assert!(dir.join("outro.mp4").exists(), "arquivo vizinho deve ser preservado");
+        assert!(!dir.join("video.mp4.part0").exists());
+        assert!(!dir.join("video.mp4.part1").exists());
+        assert!(!dir.join("video.mp4.merging").exists());
+        assert!(!dir.join("video.mp4.parts").exists());
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     #[test]

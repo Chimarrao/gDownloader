@@ -1028,6 +1028,17 @@ pub fn clear_direct_http_parts(conn: &Connection, download_key: &str) -> Result<
     Ok(())
 }
 
+/// Remove as linhas de resume do Direct HTTP de um download pelo `dest_path`,
+/// independente de como a URL foi normalizada na chave (`{url}\n{dest_path}`).
+/// Usado ao excluir um download para não deixar estado de resume órfão.
+pub fn clear_direct_http_parts_for_dest(conn: &Connection, dest_path: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM direct_http_parts WHERE download_key LIKE '%' || char(10) || ?1",
+        params![dest_path],
+    )?;
+    Ok(())
+}
+
 /// Reaponta as linhas de resume do Direct HTTP quando o arquivo é movido de pasta.
 /// A chave é `{url}\n{dest_path}`; trocamos o sufixo do dest_path para que o resume
 /// continue funcionando após "Mover para..." (item 6).
