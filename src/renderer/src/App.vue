@@ -298,6 +298,7 @@ const downloadCount = ref(0)
 const skeletonCount = ref(0)
 const skeletonBaseCount = ref(0)
 const skeletonTargetCount = ref(0)
+let skeletonSafetyTimer: ReturnType<typeof setTimeout> | null = null
 const speedHistory = ref<number[]>(new Array(600).fill(0))
 const currentSpeed = ref(0)
 const topSpeedCanvasRef = ref<HTMLCanvasElement | null>(null)
@@ -728,6 +729,10 @@ function onStatsTick(event: CustomEvent): void {
 }
 
 function onAddingUrls(count: number): void {
+  if (skeletonSafetyTimer) {
+    clearTimeout(skeletonSafetyTimer)
+    skeletonSafetyTimer = null
+  }
   if (count <= 0) {
     skeletonCount.value = 0
     skeletonTargetCount.value = 0
@@ -737,6 +742,14 @@ function onAddingUrls(count: number): void {
   skeletonBaseCount.value = downloadCount.value
   skeletonTargetCount.value = count
   skeletonCount.value = count
+  // Rede de segurança: se por qualquer motivo o skeleton não zerar (duplicados,
+  // erro, contagem que não sobe), força limpar após um tempo — nada de skeleton eterno.
+  skeletonSafetyTimer = setTimeout(() => {
+    skeletonCount.value = 0
+    skeletonTargetCount.value = 0
+    skeletonBaseCount.value = downloadCount.value
+    skeletonSafetyTimer = null
+  }, 30_000)
 }
 
 function onDownloadCountChange(count: number): void {

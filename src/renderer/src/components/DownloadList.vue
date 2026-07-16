@@ -186,18 +186,6 @@
         </div>
       </div>
       <div class="items-stack">
-        <div
-          v-for="n in skeletonCount"
-          :key="`skeleton-${n}`"
-          class="skeleton-card"
-        >
-          <div class="skeleton-icon"></div>
-          <div class="skeleton-body">
-            <div class="skeleton-line skeleton-title"></div>
-            <div class="skeleton-line skeleton-progress"></div>
-            <div class="skeleton-line skeleton-meta"></div>
-          </div>
-        </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <!-- Lista sem TransitionGroup: virtualização + animação FLIP eram incompatíveis
              (as linhas 'sumiam e apareciam' ao rolar e a animação ficava repetindo). -->
@@ -666,6 +654,19 @@
         </div>
         </div>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
+        <!-- Skeleton dos que estão sendo adicionados: SEMPRE abaixo dos downloads. -->
+        <div
+          v-for="n in skeletonCount"
+          :key="`skeleton-${n}`"
+          class="skeleton-card"
+        >
+          <div class="skeleton-icon"></div>
+          <div class="skeleton-body">
+            <div class="skeleton-line skeleton-title"></div>
+            <div class="skeleton-line skeleton-progress"></div>
+            <div class="skeleton-line skeleton-meta"></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -717,6 +718,7 @@
 
     <div
       v-if="contextMenu.visible && contextMenuItem"
+      ref="contextMenuRef"
       class="download-context-menu"
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
@@ -927,6 +929,7 @@ const contextMenu = ref<{ visible: boolean; x: number; y: number; itemId: string
   y: 0,
   itemId: null,
 })
+const contextMenuRef = ref<HTMLElement | null>(null)
 // Modal de limite de velocidade individual (substitui o antigo window.prompt).
 // `amount` + `unit` são convertidos para KiB/s ao aplicar; presets em MB/s.
 const speedLimitModal = ref<{
@@ -1173,9 +1176,23 @@ function openContextMenu(item: DownloadItem, event: MouseEvent): void {
   contextMenu.value = {
     visible: true,
     x: Math.min(event.clientX, window.innerWidth - 260),
-    y: Math.min(event.clientY, window.innerHeight - 420),
+    y: event.clientY,
     itemId: item.id,
   }
+  // Depois de renderizar, mede a altura real e reposiciona pra caber na tela — assim
+  // o último item (ex.: apagar) nunca fica fora quando o clique é perto do rodapé.
+  void nextTick(() => {
+    const el = contextMenuRef.value
+    if (!el) return
+    const margin = 8
+    const rect = el.getBoundingClientRect()
+    if (rect.bottom > window.innerHeight - margin) {
+      contextMenu.value.y = Math.max(margin, window.innerHeight - rect.height - margin)
+    }
+    if (rect.right > window.innerWidth - margin) {
+      contextMenu.value.x = Math.max(margin, window.innerWidth - rect.width - margin)
+    }
+  })
 }
 
 function contextCan(action: string): boolean {

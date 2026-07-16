@@ -884,6 +884,10 @@ async function addAll(): Promise<void> {
   adding.value = false
   addQueueDone.value = 0
   addQueueTotal.value = 0
+  // Fim do processo de adicionar: zera o skeleton de forma confiável, mesmo que
+  // alguns links tenham sido duplicados/erro (aí o total não sobe e o skeleton
+  // antigo ficava preso pra sempre).
+  emit('adding-urls', 0)
   if (addedCount > 0) {
     rows.value = pruneCapturedRows<CapturedRow>(rows.value)
     if (rows.value.length === 0) {
