@@ -1365,7 +1365,11 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             }
         };
         let provider_name = provider.name().to_string();
-        let effective_parallel_parts = if provider_name == "YouTube" {
+        // YouTube usa o yt-dlp (1 fluxo). Mega: força conexão única para garantir a
+        // descriptografia AES-CTR sequencial e 100% correta — no download em partes,
+        // o seek do cifrador por parte (em offsets não alinhados a 16 bytes) é uma
+        // fonte de arquivo corrompido; conexão única elimina esse risco.
+        let effective_parallel_parts = if provider_name == "YouTube" || provider_name == "Mega" {
             1
         } else {
             parallel_parts as usize
@@ -1381,6 +1385,18 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             speed_limit.load(std::sync::atomic::Ordering::Relaxed) / 1024,
             dest_path
         );
+
+        // Informa o usuário (no log do download) o que está acontecendo no Mega:
+        // o arquivo chega criptografado e é descriptografado (AES-CTR) durante o
+        // próprio download, em conexão única.
+        if provider_name == "Mega" && attempt == 0 {
+            record_download_event(
+                &state,
+                &id,
+                "info",
+                "Mega: baixando e descriptografando (AES-CTR) em conexão única para garantir a integridade do arquivo.",
+            );
+        }
 
         // Check disk space before starting
         {
@@ -1491,6 +1507,12 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             .checked_sub(std::time::Duration::from_millis(500))
             .unwrap_or_else(std::time::Instant::now);
         let mut stalled = false;
+        // Vira true quando os bytes chegam a 100% mas a task ainda não voltou (fase de
+        // junção de partes / finalização). Evita o download ficar "Baixando" a 100%
+        // e mostra "Finalizando" enquanto o merge acontece. YouTube tem fases próprias
+        // (vídeo/áudio/merge do yt-dlp) e é tratado à parte, então fica fora disso.
+        let mut finalizing = false;
+        let is_youtube = provider_name == "YouTube";
 
         loop {
             let update = match tokio::time::timeout(
@@ -1552,12 +1574,31 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 }
             });
 
+            // Chegou a 100% dos bytes mas a task ainda não voltou → está finalizando
+            // (juntando partes / gravando o arquivo final). A partir daqui não mostra
+            // mais velocidade/ETA/partes e o status vira "Verificando" (Finalizando).
+            let at_100 = !is_youtube && update.total_bytes > 0 && reported_bytes >= update.total_bytes;
+            let just_started_finalizing = at_100 && !finalizing;
+            if at_100 {
+                finalizing = true;
+            }
+            let display_status = if finalizing {
+                DownloadStatus::Verifying
+            } else {
+                DownloadStatus::Downloading
+            };
+            let display_speed = if finalizing { 0 } else { speed };
+            let display_eta = if finalizing { 0 } else { eta };
+
             {
                 let mut map = state.downloads.lock().await;
                 if let Some(d) = map.get_mut(&id) {
                     d.bytes_downloaded = d.bytes_downloaded.max(reported_bytes);
-                    d.speed_bps = speed;
-                    d.eta_secs = eta;
+                    d.speed_bps = display_speed;
+                    d.eta_secs = display_eta;
+                    if finalizing {
+                        d.status = DownloadStatus::Verifying;
+                    }
                     d.last_progress_at = Some(current_unix_secs());
                     // Update total size if it wasn't set yet (can happen with some providers)
                     if update.total_bytes > 0 && d.size == 0 {
@@ -1607,9 +1648,24 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 }
             }
 
-            if should_persist_snapshot {
+            if should_persist_snapshot || just_started_finalizing {
                 persist_download_snapshot(&state, &id).await;
                 last_db_write = std::time::Instant::now();
+            }
+
+            // Ao entrar na finalização, avisa o usuário de forma explícita e muda o
+            // status (barra deixa de ser "Baixando 100%" e vira "Juntando partes…").
+            if just_started_finalizing {
+                record_download_event(&state, &id, "merging", "Juntando as partes e gravando o arquivo final…");
+                state.broadcast(WsEvent::StatusChanged {
+                    id: id.clone(),
+                    status: DownloadStatus::Verifying,
+                    error: None,
+                    retry_at: None,
+                    captcha_type: None,
+                    captcha_sitekey: None,
+                    captcha_page_url: None,
+                });
             }
 
             if last_progress_broadcast.elapsed() >= std::time::Duration::from_millis(500)
@@ -1620,9 +1676,9 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     id: id.clone(),
                     bytes: reported_bytes,
                     total: update.total_bytes,
-                    speed,
-                    eta,
-                    status: DownloadStatus::Downloading,
+                    speed: display_speed,
+                    eta: display_eta,
+                    status: display_status,
                     child_path: update.child_path.clone(),
                     child_filename: update.child_filename.clone(),
                     child_bytes: update.child_bytes_downloaded,

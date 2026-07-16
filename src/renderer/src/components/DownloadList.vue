@@ -314,8 +314,8 @@
               <template v-else-if="item.status === 'verifying'">
                 <span class="meta-sep">·</span>
                 <span class="meta-verifying">
-                  <i class="pi pi-shield"></i>
-                  Verificando {{ item.expectedHash?.algorithm?.toUpperCase() ?? 'hash' }}
+                  <i class="pi" :class="item.expectedHash ? 'pi-shield' : 'pi-cog'"></i>
+                  {{ item.expectedHash ? `Verificando ${item.expectedHash.algorithm.toUpperCase()}` : 'Juntando partes e finalizando…' }}
                 </span>
               </template>
 
@@ -1429,7 +1429,9 @@ function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; tit
 // Retorna o preenchimento (%) de cada segmento da barra dividida, ou null quando o
 // download não está de fato em partes (aí usa a barra normal).
 function downloadSegments(item: DownloadItem): number[] | null {
-  if (item.status === DownloadStatusEnum.Complete) return null
+  // Só mostra a barra segmentada enquanto realmente baixando (some na finalização,
+  // conclusão, pausa, etc.) — evita mostrar "partes ativas" a 100% durante o merge.
+  if (item.status !== DownloadStatusEnum.Downloading) return null
   const parts = partProgress.value[item.id]
   if (!parts) return null
   const count = item.parallelParts && item.parallelParts > 1
