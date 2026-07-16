@@ -910,72 +910,114 @@ pub async fn pause_download(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Pausa TODOS os downloads em andamento/na fila. Não reescalona (senão os pendentes
-/// voltariam a iniciar). Cuidado: preserva o progresso parcial de cada um.
+/// Pausa TODOS os downloads DE UMA VEZ (atômico), não "aos poucos":
+/// 1) liga a flag global (o scheduler para de iniciar qualquer coisa);
+/// 2) marca todos os ativos como Paused num único lock;
+/// 3) aborta todas as tasks de uma vez;
+/// 4) só então cancela sidecars e persiste/broadcast.
+/// Preserva o progresso parcial de cada download.
 pub async fn pause_all_downloads(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let ids: Vec<String> = {
+    use std::sync::atomic::Ordering;
+    // 1) Flag global — bloqueia o scheduler imediatamente.
+    state.paused_all.store(true, Ordering::SeqCst);
+
+    // Coleta ids ativos + dados do sidecar (num lock só).
+    let (ids, sidecars): (Vec<String>, Vec<(String, String, String)>) = {
         let map = state.downloads.lock().await;
-        map.values()
-            .filter(|d| {
-                matches!(
-                    d.status,
-                    DownloadStatus::Downloading
-                        | DownloadStatus::Pending
-                        | DownloadStatus::Verifying
-                        | DownloadStatus::RateLimited
-                        | DownloadStatus::WaitingCaptcha
-                )
-            })
-            .map(|d| d.id.clone())
-            .collect()
+        let mut ids = Vec::new();
+        let mut sidecars = Vec::new();
+        for d in map.values() {
+            if matches!(
+                d.status,
+                DownloadStatus::Downloading
+                    | DownloadStatus::Pending
+                    | DownloadStatus::Verifying
+                    | DownloadStatus::RateLimited
+                    | DownloadStatus::WaitingCaptcha
+            ) {
+                ids.push(d.id.clone());
+                sidecars.push((d.provider.clone(), d.url.clone(), d.dest_path.clone()));
+            }
+        }
+        (ids, sidecars)
     };
-    let mut paused = 0usize;
-    for id in &ids {
-        if pause_one(&state, id, "Pausado (pausar todos)").await {
-            paused += 1;
+
+    // 2) Marca TODOS como Paused de uma vez (um único lock → a UI vê tudo pausar junto).
+    {
+        let mut map = state.downloads.lock().await;
+        for id in &ids {
+            if let Some(d) = map.get_mut(id) {
+                d.status = DownloadStatus::Paused;
+                d.speed_bps = 0;
+                d.eta_secs = 0;
+                d.retry_at = None;
+                d.error = None;
+                if let Some(children) = d.children.as_mut() {
+                    for child in children.iter_mut() {
+                        child.speed_bps = Some(0);
+                        child.eta_secs = Some(0);
+                        if child.status == Some(DownloadStatus::Downloading) {
+                            child.status = Some(DownloadStatus::Paused);
+                        }
+                    }
+                }
+            }
         }
     }
-    info!(target: "gdownloader_backend::downloads", "pausar todos: {paused} downloads pausados");
-    Json(serde_json::json!({ "paused": paused }))
+
+    // 3) Aborta TODAS as tasks de uma vez (instantâneo).
+    {
+        let mut tasks = state.active_tasks.lock().await;
+        for id in &ids {
+            if let Some(handle) = tasks.remove(id) {
+                handle.abort();
+            }
+        }
+    }
+
+    // 4) Cancela sidecars (helpers de navegador) — best effort — e persiste/broadcast.
+    for (provider, url, dest_path) in &sidecars {
+        cancel_provider_sidecar_download(provider, url, dest_path).await;
+    }
+    for id in &ids {
+        persist_download_snapshot(&state, id).await;
+        state.broadcast(WsEvent::Status {
+            id: id.clone(),
+            status: DownloadStatus::Paused,
+        });
+    }
+    info!(target: "gdownloader_backend::downloads", "PAUSAR TODOS (atômico): {} downloads pausados", ids.len());
+    Json(serde_json::json!({ "paused": ids.len() }))
 }
 
-/// Retoma TODOS os downloads pausados marcando-os como Pending e deixando o scheduler
-/// iniciá-los respeitando o limite de concorrência (não dispara todos de uma vez).
+/// Retoma TODOS os downloads pausados: desliga a flag global, marca os pausados como
+/// Pending e deixa o scheduler iniciá-los respeitando o limite (não dispara todos).
 pub async fn resume_all_downloads(State(state): State<AppState>) -> Json<serde_json::Value> {
+    use std::sync::atomic::Ordering;
+    // Desliga a pausa global ANTES de reescalonar.
+    state.paused_all.store(false, Ordering::SeqCst);
+
     let ids: Vec<String> = {
-        let map = state.downloads.lock().await;
-        map.values()
-            .filter(|d| d.status == DownloadStatus::Paused)
-            .map(|d| d.id.clone())
-            .collect()
-    };
-    let mut resumed = 0usize;
-    for id in &ids {
-        let ok = {
-            let mut map = state.downloads.lock().await;
-            if let Some(d) = map.get_mut(id) {
-                if d.status == DownloadStatus::Paused {
-                    d.status = DownloadStatus::Pending;
-                    d.error = None;
-                    d.retry_at = None;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
+        let mut map = state.downloads.lock().await;
+        let mut ids = Vec::new();
+        for d in map.values_mut() {
+            if d.status == DownloadStatus::Paused {
+                d.status = DownloadStatus::Pending;
+                d.error = None;
+                d.retry_at = None;
+                ids.push(d.id.clone());
             }
-        };
-        if ok {
-            persist_download_snapshot(&state, id).await;
-            record_download_event(&state, id, "resumed", "Retomado (retomar todos)");
-            resumed += 1;
         }
+        ids
+    };
+    for id in &ids {
+        persist_download_snapshot(&state, id).await;
+        record_download_event(&state, id, "resumed", "Retomado (retomar todos)");
     }
-    info!(target: "gdownloader_backend::downloads", "retomar todos: {resumed} downloads na fila");
+    info!(target: "gdownloader_backend::downloads", "RETOMAR TODOS: {} downloads na fila", ids.len());
     // Um único schedule inicia até o limite; o resto fica Pending e entra depois.
     schedule_pending_downloads(state.clone()).await;
-    Json(serde_json::json!({ "resumed": resumed }))
+    Json(serde_json::json!({ "resumed": ids.len() }))
 }
 
 pub async fn resume_download(
@@ -2591,7 +2633,101 @@ async fn persist_download_snapshot(state: &AppState, id: &str) {
     }
 }
 
+/// Dados de um download em execução, usados para decidir quem devolver à fila
+/// quando o limite de concorrência é reduzido ao vivo.
+struct ActiveSlot {
+    id: String,
+    priority: i32,
+    /// Momento em que começou (ou de criação, como fallback) — para desempate.
+    since: u64,
+    provider: String,
+    url: String,
+    dest_path: String,
+}
+
+/// Aplica o limite de concorrência AO VIVO quando o usuário o REDUZ: se há mais
+/// downloads em execução do que o novo limite permite, devolve os excedentes para a
+/// fila (status Pending). Escolhe **menor prioridade primeiro e, em empate, os mais
+/// recentes** — preservando os mais antigos/quase prontos. Os devolvidos voltam
+/// sozinhos quando abrir vaga (o scheduler os reinicia respeitando o limite).
+pub async fn enforce_active_limit(state: &AppState) {
+    let limit = *state.max_concurrent_downloads.lock().await;
+
+    let mut active: Vec<ActiveSlot> = {
+        let map = state.downloads.lock().await;
+        map.values()
+            .filter(|d| d.status == DownloadStatus::Downloading)
+            .map(|d| ActiveSlot {
+                id: d.id.clone(),
+                priority: d.priority,
+                since: d.started_at.unwrap_or(d.created_at),
+                provider: d.provider.clone(),
+                url: d.url.clone(),
+                dest_path: d.dest_path.clone(),
+            })
+            .collect()
+    };
+    if active.len() <= limit {
+        return;
+    }
+    // Ordena por quem MANTER primeiro: maior prioridade, depois mais antigo.
+    // Os últimos da lista (menor prioridade / mais recentes) são os devolvidos.
+    active.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.since.cmp(&b.since)));
+    let excess = active.split_off(limit);
+
+    // Devolve todos para a fila num único lock (a UI vê a mudança de uma vez).
+    {
+        let mut map = state.downloads.lock().await;
+        for slot in &excess {
+            if let Some(d) = map.get_mut(&slot.id) {
+                if d.status == DownloadStatus::Downloading {
+                    d.status = DownloadStatus::Pending;
+                    d.speed_bps = 0;
+                    d.eta_secs = 0;
+                    if let Some(children) = d.children.as_mut() {
+                        for child in children.iter_mut() {
+                            child.speed_bps = Some(0);
+                            child.eta_secs = Some(0);
+                            if child.status == Some(DownloadStatus::Downloading) {
+                                child.status = Some(DownloadStatus::Pending);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Aborta as tasks de uma vez.
+    {
+        let mut tasks = state.active_tasks.lock().await;
+        for slot in &excess {
+            if let Some(handle) = tasks.remove(&slot.id) {
+                handle.abort();
+            }
+        }
+    }
+    for slot in &excess {
+        cancel_provider_sidecar_download(&slot.provider, &slot.url, &slot.dest_path).await;
+        persist_download_snapshot(state, &slot.id).await;
+        record_download_event(state, &slot.id, "queued", "Devolvido à fila (limite reduzido)");
+        state.broadcast(WsEvent::Status {
+            id: slot.id.clone(),
+            status: DownloadStatus::Pending,
+        });
+    }
+    info!(
+        target: "gdownloader_backend::downloads",
+        "limite ao vivo: {} download(s) devolvido(s) à fila (novo limite={})",
+        excess.len(),
+        limit
+    );
+}
+
 pub async fn schedule_pending_downloads(state: AppState) {
+    // Pausa global ligada → não inicia nada.
+    if state.paused_all.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let limit = *state.max_concurrent_downloads.lock().await;
     let active_task_ids = {
         let tasks = state.active_tasks.lock().await;

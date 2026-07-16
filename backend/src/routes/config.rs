@@ -6,7 +6,7 @@ use crate::{
     ws::AppState,
 };
 
-use super::downloads::schedule_pending_downloads;
+use super::downloads::{enforce_active_limit, schedule_pending_downloads};
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadConfigRequest {
@@ -19,6 +19,8 @@ pub async fn update_download_config(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let next_limit = req.max_concurrent_downloads.unwrap_or(1).max(1);
     *state.max_concurrent_downloads.lock().await = next_limit;
+    // Reduziu o limite ao vivo? Devolve os excedentes à fila antes de reescalonar.
+    enforce_active_limit(&state).await;
     schedule_pending_downloads(state).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -163,6 +165,8 @@ pub async fn update_public_settings(
     );
 
     *state.max_concurrent_downloads.lock().await = req.max_concurrent_downloads.max(1);
+    // Reduziu o limite ao vivo? Devolve os excedentes à fila antes de reescalonar.
+    enforce_active_limit(&state).await;
     schedule_pending_downloads(state).await;
 
     Ok(StatusCode::NO_CONTENT)
