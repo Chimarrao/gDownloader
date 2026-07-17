@@ -1,19 +1,107 @@
 use anyhow::{anyhow, Result};
-use futures_util::StreamExt;
+use futures_util::{stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 
-use crate::models::FileInfo;
+use crate::models::{FileChildInfo, FileInfo};
 
 use super::{
-    apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches,
+    apply_speed_limit, captcha_required_error, extract_fragment_value, host_matches, path_segments,
     parse_human_size, premium_required_error, ProgressUpdate, Provider, ProviderDefaults,
 };
+
+#[derive(Debug, Clone)]
+struct BruploadFolderEntry {
+    filename: String,
+    path: String,
+    size: u64,
+    source_url: String,
+}
 
 pub struct BruploadProvider;
 
 impl BruploadProvider {
     pub fn matches(url: &str) -> bool {
-        host_matches(url, &["brupload.net", "www.brupload.net"]) && Self::file_code(url).is_some()
+        host_matches(url, &["brupload.net", "www.brupload.net"])
+            && (Self::file_code(url).is_some() || Self::is_folder_url(url))
+    }
+
+    /// Pastas do BRUpload têm a forma `/users/{usuario}/{id}[/...]`.
+    fn is_folder_url(url: &str) -> bool {
+        matches!(path_segments(url).as_slice(), [first, _user, _id, ..] if first == "users")
+    }
+
+    /// Extrai os links de arquivos de uma página de pasta. Resiliente ao layout:
+    /// casa pelo CÓDIGO do arquivo na URL (8+ alfanuméricos), não por classes CSS.
+    fn extract_folder_entries(html: &str) -> Vec<BruploadFolderEntry> {
+        let Some(re) = regex::Regex::new(
+            r#"(?is)href=["'](?:https?://(?:www\.)?brupload\.net)?/(?:d/)?([A-Za-z0-9]{8,})["']"#,
+        )
+        .ok() else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut entries = Vec::new();
+        for captures in re.captures_iter(html) {
+            let code = captures[1].trim().to_string();
+            let source_url = format!("https://brupload.net/{code}");
+            if !seen.insert(source_url.clone()) {
+                continue;
+            }
+            entries.push(BruploadFolderEntry {
+                path: code.clone(),
+                filename: code,
+                size: 0,
+                source_url,
+            });
+        }
+        entries
+    }
+
+    /// Nome da pasta: usa o `<title>` ou, na falta, o id da URL.
+    fn extract_folder_name(html: &str, url: &str) -> String {
+        let from_title = regex::Regex::new(r#"(?is)<title>\s*([^<]+?)\s*</title>"#)
+            .ok()
+            .and_then(|re| re.captures(html))
+            .map(|captures| Self::decode_html(&captures[1]))
+            .filter(|title| !title.is_empty() && !title.to_lowercase().contains("brupload"));
+        from_title.unwrap_or_else(|| {
+            path_segments(url)
+                .last()
+                .map(|segment| segment.to_string())
+                .unwrap_or_else(|| "pasta_brupload".to_string())
+        })
+    }
+
+    /// Busca nome e tamanho reais de cada arquivo da pasta (em paralelo, limitado).
+    async fn resolve_folder_entries(
+        client: &reqwest::Client,
+        html: &str,
+    ) -> Vec<BruploadFolderEntry> {
+        let entries = Self::extract_folder_entries(html);
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        stream::iter(entries.into_iter().map(|entry| {
+            let client = client.clone();
+            async move {
+                let mut next = entry;
+                if let Ok(page) = client.get(&next.source_url).send().await {
+                    if let Ok(page) = page.error_for_status() {
+                        if let Ok(page_html) = page.text().await {
+                            if let Some(name) = Self::extract_filename(&page_html) {
+                                next.filename = <Self as ProviderDefaults>::safe_filename(&name, &next.filename);
+                                next.path = next.filename.clone();
+                            }
+                            next.size = Self::extract_size(&page_html);
+                        }
+                    }
+                }
+                next
+            }
+        }))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await
     }
 
     fn file_code(url: &str) -> Option<String> {
@@ -270,6 +358,94 @@ impl BruploadProvider {
         }
         payload
     }
+
+    /// Baixa UM arquivo do BRUpload (fluxo download1 → espera → download2 → link
+    /// direto). Extraído para ser reutilizado no download de pastas.
+    async fn download_single_file(
+        client: &reqwest::Client,
+        url: &str,
+        dest_path: &str,
+        speed_limit_bps: super::SpeedLimitBps,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+    ) -> Result<u64> {
+        let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRUpload inválida"))?;
+        let captcha_token = Self::extract_captcha_token(url);
+
+        let initial_page = client.get(url).send().await?.error_for_status()?.text().await?;
+        let expected_size = Self::extract_size(&initial_page);
+        let download1_payload = Self::build_download1_payload(&initial_page, &code, url);
+        let download1_html = client
+            .post(url)
+            .header("Referer", url)
+            .form(&download1_payload)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+
+        if let Some(message) = Self::extract_error(&download1_html) {
+            return Err(anyhow!("BRUpload bloqueou o download gratuito: {message}"));
+        }
+
+        if captcha_token.is_none() {
+            if let Some(sitekey) = Self::detect_recaptcha_sitekey(&download1_html) {
+                return Err(captcha_required_error("recaptcha2", &sitekey, url));
+            }
+            if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&download1_html) {
+                return Err(captcha_required_error("hcaptcha", &sitekey, url));
+            }
+        }
+
+        if let Some(wait) = Self::extract_wait_seconds(&download1_html) {
+            tokio::time::sleep(tokio::time::Duration::from_secs(wait.min(180).saturating_add(1))).await;
+        }
+
+        let download2_payload =
+            Self::build_download2_payload(&download1_html, url, captcha_token.as_deref());
+        let response = client
+            .post(url)
+            .header("Referer", url)
+            .form(&download2_payload)
+            .send()
+            .await?;
+
+        if Self::is_binary_download_response(&response) {
+            let response = response.error_for_status()?;
+            return Self::stream_response_to_file(
+                response,
+                dest_path,
+                expected_size,
+                speed_limit_bps,
+                progress_tx,
+            )
+            .await;
+        }
+
+        let download2_html = response.error_for_status()?.text().await?;
+
+        if let Some(message) = Self::extract_error(&download2_html) {
+            return Err(anyhow!("BRUpload rejeitou o download: {message}"));
+        }
+
+        if captcha_token.is_none() {
+            if let Some(sitekey) = Self::detect_recaptcha_sitekey(&download2_html) {
+                return Err(captcha_required_error("recaptcha2", &sitekey, url));
+            }
+            if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&download2_html) {
+                return Err(captcha_required_error("hcaptcha", &sitekey, url));
+            }
+        }
+
+        let direct_url = Self::extract_direct_download_url(&download2_html)
+            .ok_or_else(|| premium_required_error(
+                "BRUpload",
+                "o host pode exigir premium, captcha adicional ou outro limite",
+            ))?;
+
+        let resp = client.get(&direct_url).send().await?.error_for_status()?;
+        Self::stream_response_to_file(resp, dest_path, expected_size, speed_limit_bps, progress_tx).await
+    }
 }
 
 impl ProviderDefaults for BruploadProvider {}
@@ -283,6 +459,41 @@ impl Provider for BruploadProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileInfo>> + Send + 'a>> {
         Box::pin(async move {
             let client = <Self as ProviderDefaults>::http_client()?;
+
+            if Self::is_folder_url(url) {
+                let html = client.get(url).send().await?.error_for_status()?.text().await?;
+                let folder_name = Self::extract_folder_name(&html, url);
+                let children = Self::resolve_folder_entries(&client, &html).await;
+                if children.is_empty() {
+                    return Err(anyhow!("Pasta do BRUpload vazia ou sem arquivos acessíveis"));
+                }
+                let total_size = children.iter().map(|child| child.size).sum();
+                return Ok(FileInfo {
+                    filename: <Self as ProviderDefaults>::safe_filename(&folder_name, "pasta_brupload"),
+                    size: total_size,
+                    mime_type: None,
+                    is_folder: true,
+                    children: Some(
+                        children
+                            .into_iter()
+                            .map(|child| FileChildInfo {
+                                filename: child.filename,
+                                size: child.size,
+                                mime_type: None,
+                                is_folder: false,
+                                path: Some(child.path),
+                                source_url: Some(child.source_url),
+                                bytes_downloaded: None,
+                                speed_bps: None,
+                                eta_secs: None,
+                                status: None,
+                            })
+                            .collect(),
+                    ),
+                    ..Default::default()
+                });
+            }
+
             let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRUpload inválida"))?;
             let html = client.get(url).send().await?.error_for_status()?.text().await?;
             let mut filename = Self::extract_filename(&html)
@@ -328,88 +539,117 @@ impl Provider for BruploadProvider {
         dest_path: &'a str,
         speed_limit_bps: super::SpeedLimitBps,
         _parallel_parts: usize,
-        _selected_children: Option<Vec<String>>,
+        selected_children: Option<Vec<String>>,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
         Box::pin(async move {
             let client = <Self as ProviderDefaults>::http_client()?;
-            let code = Self::file_code(url).ok_or_else(|| anyhow!("URL do BRUpload inválida"))?;
-            let captcha_token = Self::extract_captcha_token(url);
 
-            let initial_page = client.get(url).send().await?.error_for_status()?.text().await?;
-            let expected_size = Self::extract_size(&initial_page);
-            let download1_payload = Self::build_download1_payload(&initial_page, &code, url);
-            let download1_html = client
-                .post(url)
-                .header("Referer", url)
-                .form(&download1_payload)
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
+            if Self::is_folder_url(url) {
+                let html = client.get(url).send().await?.error_for_status()?.text().await?;
+                let mut children = Self::resolve_folder_entries(&client, &html).await;
 
-            if let Some(message) = Self::extract_error(&download1_html) {
-                return Err(anyhow!("BRUpload bloqueou o download gratuito: {message}"));
-            }
-
-            if captcha_token.is_none() {
-                if let Some(sitekey) = Self::detect_recaptcha_sitekey(&download1_html) {
-                    return Err(captcha_required_error("recaptcha2", &sitekey, url));
+                if let Some(selected) = selected_children {
+                    let selected_set = selected.into_iter().collect::<std::collections::HashSet<_>>();
+                    children.retain(|child| selected_set.contains(&child.source_url));
                 }
-                if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&download1_html) {
-                    return Err(captcha_required_error("hcaptcha", &sitekey, url));
+                if children.is_empty() {
+                    return Err(anyhow!("Pasta do BRUpload vazia ou sem arquivos acessíveis"));
                 }
-            }
 
-            if let Some(wait) = Self::extract_wait_seconds(&download1_html) {
-                tokio::time::sleep(tokio::time::Duration::from_secs(wait.min(180).saturating_add(1))).await;
-            }
+                tokio::fs::create_dir_all(dest_path).await?;
+                let total_size: u64 = children.iter().map(|child| child.size).sum();
+                let mut downloaded_total = 0u64;
 
-            let download2_payload =
-                Self::build_download2_payload(&download1_html, url, captcha_token.as_deref());
-            let response = client
-                .post(url)
-                .header("Referer", url)
-                .form(&download2_payload)
-                .send()
-                .await?;
+                for child in &children {
+                    let output_path = format!("{}/{}", dest_path.trim_end_matches('/'), child.path);
+                    if let Some(parent_dir) = std::path::Path::new(&output_path).parent() {
+                        tokio::fs::create_dir_all(parent_dir).await?;
+                    }
 
-            if Self::is_binary_download_response(&response) {
-                let response = response.error_for_status()?;
-                return Self::stream_response_to_file(
-                    response,
-                    dest_path,
-                    expected_size,
-                    speed_limit_bps,
-                    progress_tx,
-                )
-                .await;
-            }
+                    // Pula o que já está completo no disco.
+                    if let Ok(metadata) = tokio::fs::metadata(&output_path).await {
+                        if child.size > 0 && metadata.len() >= child.size {
+                            downloaded_total = downloaded_total.saturating_add(child.size);
+                            let _ = progress_tx
+                                .send(ProgressUpdate {
+                                    bytes_downloaded: downloaded_total,
+                                    total_bytes: total_size,
+                                    child_path: Some(child.path.clone()),
+                                    child_filename: Some(child.filename.clone()),
+                                    child_bytes_downloaded: Some(child.size),
+                                    child_total_bytes: Some(child.size),
+                                    child_speed_bps: Some(0),
+                                    child_eta_secs: Some(0),
+                                })
+                                .await;
+                            continue;
+                        }
+                        if metadata.len() > 0 {
+                            let _ = tokio::fs::remove_file(&output_path).await;
+                        }
+                    }
 
-            let download2_html = response.error_for_status()?.text().await?;
+                    let child_filename = child.filename.clone();
+                    let child_path = child.path.clone();
+                    let child_size = child.size;
+                    let base_downloaded = downloaded_total;
+                    let child_started_at = tokio::time::Instant::now();
+                    let (child_tx, mut child_rx) = tokio::sync::mpsc::channel::<ProgressUpdate>(64);
+                    let child_url = child.source_url.clone();
+                    let child_dest_path = output_path.clone();
+                    let child_client = client.clone();
+                    let child_speed_limit = speed_limit_bps.clone();
 
-            if let Some(message) = Self::extract_error(&download2_html) {
-                return Err(anyhow!("BRUpload rejeitou o download: {message}"));
-            }
+                    let child_task = tokio::spawn(async move {
+                        Self::download_single_file(
+                            &child_client,
+                            &child_url,
+                            &child_dest_path,
+                            child_speed_limit,
+                            child_tx,
+                        )
+                        .await
+                    });
 
-            if captcha_token.is_none() {
-                if let Some(sitekey) = Self::detect_recaptcha_sitekey(&download2_html) {
-                    return Err(captcha_required_error("recaptcha2", &sitekey, url));
+                    while let Some(update) = child_rx.recv().await {
+                        let child_downloaded = update.bytes_downloaded;
+                        let total_downloaded = base_downloaded + child_downloaded;
+                        let child_elapsed = child_started_at.elapsed().as_secs_f64();
+                        let child_speed = if child_elapsed > 0.0 {
+                            (child_downloaded as f64 / child_elapsed) as u64
+                        } else {
+                            0
+                        };
+                        let child_eta = if child_speed > 0 && child_size > child_downloaded {
+                            (child_size - child_downloaded) / child_speed
+                        } else {
+                            0
+                        };
+                        let _ = progress_tx
+                            .send(ProgressUpdate {
+                                bytes_downloaded: total_downloaded,
+                                total_bytes: total_size,
+                                child_path: Some(child_path.clone()),
+                                child_filename: Some(child_filename.clone()),
+                                child_bytes_downloaded: Some(child_downloaded),
+                                child_total_bytes: Some(child_size),
+                                child_speed_bps: Some(child_speed),
+                                child_eta_secs: Some(child_eta),
+                            })
+                            .await;
+                    }
+
+                    let child_bytes = child_task
+                        .await
+                        .map_err(|error| anyhow!("Falha interna ao baixar item do BRUpload: {error}"))??;
+                    downloaded_total = base_downloaded + child_bytes;
                 }
-                if let Some(sitekey) = Self::detect_hcaptcha_sitekey(&download2_html) {
-                    return Err(captcha_required_error("hcaptcha", &sitekey, url));
-                }
+
+                return Ok(downloaded_total);
             }
 
-            let direct_url = Self::extract_direct_download_url(&download2_html)
-                .ok_or_else(|| premium_required_error(
-                    "BRUpload",
-                    "o host pode exigir premium, captcha adicional ou outro limite",
-                ))?;
-
-            let resp = client.get(&direct_url).send().await?.error_for_status()?;
-            Self::stream_response_to_file(resp, dest_path, expected_size, speed_limit_bps, progress_tx).await
+            Self::download_single_file(&client, url, dest_path, speed_limit_bps, progress_tx).await
         })
     }
 }
