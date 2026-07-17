@@ -648,19 +648,25 @@ pub async fn try_parallel_download(
             let mut file = tokio::fs::File::create(&part_path).await?;
             let mut stream = resp.bytes_stream();
             let mut task_session_downloaded = 0u64;
+            // Reporta progresso de forma estrangulada (~120ms) em vez de por 64KB —
+            // reduz drasticamente as mensagens no canal e a disputa de lock.
+            let progress_interval = std::time::Duration::from_millis(120);
+            let mut last_progress = Instant::now()
+                .checked_sub(progress_interval)
+                .unwrap_or_else(Instant::now);
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
-                for piece in chunk.chunks(65_536) {
-                    file.write_all(piece).await?;
-                    let piece_len = piece.len() as u64;
-                    task_session_downloaded += piece_len;
+                // Escreve o chunk inteiro de uma vez (antes: fatiava em 64KB).
+                file.write_all(&chunk).await?;
+                let chunk_len = chunk.len() as u64;
+                task_session_downloaded += chunk_len;
 
-                    let downloaded = total_downloaded.fetch_add(piece_len, Ordering::Relaxed)
-                        + piece_len;
+                let downloaded = total_downloaded.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
 
-                    // Reporta o progresso por-parte (child_path "part:N") para a UI
-                    // desenhar a barra segmentada e confirmar que é multi-conexão.
+                // Reporta o progresso por-parte (child_path "part:N") para a UI
+                // desenhar a barra segmentada e confirmar que é multi-conexão.
+                if last_progress.elapsed() >= progress_interval {
                     let _ = progress_tx
                         .send(ProgressUpdate {
                             bytes_downloaded: downloaded,
@@ -673,10 +679,26 @@ pub async fn try_parallel_download(
                             child_eta_secs: None,
                         })
                         .await;
-
-                    apply_speed_limit_divided(started_at, task_session_downloaded, &task_limit, part_count).await;
+                    last_progress = Instant::now();
                 }
+
+                apply_speed_limit_divided(started_at, task_session_downloaded, &task_limit, part_count).await;
             }
+
+            // Reporte final para a parte fechar em 100% na UI.
+            let downloaded = total_downloaded.load(Ordering::Relaxed);
+            let _ = progress_tx
+                .send(ProgressUpdate {
+                    bytes_downloaded: downloaded,
+                    total_bytes,
+                    child_path: Some(format!("part:{part_index}")),
+                    child_filename: None,
+                    child_bytes_downloaded: Some(task_session_downloaded),
+                    child_total_bytes: Some(part_len),
+                    child_speed_bps: None,
+                    child_eta_secs: None,
+                })
+                .await;
 
             file.flush().await?;
             Ok::<(), anyhow::Error>(())

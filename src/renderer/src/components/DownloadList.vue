@@ -1651,14 +1651,12 @@ onMounted(async () => {
         const partMatch = ev.child_path?.match(/^part[:-](\d+)$/)
         if (partMatch) {
           const index = Number(partMatch[1])
-          const existing = partProgress.value[ev.id] ?? {}
-          partProgress.value = {
-            ...partProgress.value,
-            [ev.id]: {
-              ...existing,
-              [index]: { bytes: ev.child_bytes ?? 0, total: ev.child_total ?? 0 },
-            },
+          // Muta direto (o ref de objeto é reativo em profundidade) em vez de clonar
+          // o mapa inteiro a cada mensagem — evita lixo/GC no caminho quente.
+          if (!partProgress.value[ev.id]) {
+            partProgress.value[ev.id] = {}
           }
+          partProgress.value[ev.id][index] = { bytes: ev.child_bytes ?? 0, total: ev.child_total ?? 0 }
           if (singleConnectionDownloads.value.has(ev.id)) {
             const next = new Set(singleConnectionDownloads.value)
             next.delete(ev.id)

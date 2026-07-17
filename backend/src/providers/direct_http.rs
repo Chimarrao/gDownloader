@@ -39,13 +39,26 @@ struct PartRange {
     end: u64,
 }
 
-#[derive(Debug, Clone)]
+// Throttle da persistência de resume e do reporte de progresso (pente-fino de CPU):
+// antes o offset de resume era gravado — abrindo uma conexão SQLite NOVA — e uma
+// mensagem de progresso era enviada a CADA 64KB. A alta velocidade com várias partes
+// isso viravam milhares de aberturas de conexão + escritas + mensagens por segundo
+// (o que jogava a CPU a 200%). Agora gravamos/reportamos de forma estrangulada.
+const RESUME_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const RESUME_SAVE_BYTES: u64 = 8 * 1024 * 1024;
+const PROGRESS_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(120);
+
+#[derive(Clone)]
 struct ResumeStore {
     db_path: Option<String>,
     download_key: String,
     url: String,
     etag: Option<String>,
     last_modified: Option<String>,
+    /// Conexão SQLite reutilizada para gravar o offset de resume. Abrir uma conexão
+    /// por gravação era o maior gargalo de CPU; agora abre uma vez e reusa.
+    /// `None` quando não há persistência de resume (sem `db_path`).
+    conn: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
 }
 
 impl DirectHttpProvider {
@@ -213,25 +226,30 @@ impl DirectHttpProvider {
     }
 
     async fn save_resume_offset(store: &ResumeStore, part: &PartRange, bytes_downloaded: u64) {
-        let Some(db_path) = store.db_path.clone() else {
+        let Some(conn) = store.conn.clone() else {
             return;
         };
-        let store = store.clone();
+        let download_key = store.download_key.clone();
+        let url = store.url.clone();
+        let etag = store.etag.clone();
+        let last_modified = store.last_modified.clone();
         let part = part.clone();
+        // Reusa a conexão já aberta (não abre uma nova por gravação). Ainda em
+        // spawn_blocking porque o rusqlite é síncrono, mas agora é barato.
         let _ = tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(db_path)?;
-            conn.busy_timeout(std::time::Duration::from_secs(2))?;
-            crate::db::save_direct_http_part(
-                &conn,
-                &store.download_key,
-                part.index,
-                &store.url,
-                store.etag.as_deref(),
-                store.last_modified.as_deref(),
-                part.start,
-                part.end,
-                bytes_downloaded,
-            )
+            if let Ok(conn) = conn.lock() {
+                let _ = crate::db::save_direct_http_part(
+                    &conn,
+                    &download_key,
+                    part.index,
+                    &url,
+                    etag.as_deref(),
+                    last_modified.as_deref(),
+                    part.start,
+                    part.end,
+                    bytes_downloaded,
+                );
+            }
         })
         .await;
     }
@@ -306,6 +324,12 @@ impl DirectHttpProvider {
             response.content_length().unwrap_or(0)
         };
         let mut file = if resumed {
+            // Trunca o arquivo pro offset gravado antes de continuar (append). Como a
+            // gravação de resume é estrangulada, o arquivo pode ter alguns MB além do
+            // offset registrado; truncar garante que nunca duplicamos bytes ao retomar.
+            if let Ok(existing) = OpenOptions::new().write(true).open(dest_path).await {
+                let _ = existing.set_len(resume_from).await;
+            }
             OpenOptions::new().create(true).append(true).open(dest_path).await?
         } else {
             tokio::fs::File::create(dest_path).await?
@@ -314,15 +338,29 @@ impl DirectHttpProvider {
         let mut stream = response.bytes_stream();
         let mut downloaded = resume_from;
         let mut session_downloaded = 0u64;
+        let mut last_save = Instant::now();
+        let mut saved_bytes = downloaded;
+        let mut last_progress = Instant::now()
+            .checked_sub(PROGRESS_REPORT_INTERVAL)
+            .unwrap_or_else(Instant::now);
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
-            for piece in chunk.chunks(65_536) {
-                file.write_all(piece).await?;
-                let piece_len = piece.len() as u64;
-                downloaded = downloaded.saturating_add(piece_len);
-                session_downloaded = session_downloaded.saturating_add(piece_len);
+            // Escreve o chunk inteiro do reqwest de uma vez (antes: fatiava em 64KB,
+            // gerando um spawn_blocking de escrita por pedaço).
+            file.write_all(&chunk).await?;
+            let chunk_len = chunk.len() as u64;
+            downloaded = downloaded.saturating_add(chunk_len);
+            session_downloaded = session_downloaded.saturating_add(chunk_len);
+
+            if last_save.elapsed() >= RESUME_SAVE_INTERVAL
+                || downloaded.saturating_sub(saved_bytes) >= RESUME_SAVE_BYTES
+            {
                 Self::save_resume_offset(&store, &part, downloaded).await;
+                last_save = Instant::now();
+                saved_bytes = downloaded;
+            }
+            if last_progress.elapsed() >= PROGRESS_REPORT_INTERVAL {
                 let _ = progress_tx
                     .send(ProgressUpdate {
                         bytes_downloaded: downloaded,
@@ -335,10 +373,25 @@ impl DirectHttpProvider {
                         child_eta_secs: None,
                     })
                     .await;
-                apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
+                last_progress = Instant::now();
             }
+            apply_speed_limit(started_at, session_downloaded, &speed_limit_bps).await;
         }
 
+        // Reporte e gravação finais garantem 100% na UI e offset preciso.
+        let _ = progress_tx
+            .send(ProgressUpdate {
+                bytes_downloaded: downloaded,
+                total_bytes: total,
+                child_path: None,
+                child_filename: None,
+                child_bytes_downloaded: None,
+                child_total_bytes: None,
+                child_speed_bps: None,
+                child_eta_secs: None,
+            })
+            .await;
+        Self::save_resume_offset(&store, &part, downloaded).await;
         file.flush().await?;
         if total > 0 && downloaded < total {
             return Err(anyhow!("Download HTTP incompleto: {downloaded}/{total} bytes"));
@@ -442,17 +495,29 @@ impl DirectHttpProvider {
                 let mut stream = response.error_for_status()?.bytes_stream();
                 let mut part_downloaded = offset;
                 let mut session_downloaded = 0u64;
+                let mut last_save = Instant::now();
+                let mut saved_bytes = part_downloaded;
+                let mut last_progress = Instant::now()
+                    .checked_sub(PROGRESS_REPORT_INTERVAL)
+                    .unwrap_or_else(Instant::now);
 
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
-                    for piece in chunk.chunks(65_536) {
-                        file.write_all(piece).await?;
-                        let piece_len = piece.len() as u64;
-                        part_downloaded = part_downloaded.saturating_add(piece_len).min(part_len);
-                        session_downloaded = session_downloaded.saturating_add(piece_len);
-                        let downloaded = total_downloaded.fetch_add(piece_len, Ordering::Relaxed) + piece_len;
+                    // Escreve o chunk inteiro de uma vez (antes: fatiava em 64KB).
+                    file.write_all(&chunk).await?;
+                    let chunk_len = chunk.len() as u64;
+                    part_downloaded = part_downloaded.saturating_add(chunk_len).min(part_len);
+                    session_downloaded = session_downloaded.saturating_add(chunk_len);
+                    let downloaded = total_downloaded.fetch_add(chunk_len, Ordering::Relaxed) + chunk_len;
 
+                    if last_save.elapsed() >= RESUME_SAVE_INTERVAL
+                        || part_downloaded.saturating_sub(saved_bytes) >= RESUME_SAVE_BYTES
+                    {
                         DirectHttpProvider::save_resume_offset(&store, &part, part_downloaded).await;
+                        last_save = Instant::now();
+                        saved_bytes = part_downloaded;
+                    }
+                    if last_progress.elapsed() >= PROGRESS_REPORT_INTERVAL {
                         let _ = progress_tx
                             .send(ProgressUpdate {
                                 bytes_downloaded: downloaded.min(total_bytes),
@@ -465,10 +530,26 @@ impl DirectHttpProvider {
                                 child_eta_secs: None,
                             })
                             .await;
-                        apply_speed_limit_divided(started_at, session_downloaded, &task_limit, parts_len).await;
+                        last_progress = Instant::now();
                     }
+                    apply_speed_limit_divided(started_at, session_downloaded, &task_limit, parts_len).await;
                 }
 
+                // Reporte e gravação finais da parte (barra chega a 100% e offset preciso).
+                let downloaded = total_downloaded.load(Ordering::Relaxed);
+                let _ = progress_tx
+                    .send(ProgressUpdate {
+                        bytes_downloaded: downloaded.min(total_bytes),
+                        total_bytes,
+                        child_path: Some(format!("part:{}", part.index)),
+                        child_filename: None,
+                        child_bytes_downloaded: Some(part_downloaded),
+                        child_total_bytes: Some(part_len),
+                        child_speed_bps: None,
+                        child_eta_secs: None,
+                    })
+                    .await;
+                DirectHttpProvider::save_resume_offset(&store, &part, part_downloaded).await;
                 file.flush().await?;
                 if part_downloaded < part_len {
                     return Err(anyhow!(
@@ -569,12 +650,20 @@ impl Provider for DirectHttpProvider {
             )?;
             let headers = Self::captured_headers(&context.request_headers);
             let metadata = Self::probe(&client, url, &headers).await?;
+            // Abre a conexão de resume UMA vez e reusa (antes: abria por gravação).
+            let resume_conn = context.db_path.as_deref().and_then(|path| {
+                rusqlite::Connection::open(path).ok().map(|conn| {
+                    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                    Arc::new(std::sync::Mutex::new(conn))
+                })
+            });
             let store = ResumeStore {
                 db_path: context.db_path,
                 download_key: Self::download_key(&metadata.url, dest_path),
                 url: metadata.url.clone(),
                 etag: metadata.etag.clone(),
                 last_modified: metadata.last_modified.clone(),
+                conn: resume_conn,
             };
 
             if metadata.accepts_ranges && metadata.size > 0 && parallel_parts > 1 {
