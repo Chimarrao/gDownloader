@@ -185,6 +185,51 @@
           </div>
         </div>
       </div>
+      <div v-if="selectedDownloadIds.size > 0" class="selection-bar">
+        <span class="selection-bar-count">
+          <i class="pi pi-check-square"></i>
+          {{ selectedDownloadIds.size }} selecionado{{ selectedDownloadIds.size > 1 ? 's' : '' }}
+        </span>
+        <button
+          v-if="canBulkResume"
+          class="toolbar-btn"
+          title="Retomar selecionados"
+          @click="runBulkAction('resume')"
+        >
+          <i class="pi pi-play"></i>
+          Retomar
+        </button>
+        <button
+          v-if="canBulkPause"
+          class="toolbar-btn"
+          title="Pausar selecionados"
+          @click="runBulkAction('pause')"
+        >
+          <i class="pi pi-pause"></i>
+          Pausar
+        </button>
+        <button
+          v-if="canBulkRemove"
+          class="toolbar-btn"
+          title="Remover selecionados da lista"
+          @click="runBulkAction('remove')"
+        >
+          <i class="pi pi-trash"></i>
+          Remover
+        </button>
+        <button class="toolbar-btn" title="Selecionar todos" @click="selectAllVisibleDownloads">
+          <i class="pi pi-list"></i>
+          Todos
+        </button>
+        <button
+          class="toolbar-btn selection-bar-clear"
+          title="Limpar seleção (Esc)"
+          @click="clearDownloadSelection"
+        >
+          <i class="pi pi-times"></i>
+          Limpar
+        </button>
+      </div>
       <div class="items-stack">
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <!-- Lista sem TransitionGroup: virtualização + animação FLIP eram incompatíveis
@@ -1164,6 +1209,38 @@ function selectDownload(item: DownloadItem, event?: MouseEvent): void {
   selectedDownloadIds.value = next
 }
 
+// ── Ações em lote sobre a seleção múltipla (barra visível) ──
+const selectedItems = computed(() =>
+  items.value.filter((item) => selectedDownloadIds.value.has(item.id)),
+)
+const canBulkPause = computed(() => selectedItems.value.some((item) => actionsFor(item).canPause))
+const canBulkResume = computed(() => selectedItems.value.some((item) => actionsFor(item).canResume))
+const canBulkRemove = computed(() => selectedItems.value.some((item) => actionsFor(item).canRemove))
+
+async function runBulkAction(action: 'pause' | 'resume' | 'cancel' | 'remove'): Promise<void> {
+  const targets = [...selectedItems.value]
+  for (const item of targets) {
+    const capabilities = actionsFor(item)
+    if (action === 'pause' && capabilities.canPause) await pause(item.id)
+    if (action === 'resume' && capabilities.canResume) await resume(item.id)
+    if (action === 'cancel' && capabilities.canCancel) await cancel(item.id)
+    if (action === 'remove' && capabilities.canRemove) await remove(item.id)
+  }
+  await hydrate()
+}
+
+function clearDownloadSelection(): void {
+  selectedDownloadIds.value = new Set()
+  lastSelectedDownloadId.value = null
+}
+
+function selectAllVisibleDownloads(): void {
+  const next = new Set<string>()
+  for (const item of orderedItems.value) next.add(item.id)
+  selectedDownloadIds.value = next
+  lastSelectedDownloadId.value = orderedItems.value.at(-1)?.id ?? null
+}
+
 function closeContextMenu(): void {
   contextMenu.value = { visible: false, x: 0, y: 0, itemId: null }
   displayMenuOpen.value = false
@@ -1946,6 +2023,11 @@ onUnmounted(() => {
 function onQueuePanelHotkey(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
   if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+  // Esc limpa a seleção múltipla (quando há algo selecionado).
+  if (event.key === 'Escape' && selectedDownloadIds.value.size > 0) {
+    clearDownloadSelection()
+    return
+  }
   if (event.key.toLowerCase() === 'q') {
     queuePanelCollapsed.value = !queuePanelCollapsed.value
   }
@@ -3348,6 +3430,31 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   width: 100%;
   min-width: 0;
   align-self: stretch;
+}
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: var(--accent-soft, rgba(99, 102, 241, 0.1));
+  border: 1px solid var(--accent, rgba(99, 102, 241, 0.35));
+}
+
+.selection-bar-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 13px;
+  margin-right: 4px;
+}
+
+.selection-bar-clear {
+  margin-left: auto;
 }
 
 /* Wrapper do TransitionGroup: display:contents mantém os cards como filhos
