@@ -238,6 +238,7 @@
         <div
           v-for="item in visibleItems"
           :key="item.id"
+          v-memo="rowMemoKey(item)"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id) }]"
           @contextmenu.prevent="openContextMenu(item, $event)"
@@ -2781,6 +2782,39 @@ function reopenCaptchaWindow(): void {
 
 function isExpanded(id: string): boolean {
   return !!expandedFolders.value[id]
+}
+
+// Chave de memoização da linha (v-memo): o Vue só re-renderiza o card quando
+// algum destes valores muda. Inclui todos os campos exibidos + estados de UI
+// (seleção, flash, expandido, detalhes) e `nowTick` para os contadores de tempo.
+// Assim a lista para de re-renderizar linhas inalteradas a cada evento/tick.
+function rowMemoKey(item: DownloadItem): unknown[] {
+  return [
+    item.status,
+    item.percent,
+    item.size,
+    item.speedBps,
+    item.etaSec,
+    item.error,
+    item.pinned,
+    item.title,
+    item.retryAt,
+    item.autoTorOnLimit,
+    item.outputPath,
+    item.thumbnailUrl,
+    item.children?.length ?? 0,
+    selectedDownloadIds.value.has(item.id),
+    flashingIds.value.has(item.id),
+    isExpanded(item.id),
+    singleConnectionDownloads.value.has(item.id),
+    stageLabels.value[item.id],
+    detailTabs.value[item.id],
+    detailEvents.value[item.id]?.length ?? 0,
+    detailLogs.value[item.id]?.length ?? 0,
+    uiDensity.value,
+    visibleColumns.value.join(','),
+    nowTick.value,
+  ]
 }
 
 function openFolder(filePath: string): void {
