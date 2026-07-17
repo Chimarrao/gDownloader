@@ -378,6 +378,23 @@ interface RendererApi {
     }>
     onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void) => () => void
   }
+  ffmpeg: {
+    status: () => Promise<{
+      version: string | null
+      state: 'ready' | 'downloading' | 'absent' | 'error'
+      source: 'system' | 'custom' | 'managed' | 'none'
+      path: string | null
+      error?: string
+    }>
+    download: () => Promise<{
+      version: string | null
+      state: 'ready' | 'downloading' | 'absent' | 'error'
+      source: 'system' | 'custom' | 'managed' | 'none'
+      path: string | null
+      error?: string
+    }>
+    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void) => () => void
+  }
   getBackendPort: () => Promise<number>
   tray: {
     updateStats: (data: { activeCount: number; speed: string }) => void

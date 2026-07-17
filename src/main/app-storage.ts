@@ -44,6 +44,7 @@ export const defaultPublicSettings: PersistedSettings = {
   youtubeSplitChapters: false,
   ytdlpAutoUpdate: true,
   ytdlpBinPath: '',
+  ffmpegBinPath: '',
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',

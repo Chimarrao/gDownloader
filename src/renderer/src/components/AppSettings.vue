@@ -255,6 +255,48 @@
           @change="save"
         />
       </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">ffmpeg</span>
+          <span class="setting-desc" v-if="ffmpegStatus.state === 'ready'">
+            v{{ ffmpegStatus.version }} ·
+            <span v-if="ffmpegStatus.source === 'system'">usando o do sistema</span>
+            <span v-else-if="ffmpegStatus.source === 'custom'">caminho personalizado</span>
+            <span v-else>gerenciado pelo app</span>
+          </span>
+          <span class="setting-desc" v-else-if="ffmpegStatus.state === 'downloading'">
+            <span v-if="ffmpegProgress">Baixando... {{ Math.round((ffmpegProgress.bytesDownloaded / Math.max(ffmpegProgress.totalBytes, 1)) * 100) }}%</span>
+            <span v-else>Baixando ffmpeg...</span>
+          </span>
+          <span class="setting-desc" v-else-if="ffmpegStatus.state === 'error'" style="color: var(--color-error, #e74c3c)">
+            Erro: {{ ffmpegStatus.error ?? 'falha ao obter ffmpeg' }}
+          </span>
+          <span class="setting-desc" v-else>
+            Não encontrado. Necessário para juntar vídeo+áudio do YouTube.
+          </span>
+        </div>
+        <button
+          class="btn-secondary"
+          :disabled="ffmpegStatus.state === 'downloading' || ffmpegStatus.state === 'ready'"
+          @click="downloadFfmpeg"
+        >
+          {{ ffmpegStatus.state === 'downloading' ? 'Baixando...' : 'Baixar ffmpeg' }}
+        </button>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Caminho do ffmpeg (avançado)</span>
+          <span class="setting-desc">Deixe em branco para detectar o do sistema ou usar o gerenciado</span>
+        </div>
+        <input
+          v-model="settings.ffmpegBinPath"
+          class="setting-input setting-input-wide"
+          placeholder="(detectado automaticamente)"
+          @change="onFfmpegPathChange"
+        />
+      </div>
     </div>
 
     <!-- Appearance section -->
@@ -662,6 +704,7 @@ const settings = reactive<AppSettingsSnapshot>({
   youtubeSplitChapters: false,
   ytdlpAutoUpdate: true,
   ytdlpBinPath: '',
+  ffmpegBinPath: '',
   remoteAccess: {
     enabled: false,
     username: 'gdownloader',
@@ -697,6 +740,40 @@ async function checkYtdlpUpdate(): Promise<void> {
     ytdlpCheckingUpdate.value = false
     ytdlpProgress.value = null
   }
+}
+
+interface FfmpegStatus {
+  version: string | null
+  state: 'ready' | 'downloading' | 'absent' | 'error'
+  source: 'system' | 'custom' | 'managed' | 'none'
+  path: string | null
+  error?: string
+}
+
+const ffmpegStatus = ref<FfmpegStatus>({ version: null, state: 'absent', source: 'none', path: null })
+const ffmpegProgress = ref<{ bytesDownloaded: number; totalBytes: number } | null>(null)
+let ffmpegProgressCleanup: (() => void) | null = null
+
+async function loadFfmpegStatus(): Promise<void> {
+  try {
+    ffmpegStatus.value = await window.api.ffmpeg.status()
+  } catch {
+    // ignora
+  }
+}
+
+async function downloadFfmpeg(): Promise<void> {
+  ffmpegStatus.value = { ...ffmpegStatus.value, state: 'downloading' }
+  try {
+    ffmpegStatus.value = await window.api.ffmpeg.download()
+  } finally {
+    ffmpegProgress.value = null
+  }
+}
+
+async function onFfmpegPathChange(): Promise<void> {
+  await save()
+  await loadFfmpegStatus()
 }
 
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
@@ -745,6 +822,11 @@ onMounted(async () => {
     ytdlpProgress.value = e
     ytdlpStatus.value = { ...ytdlpStatus.value, state: 'downloading' }
   })
+  await loadFfmpegStatus()
+  ffmpegProgressCleanup = window.api.ffmpeg.onProgress((e) => {
+    ffmpegProgress.value = e
+    ffmpegStatus.value = { ...ffmpegStatus.value, state: 'downloading' }
+  })
 })
 
 onUnmounted(() => {
@@ -753,6 +835,7 @@ onUnmounted(() => {
     onExternalSettingsUpdated as Parameters<typeof window.removeEventListener>[1]
   )
   ytdlpProgressCleanup?.()
+  ffmpegProgressCleanup?.()
 })
 
 function onExternalSettingsUpdated(event: CustomEvent<AppSettingsSnapshot>): void {

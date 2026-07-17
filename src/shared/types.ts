@@ -213,6 +213,7 @@ export interface PersistedSettings {
   youtubeSplitChapters?: boolean
   ytdlpAutoUpdate?: boolean
   ytdlpBinPath?: string
+  ffmpegBinPath?: string
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

@@ -201,10 +201,18 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     })
   }
 
+  // Reinício forçado (a pedido, ex.: após instalar ffmpeg para reinjetar a env):
+  // encerra o processo atual e sobe outro com o ambiente novo.
+  async function forceRestart(): Promise<number> {
+    stop()
+    return start()
+  }
+
   return {
     getPort,
     markQuitting,
     start,
     stop,
+    forceRestart,
   }
 }

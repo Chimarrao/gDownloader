@@ -1042,6 +1042,33 @@ const api = {
     },
   },
 
+  ffmpeg: {
+    status: (): Promise<{
+      version: string | null
+      state: 'ready' | 'downloading' | 'absent' | 'error'
+      source: 'system' | 'custom' | 'managed' | 'none'
+      path: string | null
+      error?: string
+    }> => ipcRenderer.invoke('ffmpeg:status'),
+
+    download: (): Promise<{
+      version: string | null
+      state: 'ready' | 'downloading' | 'absent' | 'error'
+      source: 'system' | 'custom' | 'managed' | 'none'
+      path: string | null
+      error?: string
+    }> => ipcRenderer.invoke('ffmpeg:download'),
+
+    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { bytesDownloaded: number; totalBytes: number },
+      ): void => cb(payload)
+      ipcRenderer.on('ffmpeg:progress', handler)
+      return () => ipcRenderer.removeListener('ffmpeg:progress', handler)
+    },
+  },
+
   // Compatibilidade com código antigo
   getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
 

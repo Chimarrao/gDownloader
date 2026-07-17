@@ -32,6 +32,7 @@ import { createKatfileService } from './katfile-service'
 import { createRemoteAccessServer, generateRemoteAccessCredentials } from './remote-access-server'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
 import { createYtdlpService } from './ytdlp-service'
+import { createFfmpegService } from './ffmpeg-service'
 
 const legacySettingsPaths = [
   join(process.cwd(), 'settings.json'),
@@ -389,6 +390,7 @@ async function solveCaptchaWithNopecha(params: {
 
 let rustPort: number | null = null
 let ytdlpService: ReturnType<typeof createYtdlpService> | null = null
+let ffmpegService: ReturnType<typeof createFfmpegService> | null = null
 let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
 let lastClipboardText = ''
 let lastClipboardSignature = ''
@@ -400,6 +402,7 @@ const backendRuntime = createBackendRuntime({
   createEnv: (dbPath) => {
     const settings = storage.getPublicSettings()
     const ytdlpBin = ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? '') ?? 'yt-dlp'
+    const ffmpegBin = ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? '') ?? ''
     return {
       ...process.env,
       TERABOX_PROXY_PORT: String(teraboxProxyPort),
@@ -407,6 +410,9 @@ const backendRuntime = createBackendRuntime({
       KATFILE_PROXY_PORT: String(teraboxProxyPort),
       GDOWNLOADER_DB_PATH: dbPath,
       GDOWNLOADER_YTDLP_BIN: ytdlpBin,
+      // Vazio quando nenhum ffmpeg foi resolvido: o backend só passa
+      // --ffmpeg-location ao yt-dlp quando esta env não está vazia.
+      GDOWNLOADER_FFMPEG_BIN: ffmpegBin,
     }
   },
   onStdErr: (message) => {
@@ -1333,6 +1339,7 @@ async function ensureTorRunningForIsolation(): Promise<{ running: boolean; port:
 
 app.whenReady().then(async () => {
   ytdlpService = createYtdlpService(app.getPath('userData'))
+  ffmpegService = createFfmpegService(app.getPath('userData'))
   app.setName('gDownloader')
   electronApp.setAppUserModelId('com.gdownloader')
 
@@ -1725,6 +1732,28 @@ app.whenReady().then(async () => {
     return { version: null, updateAvailable: false, state: 'error' as const, error: 'Serviço não inicializado' }
   })
 
+  // IPC: ffmpeg status / detecção / download gerenciado
+  ipcMain.handle('ffmpeg:status', async () => {
+    if (ffmpegService) {
+      const settings = storage.getPublicSettings()
+      await ffmpegService.ensureReady(settings.ffmpegBinPath ?? '').catch(() => null)
+      return ffmpegService.getStatus()
+    }
+    return { version: null, state: 'error' as const, source: 'none' as const, path: null, error: 'Serviço não inicializado' }
+  })
+
+  ipcMain.handle('ffmpeg:download', async () => {
+    if (!ffmpegService) {
+      return { version: null, state: 'error' as const, source: 'none' as const, path: null, error: 'Serviço não inicializado' }
+    }
+    const result = await ffmpegService.download()
+    // Reinicia o backend para reinjetar GDOWNLOADER_FFMPEG_BIN com o novo caminho.
+    if (result.state === 'ready') {
+      await backendRuntime.forceRestart().catch((err) => logMain('ffmpeg', 'Falha ao reiniciar backend após instalar ffmpeg', err))
+    }
+    return result
+  })
+
   // IPC: tray stats update
   ipcMain.on(
     'tray:update-stats',
@@ -1803,6 +1832,18 @@ app.whenReady().then(async () => {
         .catch((err) => {
           logMain('ytdlp', 'Falha ao garantir yt-dlp pronto', err)
         })
+    }
+    // Detecta o ffmpeg (sistema/gerenciado) em background — não baixa sozinho.
+    if (ffmpegService) {
+      const settingsForFfmpeg = storage.getPublicSettings()
+      ffmpegService.onProgress((e) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('ffmpeg:progress', e)
+        }
+      })
+      void ffmpegService.ensureReady(settingsForFfmpeg.ffmpegBinPath ?? '').catch((err) => {
+        logMain('ffmpeg', 'Falha ao detectar ffmpeg', err)
+      })
     }
     await loadPublicSettings()
     await loadSecureSettings()
