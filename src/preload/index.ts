@@ -361,6 +361,29 @@ const api = {
       }
     },
 
+    // Verifica quais URLs já estão na fila ou no histórico de concluídos.
+    // Retorna um mapa url -> { location: 'queue' | 'history', status, filename }.
+    checkKnownUrls: async (
+      urls: string[],
+    ): Promise<Record<string, { location: string; status: string; filename: string }>> => {
+      try {
+        if (!urls.length) return {}
+        const resp = await fetchBackend('/downloads/known-urls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls }),
+        })
+        if (!resp.ok) return {}
+        const body = await resp.json().catch(() => ({}))
+        return (body?.known ?? {}) as Record<
+          string,
+          { location: string; status: string; filename: string }
+        >
+      } catch {
+        return {}
+      }
+    },
+
     // Cancela um download pelo ID
     cancel: async (id: string) => {
       await fetchBackend(`/downloads/${id}`, { method: 'DELETE' })

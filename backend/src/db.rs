@@ -643,6 +643,31 @@ pub fn search_history(conn: &Connection, filters: &HistorySearch) -> Result<Vec<
     Ok(rows)
 }
 
+/// Dado um conjunto de URLs, retorna as que já existem no histórico de concluídos,
+/// mapeando url -> título. Usado pelo capturador para marcar "já baixado".
+pub fn find_history_titles_by_urls(
+    conn: &Connection,
+    urls: &[String],
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut found = std::collections::HashMap::new();
+    if urls.is_empty() {
+        return Ok(found);
+    }
+    let placeholders = urls.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT url, title FROM download_history WHERE url IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(urls.iter()), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (url, title) = row?;
+        found.insert(url, title);
+    }
+    Ok(found)
+}
+
 pub fn list_history_hosts(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT host

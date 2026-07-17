@@ -183,6 +183,9 @@ interface RendererApi {
     duplicates: () => Promise<DuplicateGroup[]>
     events: (id: string) => Promise<DownloadEvent[]>
     list: () => Promise<DownloadItem[]>
+    checkKnownUrls: (
+      urls: string[],
+    ) => Promise<Record<string, { location: string; status: string; filename: string }>>
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => () => void
   }
   loadHistory: (filters?: HistorySearchFilters) => Promise<DownloadHistoryItem[]>

@@ -30,6 +30,9 @@ export interface CapturedRow {
   customName?: string
   sourceUrls: string[]
   sourceLabels: string[]
+  // Preenchido quando a URL já está na fila ou no histórico de concluídos.
+  // 'queue' = já adicionado à fila; 'history' = já baixado antes.
+  alreadyKnown?: 'queue' | 'history'
   destDir?: string
   expectedHash?: ExpectedHash
   youtubeOutputFormat?: string

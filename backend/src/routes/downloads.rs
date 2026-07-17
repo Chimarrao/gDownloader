@@ -605,6 +605,81 @@ pub async fn list_downloads(State(state): State<AppState>) -> Json<Vec<Download>
     Json(list)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct KnownUrlsRequest {
+    pub urls: Vec<String>,
+}
+
+/// Normaliza a URL para comparar dedup do capturador: tira espaços e o fragmento
+/// (`#...`) — que alguns providers usam só para embutir hash, não muda o arquivo.
+fn normalize_capture_url(url: &str) -> String {
+    url.trim().split('#').next().unwrap_or("").trim().to_string()
+}
+
+/// Dado um conjunto de URLs capturadas, informa quais já estão NA FILA (qualquer
+/// status) ou no HISTÓRICO de concluídos, para o capturador marcar "já baixado" e
+/// impedir re-adição. Compara por URL normalizada (sem fragmento).
+pub async fn check_known_urls(
+    State(state): State<AppState>,
+    Json(req): Json<KnownUrlsRequest>,
+) -> Json<serde_json::Value> {
+    // Mapa: url normalizada -> (location, status, filename)
+    let mut result: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    // 1) Fila em memória (qualquer status) — tem prioridade sobre o histórico.
+    {
+        let map = state.downloads.lock().await;
+        for download in map.values() {
+            let norm = normalize_capture_url(&download.url);
+            if norm.is_empty() {
+                continue;
+            }
+            result.entry(norm).or_insert_with(|| {
+                serde_json::json!({
+                    "location": "queue",
+                    "status": format!("{:?}", download.status),
+                    "filename": download.filename,
+                })
+            });
+        }
+    }
+
+    // 2) Histórico de concluídos — só para as URLs pedidas que ainda não casaram.
+    let pending: Vec<String> = req
+        .urls
+        .iter()
+        .map(|u| normalize_capture_url(u))
+        .filter(|u| !u.is_empty() && !result.contains_key(u))
+        .collect();
+    if !pending.is_empty() {
+        if let Ok(db) = state.db.lock() {
+            if let Ok(found) = crate::db::find_history_titles_by_urls(&db, &pending) {
+                for (url, title) in found {
+                    result.insert(
+                        normalize_capture_url(&url),
+                        serde_json::json!({
+                            "location": "history",
+                            "status": "Complete",
+                            "filename": title,
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
+    // Responde só para as URLs pedidas, preservando a URL original como chave.
+    let mut known = serde_json::Map::new();
+    for original in &req.urls {
+        let norm = normalize_capture_url(original);
+        if let Some(entry) = result.get(&norm) {
+            known.insert(original.clone(), entry.clone());
+        }
+    }
+    Json(serde_json::json!({ "known": known }))
+}
+
 pub async fn list_duplicate_downloads(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<DuplicateGroup>>, (StatusCode, Json<ApiError>)> {

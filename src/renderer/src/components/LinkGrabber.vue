@@ -845,6 +845,28 @@ async function detectProviders(): Promise<void> {
 
   if (token === detectToken.value) {
     rows.value = groupDuplicateRows(rows.value)
+    void refreshKnownStatus(token)
+  }
+}
+
+/// Marca as linhas cuja URL já está na fila ou no histórico de concluídos e as
+/// desmarca por padrão, para o usuário não re-adicionar sem querer (badge "já
+/// baixado"/"na fila"). O backend também deduplica na adição como rede de segurança.
+async function refreshKnownStatus(token?: number): Promise<void> {
+  const activeToken = token ?? detectToken.value
+  const allUrls = Array.from(new Set(rows.value.flatMap((row) => row.sourceUrls)))
+  if (allUrls.length === 0) return
+  const known = await window.api.downloads.checkKnownUrls(allUrls)
+  if (activeToken !== detectToken.value) return
+  for (const row of rows.value) {
+    const hit = row.sourceUrls.map((url) => known[url]).find(Boolean)
+    if (hit) {
+      row.alreadyKnown = hit.location === 'history' ? 'history' : 'queue'
+      setRowSelection(row, false)
+      row.selected = false
+    } else {
+      row.alreadyKnown = undefined
+    }
   }
 }
 

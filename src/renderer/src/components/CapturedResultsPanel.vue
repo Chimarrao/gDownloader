@@ -201,6 +201,18 @@
               >
                 {{ rowBadgeLabel(row) }}
               </span>
+              <span
+                v-if="row.alreadyKnown"
+                class="row-badge is-known"
+                :title="row.alreadyKnown === 'history'
+                  ? t('linkGrabberAlreadyDownloadedHint')
+                  : t('linkGrabberAlreadyQueuedHint')"
+              >
+                <i class="pi pi-check-circle"></i>
+                {{ row.alreadyKnown === 'history'
+                  ? t('linkGrabberAlreadyDownloaded')
+                  : t('linkGrabberAlreadyQueued') }}
+              </span>
             </div>
             <div class="row-sub">
               <span>{{ row.module?.name ?? t('linkGrabberUnsupported') }}</span>
@@ -1131,6 +1143,16 @@ function suffixFps(source: string, label: string): string {
 .row-badge.is-error {
   background: rgba(239, 83, 80, 0.12);
   color: #d64541;
+}
+
+.row-badge.is-known {
+  gap: 4px;
+  background: rgba(255, 152, 0, 0.14);
+  color: #c97a00;
+}
+
+.row-badge.is-known .pi {
+  font-size: 11px;
 }
 
 .row-sub {
