@@ -257,6 +257,7 @@
       @navigate="activeTab = $event"
       @complete="completeOnboarding"
     />
+    <Toast position="bottom-right" />
   </div>
 </template>
 
@@ -269,6 +270,8 @@ import AppSettings from './components/AppSettings.vue'
 import AccountSettings from './components/AccountSettings.vue'
 import LogsView from './components/LogsView.vue'
 import OnboardingTour from './components/OnboardingTour.vue'
+import Toast from 'primevue/toast'
+import { useToast } from 'primevue/usetoast'
 import { setLocale, useI18n } from './i18n'
 import { applyUiPreferences, useTheme, type ThemeId } from './themes'
 import { pushRingBuffer } from './utils/ring-buffer'
@@ -331,6 +334,8 @@ let speedTicker: ReturnType<typeof setInterval> | null = null
 let torPulseTimer: ReturnType<typeof setInterval> | null = null
 let diskTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
+let disposeToastComplete: (() => void) | null = null
+let disposeToastStatus: (() => void) | null = null
 let appMounted = true
 
 const torRouteNodes = computed(() => torState.value.route)
@@ -401,10 +406,45 @@ onUnmounted(() => {
   if (torPulseTimer) clearInterval(torPulseTimer)
   if (diskTicker) clearInterval(diskTicker)
   disposeClipboardDetected?.()
+  disposeToastComplete?.()
+  disposeToastStatus?.()
   window.removeEventListener('stats-tick', statsTickHandler)
   disposeTheme()
 })
 const { t } = useI18n()
+const toast = useToast()
+
+function fileNameFromPath(path?: string): string {
+  if (!path) return ''
+  return path.split(/[\\/]/).pop() ?? ''
+}
+
+// Toasts in-app para eventos relevantes (concluído, erro, captcha). Os demais
+// status (baixando, pausado, etc.) não geram toast para não poluir.
+function registerEventToasts(): void {
+  disposeToastComplete = window.api.downloads.on('download:complete', (data: unknown) => {
+    const ev = data as { path?: string }
+    toast.add({
+      severity: 'success',
+      summary: t('toastDownloadCompleted'),
+      detail: fileNameFromPath(ev.path),
+      life: 4000,
+    })
+  })
+  disposeToastStatus = window.api.downloads.on('download:status', (data: unknown) => {
+    const ev = data as { status?: string; error?: string }
+    if (ev.status === 'waiting_captcha') {
+      toast.add({ severity: 'warn', summary: t('toastCaptchaNeeded'), life: 6000 })
+    } else if (ev.status === 'error' || ev.status === 'corrupted' || ev.status === 'disk_full') {
+      toast.add({
+        severity: 'error',
+        summary: t('toastDownloadFailed'),
+        detail: ev.error ?? undefined,
+        life: 6000,
+      })
+    }
+  })
+}
 const { initTheme, disposeTheme, setTheme, themeOptions, effectiveTheme } = useTheme()
 
 onMounted(async () => {
@@ -437,6 +477,7 @@ onMounted(async () => {
     }
   })
   window.addEventListener('stats-tick', statsTickHandler)
+  registerEventToasts()
 
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
