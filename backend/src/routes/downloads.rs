@@ -3280,9 +3280,21 @@ pub async fn recover_downloads_from_db(state: AppState) {
         }
 
         let download_id = download.id.clone();
+        // Downloads que terminaram em falha não vão retomar: seus temporários
+        // (.part/.parts/.merging) são órfãos e podem ser limpos com segurança após
+        // um crash, reclamando espaço em disco. Os resumíveis (Pending/RateLimited/
+        // WaitingCaptcha) preservam os temporários para continuar de onde pararam.
+        let cleanup_temps = matches!(
+            download.status,
+            DownloadStatus::Error | DownloadStatus::Corrupted | DownloadStatus::Cancelled
+        );
+        let dest_path = download.dest_path.clone();
         {
             let mut map = state.downloads.lock().await;
             map.insert(download_id.clone(), download);
+        }
+        if cleanup_temps {
+            cleanup_temp_artifacts(&dest_path).await;
         }
         persist_download_snapshot(&state, &download_id).await;
     }

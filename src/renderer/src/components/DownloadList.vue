@@ -2416,6 +2416,15 @@ async function removeWithFiles(id: string): Promise<void> {
 
 async function clearFinished(): Promise<void> {
   await window.api.downloads.clearFinished().catch(() => null)
+  // Remoção otimista dos concluídos: somem na hora e não "piscam de volta" caso um
+  // hydrate periódico já em voo devolva a lista antiga por um instante. O hydrate
+  // seguinte reconcilia o restante (falhas sem progresso retomável).
+  for (let i = items.value.length - 1; i >= 0; i--) {
+    if (items.value[i].status === DownloadStatusEnum.Complete) {
+      items.value.splice(i, 1)
+    }
+  }
+  rebuildItemIndex()
   await hydrate()
 }
 
