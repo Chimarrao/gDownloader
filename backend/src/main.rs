@@ -1,8 +1,21 @@
 use gdownloader_backend::{create_cnl_router, create_router_with_state, create_state};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Runtime tokio multi-thread explícito para poder LIMITAR o pool de threads
+    // bloqueantes (spawn_blocking). Nosso uso de spawn_blocking (verificação de hash
+    // e gravação de resume) já é serializado pelo semáforo de finalização e pelo
+    // throttle de resume, então 32 é folgado e evita o pool crescer sem limite sob
+    // rajadas. Worker threads assíncronas ficam no padrão (nº de núcleos), adequado
+    // para carga majoritariamente de I/O de rede.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(32)
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     // Primeiro argumento = caminho do banco SQLite (passado pelo Electron)
     let args: Vec<String> = std::env::args().collect();
     let db_path = args.get(1).cloned().unwrap_or_else(|| {
