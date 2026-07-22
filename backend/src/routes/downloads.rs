@@ -1123,21 +1123,24 @@ pub async fn resume_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    restart_download_internal(state, id, false).await
+    // Retomar preserva o progresso parcial (não zera nem apaga o arquivo).
+    restart_download_internal(state, id, false, false).await
 }
 
 pub async fn retry_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    restart_download_internal(state, id, false).await
+    // Retentar preserva o progresso parcial (retoma) e não apaga o arquivo.
+    restart_download_internal(state, id, false, false).await
 }
 
 pub async fn restart_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    restart_download_internal(state, id, true).await
+    // Reiniciar zera o progresso e apaga o arquivo parcial.
+    restart_download_internal(state, id, true, true).await
 }
 
 pub async fn force_download(
@@ -2108,9 +2111,15 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 // Flag por-download: "usar Tor ao atingir o limite". Só entra em
                 // cena DEPOIS de esgotar as tentativas normais (attempt >= max_retries):
                 // primeiro tenta o máximo pela rede normal, só então troca pro Tor.
-                let download_auto_tor = {
+                let (download_auto_tor, max_retries) = {
                     let map = state.downloads.lock().await;
-                    map.get(&id).map(|d| d.auto_tor_on_limit).unwrap_or(false)
+                    match map.get(&id) {
+                        // Relê `max_retries` do registro a cada decisão para que mudar
+                        // o limite de tentativas nas configurações valha AO VIVO,
+                        // inclusive para downloads que já estavam rodando.
+                        Some(d) => (d.auto_tor_on_limit, d.max_retries),
+                        None => (false, max_retries),
+                    }
                 };
                 let isolated_tor_port = *state.isolated_tor_port.lock().await;
                 let normal_retries_exhausted = attempt >= max_retries;
@@ -2953,6 +2962,7 @@ async fn restart_download_internal(
     state: AppState,
     id: String,
     delete_existing: bool,
+    reset_progress: bool,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     let dest_path = {
         let mut map = state.downloads.lock().await;
@@ -2971,20 +2981,36 @@ async fn restart_download_internal(
         }
 
         download.status = DownloadStatus::Pending;
-        download.bytes_downloaded = 0;
         download.speed_bps = 0;
         download.eta_secs = 0;
         download.retry_at = None;
         download.error = None;
-        download.started_at = None;
+        // Retomar/retentar renova o orçamento de tentativas do usuário.
+        download.retry_count = 0;
         download.completed_at = None;
-        download.last_progress_at = None;
-        if let Some(children) = download.children.as_mut() {
-            for child in children.iter_mut() {
-                child.bytes_downloaded = Some(0);
-                child.speed_bps = Some(0);
-                child.eta_secs = Some(0);
-                child.status = Some(DownloadStatus::Pending);
+        if reset_progress {
+            // "Reiniciar do zero": descarta o progresso parcial.
+            download.bytes_downloaded = 0;
+            download.started_at = None;
+            download.last_progress_at = None;
+            if let Some(children) = download.children.as_mut() {
+                for child in children.iter_mut() {
+                    child.bytes_downloaded = Some(0);
+                    child.speed_bps = Some(0);
+                    child.eta_secs = Some(0);
+                    child.status = Some(DownloadStatus::Pending);
+                }
+            }
+        } else {
+            // "Retentar": PRESERVA os bytes já baixados (retoma do ponto onde parou).
+            if let Some(children) = download.children.as_mut() {
+                for child in children.iter_mut() {
+                    child.speed_bps = Some(0);
+                    child.eta_secs = Some(0);
+                    if child.status == Some(DownloadStatus::Downloading) {
+                        child.status = Some(DownloadStatus::Pending);
+                    }
+                }
             }
         }
         download.dest_path.clone()
@@ -3347,26 +3373,16 @@ fn select_downloads_to_start(
     selected
 }
 
+/// Quantos slots de concorrência um download ocupa. Cada download ATIVO ocupa
+/// exatamente UM slot — inclusive pastas, que baixam seus arquivos sequencialmente
+/// dentro de uma única task. Antes as pastas contavam como vários "file units", o
+/// que furava a conta do limite (o limite deixava de valer ao adicionar pastas).
 fn active_file_units(download: &Download) -> usize {
-    if !matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
-        return 0;
+    if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
+        1
+    } else {
+        0
     }
-
-    if download.is_folder {
-        let child_active = download
-            .children
-            .as_ref()
-            .map(|children| {
-                children
-                    .iter()
-                    .filter(|child| child.status == Some(DownloadStatus::Downloading))
-                    .count()
-            })
-            .unwrap_or(0);
-        return child_active.max(1);
-    }
-
-    1
 }
 
 /// Retorna Some((type, sitekey, pageurl)) se o erro é um captcha.

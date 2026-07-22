@@ -293,7 +293,7 @@ const api = {
           url,
           dest_dir: destDir,
           filename: filename?.trim() || undefined,
-          max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0) - 1),
+          max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0)),
           speed_limit_kib: settings?.speedLimitKib ?? 0,
           parallel_parts: _moduleId === 'youtube' ? 1 : settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
