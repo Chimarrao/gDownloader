@@ -92,14 +92,37 @@
           >
             Limpar filtros
           </button>
-          <button
-            class="toolbar-btn sort-cycle-btn"
-            :title="`Ordenar por ${currentSortLabel}`"
-            @click="cycleSortMode"
-          >
-            <i class="pi pi-sort-alt"></i>
-            {{ currentSortLabel }}
-          </button>
+          <div class="sort-menu-wrap">
+            <button
+              class="toolbar-btn sort-cycle-btn"
+              :class="{ active: sortMenuOpen }"
+              :title="`Ordenar por ${currentSortLabel}`"
+              aria-haspopup="listbox"
+              :aria-expanded="sortMenuOpen"
+              @click.stop="sortMenuOpen = !sortMenuOpen"
+            >
+              <i class="pi pi-sort-alt"></i>
+              {{ currentSortLabel }}
+              <i class="pi pi-angle-down sort-caret"></i>
+            </button>
+            <div v-if="sortMenuOpen" class="sort-menu" role="listbox" @click.stop>
+              <button
+                v-for="option in sortOptions"
+                :key="option.value"
+                class="sort-menu-item"
+                :class="{ active: sortMode === option.value }"
+                role="option"
+                :aria-selected="sortMode === option.value"
+                @click="pickSortMode(option.value)"
+              >
+                <i
+                  class="pi"
+                  :class="sortMode === option.value ? 'pi-check' : 'pi-circle'"
+                ></i>
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
           <button
             v-if="hasActiveDownloads"
             class="toolbar-btn"
@@ -1020,6 +1043,7 @@ const captchaWindowBusy = ref(false)
 const captchaModalRef = ref<HTMLElement | null>(null)
 const captchaPrimaryButtonRef = ref<HTMLElement | null>(null)
 const sortMode = ref<DownloadSortMode>('newest')
+const sortMenuOpen = ref(false)
 const itemsContainerRef = ref<HTMLElement | null>(null)
 const listScrollTop = ref(0)
 const unsubs: Array<() => void> = []
@@ -1266,6 +1290,7 @@ function selectAllVisibleDownloads(): void {
 function closeContextMenu(): void {
   contextMenu.value = { visible: false, x: 0, y: 0, itemId: null }
   displayMenuOpen.value = false
+  sortMenuOpen.value = false
 }
 
 function openContextMenu(item: DownloadItem, event: MouseEvent): void {
@@ -2176,10 +2201,10 @@ function scheduleHydrate(delayMs = 700): void {
   }, delayMs)
 }
 
-function cycleSortMode(): void {
-  const index = sortOptions.findIndex((option) => option.value === sortMode.value)
-  const next = sortOptions[(index + 1) % sortOptions.length]
-  sortMode.value = next?.value ?? 'newest'
+// Dropdown de ordenação: escolha direta do campo/ordem (substitui o "cycle").
+function pickSortMode(mode: DownloadSortMode): void {
+  sortMode.value = mode
+  sortMenuOpen.value = false
 }
 
 async function assignPackage(item: DownloadItem, packageId: string): Promise<void> {
@@ -3068,6 +3093,60 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 /* ── Popover de exibição (densidade + campos + animação) ──────── */
 .display-menu-wrap {
   position: relative;
+}
+
+/* Dropdown de ordenação (escolha direta do campo/ordem) */
+.sort-menu-wrap {
+  position: relative;
+}
+
+.sort-caret {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 2px;
+}
+
+.sort-menu {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+}
+
+.sort-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.sort-menu-item:hover {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.sort-menu-item.active {
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+.sort-menu-item .pi-circle {
+  opacity: 0.25;
+  font-size: 11px;
 }
 
 .toolbar-btn.active {
