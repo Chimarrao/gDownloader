@@ -294,7 +294,10 @@ const api = {
           dest_dir: destDir,
           filename: filename?.trim() || undefined,
           max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0)),
-          speed_limit_kib: settings?.speedLimitKib ?? 0,
+          // Limite de velocidade agora é TOTAL compartilhado (gerido pelo backend via
+          // global_speed_limit_bps). Não assamos o valor global em cada download; este
+          // campo fica para um eventual limite individual (0 = sem limite próprio).
+          speed_limit_kib: 0,
           parallel_parts: _moduleId === 'youtube' ? 1 : settings?.parallelPartsPerDownload ?? 1,
           selected_children: selectedChildren,
           expected_hash: expectedHash,

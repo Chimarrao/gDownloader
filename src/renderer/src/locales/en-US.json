@@ -78,7 +78,7 @@
   "parallelParts": "Parts per download",
   "parallelPartsDesc": "Split single files into parallel parts when the server supports Range.",
   "speedLimitSetting": "Speed limit",
-  "speedLimitDesc": "Approximate global limit in KB/s. Zero disables the limit.",
+  "speedLimitDesc": "TOTAL bandwidth limit in KB/s, shared across active downloads. Zero disables the limit.",
   "language": "Language",
   "languageDesc": "Primary interface language",
   "appearance": "Appearance",

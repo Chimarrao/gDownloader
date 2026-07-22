@@ -36,6 +36,10 @@ pub struct AppState {
     /// Pausa GLOBAL ("Pausar todos"): quando `true`, o scheduler não inicia nada e
     /// todos os ativos foram abortados de uma vez. Instantâneo e atômico.
     pub paused_all: Arc<std::sync::atomic::AtomicBool>,
+    /// Limite TOTAL de banda (bytes/s, 0 = ilimitado). É COMPARTILHADO: dividido
+    /// entre os downloads ativos por `rebalance_speed_limits`, que grava a cota de
+    /// cada um no atômico correspondente de `speed_limits`.
+    pub global_speed_limit_bps: Arc<std::sync::atomic::AtomicU64>,
     pub max_concurrent_downloads: Arc<Mutex<usize>>,
     pub db: Arc<StdMutex<rusqlite::Connection>>,
     pub db_path: Option<String>,
@@ -70,6 +74,7 @@ impl AppState {
             speed_limits: Arc::new(Mutex::new(HashMap::new())),
             running_downloads: Arc::new(Mutex::new(std::collections::HashSet::new())),
             paused_all: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            global_speed_limit_bps: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             max_concurrent_downloads: Arc::new(Mutex::new(max_concurrent_downloads.max(1))),
             db: Arc::new(StdMutex::new(db)),
             db_path,

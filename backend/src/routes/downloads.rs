@@ -1250,14 +1250,9 @@ pub async fn update_download_speed_limit(
         ));
     }
 
-    // Aplica ao vivo no download em execução (se houver): o loop de streaming lê
-    // este atômico a cada iteração, então o novo limite vale imediatamente.
-    if let Some(limit) = state.speed_limits.lock().await.get(&id) {
-        limit.store(
-            req.speed_limit_kib.saturating_mul(1024),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
+    // Aplica ao vivo: rebalance considera o novo limite individual como um teto
+    // sobre a cota da banda total compartilhada (o menor dos dois vale).
+    rebalance_speed_limits(&state).await;
 
     persist_download_snapshot(&state, &id).await;
     record_download_event(&state, &id, "speed_limit", &format!("Limite individual alterado para {} KiB/s", req.speed_limit_kib));
@@ -1417,6 +1412,8 @@ async fn run_download(state: AppState, id: String, url: String, dest_path: Strin
     }
     run_download_inner(state.clone(), id.clone(), url, dest_path).await;
     state.running_downloads.lock().await.remove(&id);
+    // Saiu um ativo: redistribui a banda total entre os que continuam baixando.
+    rebalance_speed_limits(&state).await;
 }
 
 // Esta função roda em uma task separada do tokio
@@ -1455,6 +1452,8 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
         .lock()
         .await
         .insert(id.clone(), speed_limit.clone());
+    // Entrou um novo ativo: redistribui a banda total compartilhada entre todos.
+    rebalance_speed_limits(&state).await;
 
     persist_download_snapshot(&state, &id).await;
 
@@ -2851,6 +2850,40 @@ pub async fn enforce_active_limit(state: &AppState) {
         excess.len(),
         limit
     );
+}
+
+/// Redistribui o limite TOTAL de banda entre os downloads ativos (banda
+/// COMPARTILHADA): cada ativo recebe `total / nº de ativos`, respeitando um limite
+/// individual menor se o usuário tiver definido um. Com total = 0 (ilimitado), vale
+/// apenas o limite individual de cada um. Deve ser chamada sempre que o conjunto de
+/// ativos muda (início/fim) ou a configuração muda.
+pub async fn rebalance_speed_limits(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    let global = state.global_speed_limit_bps.load(Ordering::Relaxed);
+
+    let active: Vec<(String, u64)> = {
+        let map = state.downloads.lock().await;
+        map.values()
+            .filter(|d| d.status == DownloadStatus::Downloading)
+            .map(|d| (d.id.clone(), d.speed_limit_kib.saturating_mul(1024)))
+            .collect()
+    };
+    let count = (active.len() as u64).max(1);
+    // Cota por download; nunca menor que 64KB/s para não travar segundos a fio.
+    let share = if global == 0 { 0 } else { (global / count).max(65_536) };
+
+    let limits = state.speed_limits.lock().await;
+    for (id, individual) in &active {
+        let effective = match (global, *individual) {
+            (0, 0) => 0,               // ambos ilimitados
+            (0, ind) => ind,           // só o limite individual
+            (_, 0) => share,           // só a cota global compartilhada
+            (_, ind) => share.min(ind), // o menor entre a cota global e o individual
+        };
+        if let Some(atomic) = limits.get(id) {
+            atomic.store(effective, Ordering::Relaxed);
+        }
+    }
 }
 
 pub async fn schedule_pending_downloads(state: AppState) {

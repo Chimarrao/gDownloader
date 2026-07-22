@@ -22,14 +22,24 @@ pub use crate::providers::detect_provider;
 
 pub fn create_state(db_path: &str) -> anyhow::Result<ws::AppState> {
     let db = db::init(db_path)?;
-    let max_concurrent_downloads = db::load_public_settings(&db)
-        .map(|settings| settings.max_concurrent_downloads.max(1))
+    let settings = db::load_public_settings(&db).ok();
+    let max_concurrent_downloads = settings
+        .as_ref()
+        .map(|s| s.max_concurrent_downloads.max(1))
         .unwrap_or(3);
-    Ok(ws::AppState::new_with_max_and_db_path(
+    let global_speed_limit_bps = settings
+        .as_ref()
+        .map(|s| s.speed_limit_kib.saturating_mul(1024))
+        .unwrap_or(0);
+    let state = ws::AppState::new_with_max_and_db_path(
         db,
         max_concurrent_downloads,
         Some(db_path.to_string()),
-    ))
+    );
+    state
+        .global_speed_limit_bps
+        .store(global_speed_limit_bps, std::sync::atomic::Ordering::Relaxed);
+    Ok(state)
 }
 
 // Monta e retorna o router do Axum com todas as rotas configuradas

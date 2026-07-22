@@ -6,7 +6,7 @@ use crate::{
     ws::AppState,
 };
 
-use super::downloads::{enforce_active_limit, schedule_pending_downloads};
+use super::downloads::{enforce_active_limit, rebalance_speed_limits, schedule_pending_downloads};
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadConfigRequest {
@@ -165,8 +165,25 @@ pub async fn update_public_settings(
     );
 
     *state.max_concurrent_downloads.lock().await = req.max_concurrent_downloads.max(1);
-    // Reduziu o limite ao vivo? Devolve os excedentes à fila antes de reescalonar.
+
+    // Aplica AO VIVO aos downloads já existentes (rodando ou na fila):
+    // 1) limite TOTAL de banda compartilhada;
+    state.global_speed_limit_bps.store(
+        req.speed_limit_kib.saturating_mul(1024),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    // 2) número de tentativas (o loop de retry relê `max_retries` do registro).
+    {
+        let mut map = state.downloads.lock().await;
+        for download in map.values_mut() {
+            download.max_retries = req.max_retries_per_download;
+        }
+    }
+
+    // Reduziu o limite de simultâneos ao vivo? Devolve os excedentes à fila.
     enforce_active_limit(&state).await;
+    // Redistribui a banda entre os ativos com o novo total.
+    rebalance_speed_limits(&state).await;
     schedule_pending_downloads(state).await;
 
     Ok(StatusCode::NO_CONTENT)
