@@ -2886,6 +2886,9 @@ function getProgressColor(item: DownloadItem): string {
   if (item.status === 'verifying') return 'linear-gradient(90deg, #38bdf8, #60a5fa)'
   if (item.status === 'complete') return 'linear-gradient(90deg, #22c55e, #4ade80)'
   if (item.status === 'cancelled') return '#666'
+  if (item.status === 'paused') return 'linear-gradient(90deg, #94a3b8, #cbd5e1)'
+  if (item.status === 'rate_limited') return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
+  if (item.status === 'waiting_captcha') return 'linear-gradient(90deg, #a855f7, #c084fc)'
   if (isWaitingRetryNow(item)) return 'linear-gradient(90deg, #f59e0b, #fbbf24)'
   // Use provider color for active downloads
   const color = modulesById.value[item.moduleId]?.color ?? getProviderColor(item.moduleId)
@@ -4012,6 +4015,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: color-mix(in srgb, var(--surface-section) 55%, transparent);
   border-radius: 3px;
   overflow: hidden;
+  /* Contorno sutil deixa claro que cada segmento é uma conexão/parte distinta. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-color) 40%, transparent);
 }
 
 .row-rich-indicators {
@@ -4183,6 +4188,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-height: 24px;
   font-size: 11px;
   color: var(--text-muted);
+  /* Números com largura fixa: velocidade/ETA/% param de "tremer" ao atualizar. */
+  font-variant-numeric: tabular-nums;
 }
 
 .meta-percent {
