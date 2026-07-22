@@ -295,6 +295,7 @@
                 <button
                   class="action-btn"
                   title="Mais ações"
+                  aria-label="Mais ações"
                   @click.stop="openContextMenu(item, $event)"
                 >
                   <i class="pi pi-ellipsis-v"></i>
