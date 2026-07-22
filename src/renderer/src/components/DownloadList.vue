@@ -244,6 +244,15 @@
           @contextmenu.prevent="openContextMenu(item, $event)"
           @click="toggleDetailsFromCard(item, $event)"
         >
+          <!-- Checkbox de seleção (não abre os detalhes ao clicar) -->
+          <label class="row-select" @click.stop :title="'Selecionar'">
+            <input
+              type="checkbox"
+              :checked="selectedDownloadIds.has(item.id)"
+              :aria-label="`Selecionar ${item.title || item.url}`"
+              @change="toggleRowChecked(item, $event)"
+            />
+          </label>
           <!-- Left: provider icon -->
           <div
             v-if="hasColumn('host') && item.moduleId === 'youtube' && item.thumbnailUrl"
@@ -1233,6 +1242,17 @@ async function runBulkAction(action: 'pause' | 'resume' | 'cancel' | 'remove'): 
 function clearDownloadSelection(): void {
   selectedDownloadIds.value = new Set()
   lastSelectedDownloadId.value = null
+}
+
+// Checkbox por linha: alterna a presença do item na seleção, sem limpar o resto
+// (comportamento aditivo, como Ctrl+clique). Mantém shift/ctrl no clique do card.
+function toggleRowChecked(item: DownloadItem, event: Event): void {
+  const checked = (event.target as HTMLInputElement).checked
+  const next = new Set(selectedDownloadIds.value)
+  if (checked) next.add(item.id)
+  else next.delete(item.id)
+  selectedDownloadIds.value = next
+  lastSelectedDownloadId.value = item.id
 }
 
 function selectAllVisibleDownloads(): void {
@@ -3501,6 +3521,23 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .items-stack-rows.reorder-animate .reorder-move {
   transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
   z-index: 1;
+}
+
+/* ── Checkbox de seleção por linha ──────────────────────────── */
+.row-select {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  padding: 2px 2px 2px 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.row-select input {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent, #6366f1);
 }
 
 /* ── Download card ──────────────────────────────────────────── */
