@@ -93,6 +93,33 @@ impl BruploadProvider {
                                 next.path = next.filename.clone();
                             }
                             next.size = Self::extract_size(&page_html);
+                            // A página inicial nem sempre traz o tamanho; o passo
+                            // "download1" (como no arquivo único) o revela. Só faz
+                            // esse POST extra quando o tamanho veio zerado.
+                            if next.size == 0 {
+                                if let Some(code) = Self::file_code(&next.source_url) {
+                                    let payload = Self::build_download1_payload(&page_html, &code, &next.source_url);
+                                    if let Ok(resp) = client
+                                        .post(&next.source_url)
+                                        .header("Referer", &next.source_url)
+                                        .form(&payload)
+                                        .send()
+                                        .await
+                                    {
+                                        if let Ok(resp) = resp.error_for_status() {
+                                            if let Ok(dl1_html) = resp.text().await {
+                                                next.size = Self::extract_size(&dl1_html);
+                                                if next.filename == "arquivo_brupload" {
+                                                    if let Some(name) = Self::extract_filename(&dl1_html) {
+                                                        next.filename = <Self as ProviderDefaults>::safe_filename(&name, &next.filename);
+                                                        next.path = next.filename.clone();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
