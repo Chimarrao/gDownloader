@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "Загрузка завершена",
   "toastDownloadFailed": "Ошибка загрузки",
   "toastCaptchaNeeded": "Требуется капча",
+  "infiniteRetries": "Бесконечные попытки",
   "linkGrabberAlreadyDownloaded": "Уже загружено",
   "linkGrabberAlreadyQueued": "В очереди",
   "linkGrabberAlreadyDownloadedHint": "Эта ссылка уже есть в истории завершённых.",

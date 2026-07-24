@@ -157,6 +157,7 @@ export interface PersistedSettings {
   outputDir: string
   maxConcurrentDownloads: number
   maxRetriesPerDownload?: number
+  infiniteRetries?: boolean
   speedLimitKib?: number
   parallelPartsPerDownload?: number
   fontSize: number

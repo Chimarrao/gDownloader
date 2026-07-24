@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "Download abgeschlossen",
   "toastDownloadFailed": "Download fehlgeschlagen",
   "toastCaptchaNeeded": "Captcha erforderlich",
+  "infiniteRetries": "Unendliche Versuche",
   "linkGrabberAlreadyDownloaded": "Bereits geladen",
   "linkGrabberAlreadyQueued": "In Warteschlange",
   "linkGrabberAlreadyDownloadedHint": "Dieser Link ist bereits im Verlauf der abgeschlossenen Downloads.",

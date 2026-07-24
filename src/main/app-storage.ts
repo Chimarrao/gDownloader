@@ -9,6 +9,7 @@ export const defaultPublicSettings: PersistedSettings = {
   outputDir: '~/Downloads',
   maxConcurrentDownloads: 3,
   maxRetriesPerDownload: 3,
+  infiniteRetries: false,
   speedLimitKib: 0,
   parallelPartsPerDownload: 4,
   fontSize: 14,

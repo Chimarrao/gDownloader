@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "ダウンロード完了",
   "toastDownloadFailed": "ダウンロード失敗",
   "toastCaptchaNeeded": "キャプチャが必要です",
+  "infiniteRetries": "無限リトライ",
   "linkGrabberAlreadyDownloaded": "ダウンロード済み",
   "linkGrabberAlreadyQueued": "キュー内",
   "linkGrabberAlreadyDownloadedHint": "このリンクは完了履歴にすでに存在します。",

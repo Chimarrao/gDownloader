@@ -43,9 +43,20 @@
           <span class="setting-label">{{ t('maxRetries') }}</span>
           <span class="setting-desc">{{ t('maxRetriesDesc') }}</span>
         </div>
-        <select v-model="settings.maxRetriesPerDownload" class="setting-select" @change="save">
-          <option v-for="n in [0,1,2,3,5,8,10]" :key="n" :value="n">{{ n }}</option>
-        </select>
+        <div class="retries-control">
+          <select
+            v-model="settings.maxRetriesPerDownload"
+            class="setting-select"
+            :disabled="settings.infiniteRetries"
+            @change="save"
+          >
+            <option v-for="n in [1,2,3,5,8,10]" :key="n" :value="n">{{ n }}</option>
+          </select>
+          <label class="retries-infinite">
+            <input type="checkbox" v-model="settings.infiniteRetries" @change="save" />
+            <span>{{ t('infiniteRetries') }}</span>
+          </label>
+        </div>
       </div>
 
       <div class="setting-row">
@@ -652,6 +663,7 @@ const settings = reactive<AppSettingsSnapshot>({
   outputDir: '~/Downloads',
   maxConcurrentDownloads: 3,
   maxRetriesPerDownload: 3,
+  infiniteRetries: false,
   parallelPartsPerDownload: 4,
   speedLimitKib: 0,
   theme: 'light',
@@ -1322,6 +1334,27 @@ async function clearCache(ids?: string[]): Promise<void> {
 
 /* Inputs */
 .setting-input,
+.retries-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.retries-infinite {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-muted));
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.retries-infinite input {
+  cursor: pointer;
+  accent-color: var(--accent, #6366f1);
+}
+
 .setting-select {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);

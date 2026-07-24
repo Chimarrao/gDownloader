@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "下载完成",
   "toastDownloadFailed": "下载失败",
   "toastCaptchaNeeded": "需要验证码",
+  "infiniteRetries": "无限重试",
   "linkGrabberAlreadyDownloaded": "已下载",
   "linkGrabberAlreadyQueued": "队列中",
   "linkGrabberAlreadyDownloadedHint": "此链接已在已完成历史记录中。",

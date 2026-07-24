@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "Download concluído",
   "toastDownloadFailed": "Falha no download",
   "toastCaptchaNeeded": "Captcha necessário",
+  "infiniteRetries": "Tentativas infinitas",
   "linkGrabberAlreadyDownloaded": "Já baixado",
   "linkGrabberAlreadyQueued": "Na fila",
   "linkGrabberAlreadyDownloadedHint": "Este link já está no histórico de concluídos.",

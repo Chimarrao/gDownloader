@@ -173,10 +173,17 @@ pub async fn update_public_settings(
         std::sync::atomic::Ordering::Relaxed,
     );
     // 2) número de tentativas (o loop de retry relê `max_retries` do registro).
+    //    `max_retries_per_download` é o TOTAL de tentativas; o orçamento de RETRIES
+    //    é total-1. Infinito ignora o teto (usa u32::MAX como sentinela).
+    let effective_max_retries = if req.infinite_retries {
+        u32::MAX
+    } else {
+        req.max_retries_per_download.saturating_sub(1)
+    };
     {
         let mut map = state.downloads.lock().await;
         for download in map.values_mut() {
-            download.max_retries = req.max_retries_per_download;
+            download.max_retries = effective_max_retries;
         }
     }
 

@@ -461,7 +461,7 @@
               <template v-if="(item.maxRetries ?? 0) > 0">
                 <span class="meta-sep">·</span>
                 <span class="meta-retries">
-                  tentativa {{ (item.retryCount ?? 0) + 1 }}/{{ (item.maxRetries ?? 0) + 1 }}
+                  tentativa {{ (item.retryCount ?? 0) + 1 }}/{{ (item.maxRetries ?? 0) >= 1_000_000 ? '∞' : (item.maxRetries ?? 0) + 1 }}
                 </span>
               </template>
 

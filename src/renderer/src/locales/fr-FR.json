@@ -142,6 +142,7 @@
   "toastDownloadCompleted": "Téléchargement terminé",
   "toastDownloadFailed": "Échec du téléchargement",
   "toastCaptchaNeeded": "Captcha requis",
+  "infiniteRetries": "Tentatives infinies",
   "linkGrabberAlreadyDownloaded": "Déjà téléchargé",
   "linkGrabberAlreadyQueued": "Dans la file",
   "linkGrabberAlreadyDownloadedHint": "Ce lien est déjà dans l'historique des téléchargements terminés.",

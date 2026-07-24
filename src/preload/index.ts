@@ -293,7 +293,11 @@ const api = {
           url,
           dest_dir: destDir,
           filename: filename?.trim() || undefined,
-          max_retries: Math.max(0, Number(settings?.maxRetriesPerDownload ?? 0)),
+          // maxRetriesPerDownload é o TOTAL de tentativas (ex.: 10 = 10 tentativas);
+          // o orçamento de RETRIES é total-1. Infinito usa u32::MAX como sentinela.
+          max_retries: settings?.infiniteRetries
+            ? 4294967295
+            : Math.max(0, Number(settings?.maxRetriesPerDownload ?? 1) - 1),
           // Limite de velocidade agora é TOTAL compartilhado (gerido pelo backend via
           // global_speed_limit_bps). Não assamos o valor global em cada download; este
           // campo fica para um eventual limite individual (0 = sem limite próprio).
