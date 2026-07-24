@@ -113,7 +113,7 @@ import type { AppSettingsSnapshot, ExpectedHash, FileInfo } from '../../../share
 import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes, formatDuration } from '../utils/format'
-import { parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
+import { packageGroupName, parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
 import { pruneCapturedRows } from '../utils/capture-selection'
 import CapturedResultsPanel from './CapturedResultsPanel.vue'
 import LinkInputPanel from './LinkInputPanel.vue'
@@ -909,9 +909,24 @@ async function addAll(): Promise<void> {
   emit('added')
   const current = await window.api.settings.load().catch(() => null)
   currentSettings.value = current
+
+  // Agrupa por nome-base para formar pacotes automáticos (item 9). Só grupos com
+  // 2+ arquivos e base significativa viram pacote. Coleta os IDs criados por grupo.
+  const groupKeyByEntry = new Map<(typeof entries)[number], string>()
+  const groupCount = new Map<string, number>()
+  for (const entry of entries) {
+    const base = packageGroupName(entry.title)
+    if (base.length < 4) continue
+    const key = base.toLowerCase()
+    groupKeyByEntry.set(entry, key)
+    groupCount.set(key, (groupCount.get(key) ?? 0) + 1)
+  }
+  const groupDisplay = new Map<string, string>()
+  const groupIds = new Map<string, string[]>()
+
   for (const entry of entries) {
     try {
-      await window.api.downloads.add(
+      const added = await window.api.downloads.add(
         entry.url,
         entry.module.id,
         entry.title,
@@ -924,9 +939,28 @@ async function addAll(): Promise<void> {
       )
       addedCount += 1
       addQueueDone.value = addedCount
+      const key = groupKeyByEntry.get(entry)
+      if (key && (groupCount.get(key) ?? 0) >= 2 && added?.id) {
+        if (!groupIds.has(key)) groupIds.set(key, [])
+        groupIds.get(key)!.push(added.id)
+        if (!groupDisplay.has(key)) groupDisplay.set(key, packageGroupName(entry.title))
+      }
       await nextFrame()
     } catch (err) {
       lastError.value = `${t('linkGrabberAddError')} ${truncateUrl(entry.url)} — ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+
+  // Cria um pacote por grupo (2+ itens) e associa os downloads.
+  for (const [key, ids] of groupIds) {
+    if (ids.length < 2) continue
+    try {
+      const pkg = await window.api.packages.create({ name: groupDisplay.get(key) || 'Pacote' })
+      for (const id of ids) {
+        await window.api.packages.assign(pkg.id, id).catch(() => null)
+      }
+    } catch {
+      // agrupamento é best-effort; não bloqueia a adição
     }
   }
 

@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeUrlCandidate, parseUrls, truncateUrl } from '../link-grabber'
+import { normalizeUrlCandidate, packageGroupName, parseUrls, truncateUrl } from '../link-grabber'
+
+describe('packageGroupName', () => {
+  it('agrupa partes .rar pelo mesmo nome-base', () => {
+    const base = 'mother-2017-4k-uhd-2160p-hdr-u-v2-truehd-7-1-dual-hiro360'
+    expect(packageGroupName(`${base}-part14.rar`)).toBe(base)
+    expect(packageGroupName(`${base}-part12.rar`)).toBe(base)
+    expect(packageGroupName(`${base}-part01.rar`)).toBe(packageGroupName(`${base}-part14.rar`))
+  })
+
+  it('agrupa sufixos numericos e de disco', () => {
+    expect(packageGroupName('filme.001')).toBe('filme')
+    expect(packageGroupName('filme.002')).toBe('filme')
+    expect(packageGroupName('album-cd1.zip')).toBe('album')
+    expect(packageGroupName('album-cd2.zip')).toBe('album')
+  })
+
+  it('preserva o nome quando nao ha sufixo de parte', () => {
+    expect(packageGroupName('documento-final.pdf')).toBe('documento-final')
+  })
+})
 
 describe('link-grabber utils', () => {
   it('normaliza hash e barra final ao deduplicar urls', () => {

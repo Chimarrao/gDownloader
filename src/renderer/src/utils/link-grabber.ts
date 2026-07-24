@@ -53,3 +53,18 @@ export function truncateUrl(url: string): string {
     return url.length > 50 ? `${url.slice(0, 47)}...` : url
   }
 }
+
+// Nome-base de um arquivo para agrupar partes relacionadas em um pacote: remove a
+// extensão e sufixos de multipart (partNN, .rNN, .NNN, cd/disc/vol NN). Ex.:
+// "...-part14.rar" e "...-part12.rar" produzem a mesma base "...-hiro360".
+export function packageGroupName(filename: string): string {
+  let name = filename.replace(/\.[a-z0-9]{1,5}$/i, '')
+  name = name
+    .replace(/[._\-\s]*part\s*\d+$/i, '')
+    .replace(/[._\-\s]*(?:cd|disc|disco|vol|volume)\s*\d+$/i, '')
+    .replace(/\.r\d{2,3}$/i, '')
+    .replace(/\.\d{2,3}$/i, '')
+    .replace(/[._\-\s]+$/, '')
+    .trim()
+  return name
+}
