@@ -298,12 +298,6 @@
             <div class="item-header">
               <div class="item-title-wrap">
                 <template v-if="hasColumn('name')">
-                <span
-                  class="type-icon"
-                  :class="getFileIcon(item.title || item.url, undefined, item.isFolder).className"
-                  :aria-label="getFileIcon(item.title || item.url, undefined, item.isFolder).alt"
-                  role="img"
-                ></span>
                 <span class="item-title" :title="item.title">{{ item.title || item.url }}</span>
                 </template>
               </div>
@@ -2652,12 +2646,12 @@ function toggleDetailsFromCard(item: DownloadItem, event: MouseEvent): void {
   if (target?.closest('button,input,select,a,label,.download-detail-panel,.folder-children,.captcha-row')) {
     return
   }
+  // Ctrl/Cmd/Shift + clique = seleção múltipla (mantido). Clique simples NÃO
+  // seleciona: apenas abre/fecha as informações do download (a seleção fica a
+  // cargo do checkbox por linha).
   if (event.metaKey || event.ctrlKey || event.shiftKey) {
     selectDownload(item, event)
     return
-  }
-  if (!selectedDownloadIds.value.has(item.id) || selectedDownloadIds.value.size > 1) {
-    selectDownload(item)
   }
   toggleDetails(item)
 }
