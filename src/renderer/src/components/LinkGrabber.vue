@@ -583,22 +583,49 @@ const selectedEntries = computed<QueueEntry[]>(() => {
 const selectedCount = computed(() => selectedEntries.value.length)
 // Espaço em disco livre na pasta de destino padrão (mesmo cálculo da barra do topo),
 // usado para avisar se o TOTAL selecionado não cabe (A1 parte 2).
-const captureDiskFreeBytes = ref(0)
+// Espaço livre POR DISCO DE DESTINO: cada download pode ir para uma pasta/disco
+// diferente (ex.: /Volumes/YUMI), então o aviso considera o disco real de cada um,
+// não apenas o diretório de saída global.
+const captureDiskFreeByDir = ref<Record<string, number>>({})
 async function refreshCaptureDiskFree(): Promise<void> {
-  const settings = currentSettings.value ?? (await window.api.settings.load().catch(() => null))
-  const dir = settings?.outputDir || '~/Downloads'
-  const disk = await window.api.system.diskSpace(dir).catch(() => null)
-  captureDiskFreeBytes.value = disk?.freeBytes ?? 0
+  const dirs = new Set<string>()
+  for (const entry of selectedEntries.value) {
+    dirs.add(entry.destDir || defaultOutputDir())
+  }
+  if (dirs.size === 0) {
+    const settings = currentSettings.value ?? (await window.api.settings.load().catch(() => null))
+    dirs.add(settings?.outputDir || defaultOutputDir())
+  }
+  const next: Record<string, number> = {}
+  await Promise.all(
+    [...dirs].map(async (dir) => {
+      const disk = await window.api.system.diskSpace(dir).catch(() => null)
+      next[dir] = disk?.freeBytes ?? 0
+    }),
+  )
+  captureDiskFreeByDir.value = next
 }
 const totalSelectedBytes = computed(() =>
   selectedEntries.value.reduce((sum, entry) => sum + (entry.size || 0), 0),
 )
-const capacityShortfall = computed(() =>
-  captureDiskFreeBytes.value > 0 && totalSelectedBytes.value > captureDiskFreeBytes.value
-    ? totalSelectedBytes.value - captureDiskFreeBytes.value
-    : 0,
+// Agrupa o que foi selecionado por disco de destino e soma o que falta em cada um.
+const capacityShortfall = computed(() => {
+  const neededByDir: Record<string, number> = {}
+  for (const entry of selectedEntries.value) {
+    const dir = entry.destDir || defaultOutputDir()
+    neededByDir[dir] = (neededByDir[dir] ?? 0) + (entry.size || 0)
+  }
+  let shortfall = 0
+  for (const [dir, needed] of Object.entries(neededByDir)) {
+    const free = captureDiskFreeByDir.value[dir] ?? 0
+    if (free > 0 && needed > free) shortfall += needed - free
+  }
+  return shortfall
+})
+watch(
+  () => selectedEntries.value.map((entry) => `${entry.destDir}:${entry.size}`).join('|'),
+  () => void refreshCaptureDiskFree(),
 )
-watch(() => rows.value.length, () => void refreshCaptureDiskFree())
 const availableCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectableUnitCount(row), 0))
 const selectedUnitCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0))
 const allSelectableChecked = computed(() => availableCount.value > 0 && selectedUnitCount.value === availableCount.value)
