@@ -897,6 +897,41 @@ async function refreshKnownStatus(token?: number): Promise<void> {
   }
 }
 
+function sanitizeFolderName(name: string): string {
+  return (
+    name
+      // eslint-disable-next-line no-control-regex
+      .replace(/[<>:"/\\|?* -]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim() || 'pacote'
+  )
+}
+
+// Mapeia cada entrada para a SUBPASTA comum quando 2+ arquivos compartilham o
+// mesmo nome-base. Entradas sem grupo (ou grupo de 1) mantêm o destino original.
+function computeGroupDestinations(entries: QueueEntry[]): Map<QueueEntry, string> {
+  const keyByEntry = new Map<QueueEntry, string>()
+  const count = new Map<string, number>()
+  const folderByKey = new Map<string, string>()
+  for (const entry of entries) {
+    const base = packageGroupName(entry.title)
+    if (base.length < 4) continue
+    const key = base.toLowerCase()
+    keyByEntry.set(entry, key)
+    count.set(key, (count.get(key) ?? 0) + 1)
+    if (!folderByKey.has(key)) folderByKey.set(key, sanitizeFolderName(base))
+  }
+  const dest = new Map<QueueEntry, string>()
+  for (const entry of entries) {
+    const key = keyByEntry.get(entry)
+    if (key && (count.get(key) ?? 0) >= 2) {
+      const folder = folderByKey.get(key) as string
+      dest.set(entry, `${entry.destDir.replace(/[/\\]+$/, '')}/${folder}`)
+    }
+  }
+  return dest
+}
+
 async function addAll(): Promise<void> {
   if (selectedEntries.value.length === 0 || adding.value) return
   const entries = [...selectedEntries.value]
@@ -910,28 +945,19 @@ async function addAll(): Promise<void> {
   const current = await window.api.settings.load().catch(() => null)
   currentSettings.value = current
 
-  // Agrupa por nome-base para formar pacotes automáticos (item 9). Só grupos com
-  // 2+ arquivos e base significativa viram pacote. Coleta os IDs criados por grupo.
-  const groupKeyByEntry = new Map<(typeof entries)[number], string>()
-  const groupCount = new Map<string, number>()
-  for (const entry of entries) {
-    const base = packageGroupName(entry.title)
-    if (base.length < 4) continue
-    const key = base.toLowerCase()
-    groupKeyByEntry.set(entry, key)
-    groupCount.set(key, (groupCount.get(key) ?? 0) + 1)
-  }
-  const groupDisplay = new Map<string, string>()
-  const groupIds = new Map<string, string[]>()
+  // Agrupamento automático (item 9): arquivos que compartilham o mesmo nome-base
+  // (ex.: ...part01.rar .. part14.rar) vão para uma SUBPASTA comum — funcionam como
+  // uma "pasta de downloads" no disco, sem pacote formal nem seleção em tela.
+  const destByEntry = computeGroupDestinations(entries)
 
   for (const entry of entries) {
     try {
-      const added = await window.api.downloads.add(
+      await window.api.downloads.add(
         entry.url,
         entry.module.id,
         entry.title,
         entry.size,
-        entry.destDir,
+        destByEntry.get(entry) ?? entry.destDir,
         entry.selectedChildren,
         entry.expectedHash,
         undefined,
@@ -939,28 +965,9 @@ async function addAll(): Promise<void> {
       )
       addedCount += 1
       addQueueDone.value = addedCount
-      const key = groupKeyByEntry.get(entry)
-      if (key && (groupCount.get(key) ?? 0) >= 2 && added?.id) {
-        if (!groupIds.has(key)) groupIds.set(key, [])
-        groupIds.get(key)!.push(added.id)
-        if (!groupDisplay.has(key)) groupDisplay.set(key, packageGroupName(entry.title))
-      }
       await nextFrame()
     } catch (err) {
       lastError.value = `${t('linkGrabberAddError')} ${truncateUrl(entry.url)} — ${err instanceof Error ? err.message : String(err)}`
-    }
-  }
-
-  // Cria um pacote por grupo (2+ itens) e associa os downloads.
-  for (const [key, ids] of groupIds) {
-    if (ids.length < 2) continue
-    try {
-      const pkg = await window.api.packages.create({ name: groupDisplay.get(key) || 'Pacote' })
-      for (const id of ids) {
-        await window.api.packages.assign(pkg.id, id).catch(() => null)
-      }
-    } catch {
-      // agrupamento é best-effort; não bloqueia a adição
     }
   }
 
