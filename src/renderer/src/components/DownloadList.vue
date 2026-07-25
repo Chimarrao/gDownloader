@@ -388,8 +388,16 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-verifying">
                   <i class="pi" :class="item.expectedHash ? 'pi-shield' : 'pi-cog'"></i>
-                  {{ item.expectedHash ? `Verificando ${item.expectedHash.algorithm.toUpperCase()}` : 'Juntando partes e finalizando…' }}
+                  {{ item.expectedHash ? `Verificando ${item.expectedHash.algorithm.toUpperCase()}` : 'Juntando partes…' }}
                 </span>
+                <template v-if="!item.expectedHash && (item.speedBps ?? 0) > 0">
+                  <span class="meta-sep">·</span>
+                  <span class="meta-speed">{{ formatSpeed(item.speedBps) }}</span>
+                </template>
+                <template v-if="!item.expectedHash && (item.etaSec ?? 0) > 0">
+                  <span class="meta-sep">·</span>
+                  <span class="meta-eta">{{ formatEta(item.etaSec) }} restante</span>
+                </template>
               </template>
 
               <template v-else-if="item.status === 'rate_limited'">

@@ -571,6 +571,8 @@ impl DirectHttpProvider {
         merge_parts_into(
             dest_path,
             &parts.iter().map(|part| format!("{dest_path}.part{}", part.index)).collect::<Vec<_>>(),
+            Some(&progress_tx),
+            metadata.size,
         )
         .await?;
         Self::clear_resume_offsets(&store).await;

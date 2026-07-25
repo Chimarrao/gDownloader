@@ -621,7 +621,7 @@ impl MegaProvider {
         let part_paths: Vec<String> = (0..part_count)
             .map(|part_index| format!("{part_dir}/part-{part_index:03}"))
             .collect();
-        super::merge_parts_into(dest_path, &part_paths).await?;
+        super::merge_parts_into(dest_path, &part_paths, Some(&progress_tx), total_size).await?;
         let _ = tokio::fs::remove_dir_all(&part_dir).await;
 
         Ok(Some(total_size))

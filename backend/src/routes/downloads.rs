@@ -1655,6 +1655,11 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
         // e mostra "Finalizando" enquanto o merge acontece. YouTube tem fases próprias
         // (vídeo/áudio/merge do yt-dlp) e é tratado à parte, então fica fora disso.
         let mut finalizing = false;
+        // Estado do progresso da JUNÇÃO de partes (evento child_path "merge"): usado
+        // para calcular velocidade e tempo restante da junção, que pode demorar.
+        let mut merge_last_bytes = 0u64;
+        let mut merge_last_time = std::time::Instant::now();
+        let mut merge_speed = 0u64;
         let is_youtube = provider_name == "YouTube";
 
         loop {
@@ -1690,6 +1695,50 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     continue;
                 }
             };
+
+            // Progresso da JUNÇÃO de partes: mostra velocidade + tempo restante da
+            // junção (status Verifying/"Juntando partes"), sem mexer no resto.
+            if update.child_path.as_deref() == Some("merge") {
+                let merged = update.child_bytes_downloaded.unwrap_or(0);
+                let total = update.child_total_bytes.unwrap_or(0).max(merged);
+                let elapsed = merge_last_time.elapsed().as_secs_f64();
+                if elapsed >= 0.4 {
+                    let delta = merged.saturating_sub(merge_last_bytes);
+                    merge_speed = (delta as f64 / elapsed) as u64;
+                    merge_last_bytes = merged;
+                    merge_last_time = std::time::Instant::now();
+                }
+                let merge_eta = if merge_speed > 0 && total > merged {
+                    (total - merged) / merge_speed
+                } else {
+                    0
+                };
+                {
+                    let mut map = state.downloads.lock().await;
+                    if let Some(d) = map.get_mut(&id) {
+                        d.status = DownloadStatus::Verifying;
+                        d.speed_bps = merge_speed;
+                        d.eta_secs = merge_eta;
+                        d.last_progress_at = Some(current_unix_secs());
+                    }
+                }
+                state.broadcast(WsEvent::Progress {
+                    id: id.clone(),
+                    bytes: total,
+                    total,
+                    speed: merge_speed,
+                    eta: merge_eta,
+                    status: DownloadStatus::Verifying,
+                    child_path: Some("merge".to_string()),
+                    child_filename: None,
+                    child_bytes: Some(merged),
+                    child_total: Some(total),
+                    child_speed: Some(merge_speed),
+                    child_eta: Some(merge_eta),
+                });
+                continue;
+            }
+
             let should_persist_snapshot = last_db_write.elapsed().as_secs() >= 5;
             max_bytes_seen = max_bytes_seen.max(update.bytes_downloaded);
             let reported_bytes = max_bytes_seen;

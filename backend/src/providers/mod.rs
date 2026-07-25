@@ -8,7 +8,7 @@ use std::sync::{
 };
 use std::{future::Future, pin::Pin};
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Clone)]
@@ -550,7 +550,15 @@ pub fn finalization_semaphore() -> &'static tokio::sync::Semaphore {
     })
 }
 
-pub async fn merge_parts_into(dest_path: &str, part_paths: &[String]) -> Result<()> {
+pub async fn merge_parts_into(
+    dest_path: &str,
+    part_paths: &[String],
+    // Canal opcional para reportar o progresso da JUNÇÃO (evento com child_path
+    // "merge"), permitindo à UI mostrar % e tempo restante — junções grandes podem
+    // levar minutos/horas.
+    progress_tx: Option<&tokio::sync::mpsc::Sender<ProgressUpdate>>,
+    total_bytes: u64,
+) -> Result<()> {
     if part_paths.is_empty() {
         return Err(anyhow!("nenhuma parte para juntar"));
     }
@@ -560,16 +568,50 @@ pub async fn merge_parts_into(dest_path: &str, part_paths: &[String]) -> Result<
     let _ = tokio::fs::remove_file(&merging).await;
     // Move a 1ª parte para o temporário (instantâneo, mesmo volume) — 0 cópia.
     tokio::fs::rename(&part_paths[0], &merging).await?;
+
+    let report = |merged: u64| {
+        if let Some(tx) = progress_tx {
+            let _ = tx.try_send(ProgressUpdate {
+                bytes_downloaded: total_bytes,
+                total_bytes,
+                child_path: Some("merge".to_string()),
+                child_filename: None,
+                child_bytes_downloaded: Some(merged),
+                child_total_bytes: Some(total_bytes.max(merged)),
+                child_speed_bps: None,
+                child_eta_secs: None,
+            });
+        }
+    };
+
+    // A 1ª parte já está no lugar (renomeada): a junção começa a partir do tamanho
+    // dela e progride conforme anexamos as demais.
+    let mut merged = tokio::fs::metadata(&merging).await.map(|m| m.len()).unwrap_or(0);
+    report(merged);
     {
         let mut output = OpenOptions::new().append(true).open(&merging).await?;
+        let mut buf = vec![0u8; 1024 * 1024];
+        let mut last_report = Instant::now();
         for part_path in &part_paths[1..] {
             let mut part_file = OpenOptions::new().read(true).open(part_path).await?;
-            tokio::io::copy(&mut part_file, &mut output).await?;
+            loop {
+                let n = part_file.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                output.write_all(&buf[..n]).await?;
+                merged = merged.saturating_add(n as u64);
+                if last_report.elapsed() >= Duration::from_millis(200) {
+                    report(merged);
+                    last_report = Instant::now();
+                }
+            }
             drop(part_file);
             let _ = tokio::fs::remove_file(part_path).await; // libera espaço já
         }
         output.flush().await?;
     }
+    report(merged);
     // Rename atômico para o destino final.
     let _ = tokio::fs::remove_file(dest_path).await;
     tokio::fs::rename(&merging, dest_path).await?;
@@ -712,7 +754,7 @@ pub async fn try_parallel_download(
     let part_paths: Vec<String> = (0..part_count)
         .map(|part_index| format!("{part_dir}/part-{part_index:03}"))
         .collect();
-    merge_parts_into(dest_path, &part_paths).await?;
+    merge_parts_into(dest_path, &part_paths, Some(&progress_tx), total_bytes).await?;
     let _ = tokio::fs::remove_dir_all(&part_dir).await;
 
     Ok(Some(total_bytes))
