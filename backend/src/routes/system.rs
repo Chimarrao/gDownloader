@@ -1,6 +1,50 @@
 use axum::{extract::Query, Json};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use sysinfo::Disks;
+
+/// Taxas de I/O por ponto de montagem (leitura, escrita) em bytes/s, atualizadas
+/// uma vez por segundo pelo sampler. Chave = mount_point.
+static DISK_IO: OnceLock<StdMutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+
+fn disk_io_store() -> &'static StdMutex<HashMap<String, (u64, u64)>> {
+    DISK_IO.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+/// Inicia (uma vez) o amostrador de I/O de disco: uma thread dedicada que reamostra
+/// o sysinfo a cada segundo e grava as taxas de leitura/escrita por montagem. Usa
+/// thread própria (não tokio) porque o refresh é bloqueante e usa IOKit no macOS.
+pub fn spawn_disk_io_sampler() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return; // já iniciado
+    }
+    std::thread::Builder::new()
+        .name("disk-io-sampler".into())
+        .spawn(|| {
+            let mut disks = Disks::new_with_refreshed_list();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                // Reamostra sem remover discos que sumiram temporariamente.
+                disks.refresh(false);
+                let mut rates: HashMap<String, (u64, u64)> = HashMap::new();
+                for disk in disks.iter() {
+                    let mount = disk.mount_point().to_string_lossy().to_string();
+                    let usage = disk.usage();
+                    // `read_bytes`/`written_bytes` = delta desde o refresh anterior
+                    // (intervalo de ~1s), logo já é a taxa por segundo.
+                    let entry = rates.entry(mount).or_insert((0, 0));
+                    entry.0 = entry.0.saturating_add(usage.read_bytes);
+                    entry.1 = entry.1.saturating_add(usage.written_bytes);
+                }
+                if let Ok(mut store) = disk_io_store().lock() {
+                    *store = rates;
+                }
+            }
+        })
+        .ok();
+}
 
 #[derive(Debug, Deserialize)]
 pub struct DiskQuery {
@@ -72,12 +116,18 @@ pub struct DiskEntry {
     pub used: u64,
     pub removable: bool,
     pub kind: String,
+    /// Taxa de I/O ao vivo (bytes/s) do disco, amostrada a cada segundo.
+    #[serde(rename = "readBps")]
+    pub read_bps: u64,
+    #[serde(rename = "writeBps")]
+    pub write_bps: u64,
 }
 
 /// Lista todos os discos/volumes montados (HD, SSD, pendrive…) com sua alocação.
 /// Alimenta o balão do widget de disco (multi-disco).
 pub async fn list_disks() -> Json<Vec<DiskEntry>> {
     let disks = Disks::new_with_refreshed_list();
+    let io_rates = disk_io_store().lock().map(|m| m.clone()).unwrap_or_default();
     let mut seen_mount = std::collections::HashSet::new();
     let mut seen_volume = std::collections::HashSet::new();
     let mut entries = Vec::new();
@@ -116,6 +166,7 @@ pub async fn list_disks() -> Json<Vec<DiskEntry>> {
             sysinfo::DiskKind::HDD => "HDD",
             _ => "Desconhecido",
         };
+        let (read_bps, write_bps) = io_rates.get(&mount).copied().unwrap_or((0, 0));
         entries.push(DiskEntry {
             name,
             mount,
@@ -124,6 +175,8 @@ pub async fn list_disks() -> Json<Vec<DiskEntry>> {
             used: total.saturating_sub(available),
             removable: disk.is_removable(),
             kind: kind.to_string(),
+            read_bps,
+            write_bps,
         });
     }
 

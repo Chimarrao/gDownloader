@@ -89,6 +89,14 @@
                 <span>{{ formatBytes(disk.used) }} usados</span>
                 <span>{{ formatBytes(disk.available) }} livres de {{ formatBytes(disk.total) }}</span>
               </div>
+              <div class="disk-row-io">
+                <span class="io-read" title="Leitura">
+                  <i class="pi pi-arrow-down"></i>{{ formatBytes(disk.readBps ?? 0) }}/s
+                </span>
+                <span class="io-write" title="Escrita">
+                  <i class="pi pi-arrow-up"></i>{{ formatBytes(disk.writeBps ?? 0) }}/s
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -405,6 +413,7 @@ onUnmounted(() => {
   if (speedTicker) clearInterval(speedTicker)
   if (torPulseTimer) clearInterval(torPulseTimer)
   if (diskTicker) clearInterval(diskTicker)
+  if (disksPollTimer) clearInterval(disksPollTimer)
   disposeClipboardDetected?.()
   disposeToastComplete?.()
   disposeToastStatus?.()
@@ -533,6 +542,8 @@ const allDisks = ref<
     used: number
     removable: boolean
     kind: string
+    readBps?: number
+    writeBps?: number
   }>
 >([])
 
@@ -540,10 +551,20 @@ function diskPercent(part: number, total: number): number {
   return total > 0 ? Math.min(100, (part / total) * 100) : 0
 }
 
+let disksPollTimer: ReturnType<typeof setInterval> | null = null
 async function toggleDisksPopover(): Promise<void> {
   disksPopoverOpen.value = !disksPopoverOpen.value
   if (disksPopoverOpen.value) {
     allDisks.value = await window.api.getAllDisks().catch(() => [])
+    // Atualiza o I/O ao vivo (leitura/escrita por disco) enquanto o painel está aberto.
+    if (disksPollTimer) clearInterval(disksPollTimer)
+    disksPollTimer = setInterval(async () => {
+      if (!disksPopoverOpen.value) return
+      allDisks.value = await window.api.getAllDisks().catch(() => allDisks.value)
+    }, 1500)
+  } else if (disksPollTimer) {
+    clearInterval(disksPollTimer)
+    disksPollTimer = null
   }
 }
 
@@ -1115,6 +1136,27 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   justify-content: space-between;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.disk-row-io {
+  display: flex;
+  gap: 12px;
+  margin-top: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.disk-row-io .io-read {
+  color: #2e9b59;
+}
+
+.disk-row-io .io-write {
+  color: #d9822b;
+}
+
+.disk-row-io i {
+  font-size: 10px;
+  margin-right: 2px;
 }
 
 .tor-widget {

@@ -277,6 +277,8 @@ interface RendererApi {
       used: number
       removable: boolean
       kind: string
+      readBps?: number
+      writeBps?: number
     }>
   >
   config: {

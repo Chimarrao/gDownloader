@@ -77,6 +77,9 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         });
     }
 
+    // Amostrador de I/O de disco (leitura/escrita por montagem, ao vivo).
+    routes::system::spawn_disk_io_sampler();
+
     // Checkpoint periódico do WAL (a cada 2 min) para o arquivo não inchar mesmo com
     // escrita contínua. Trava o mutex do DB só por um instante; ignora qualquer erro.
     {
