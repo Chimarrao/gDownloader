@@ -32,8 +32,22 @@ export function setLocale(nextLocale: string | undefined | null): void {
   locale.value = (supported.includes(nextLocale as LocaleCode) ? nextLocale : 'pt-BR') as LocaleCode
 }
 
-export function useI18n(): { t: (key: MessageKey) => string; locale: ComputedRef<LocaleCode>; setLocale: typeof setLocale } {
-  const t = (key: MessageKey): string => messages[locale.value][key]
+export function useI18n(): {
+  t: (key: MessageKey, params?: Record<string, string | number>) => string
+  locale: ComputedRef<LocaleCode>
+  setLocale: typeof setLocale
+} {
+  const t = (key: MessageKey, params?: Record<string, string | number>): string => {
+    const table = messages[locale.value] as Record<string, string>
+    const fallback = messages['pt-BR'] as Record<string, string>
+    let msg = table[key] ?? fallback[key] ?? String(key)
+    if (params) {
+      for (const [name, value] of Object.entries(params)) {
+        msg = msg.split(`{${name}}`).join(String(value))
+      }
+    }
+    return msg
+  }
   const currentLocale = computed(() => locale.value)
   return { t, locale: currentLocale, setLocale }
 }

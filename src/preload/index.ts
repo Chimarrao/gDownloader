@@ -1,5 +1,4 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppSettingsSnapshot,
   ArchivePassword,
@@ -1153,6 +1152,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     maxRetries: d.max_retries ?? 0,
     retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
     error: d.error ?? '',
+    errorKind: typeof d.error_kind === 'string' ? d.error_kind : undefined,
     expectedHash: d.expected_hash ?? undefined,
     captchaType: d.captcha_type ?? undefined,
     captchaSitekey: d.captcha_sitekey ?? undefined,
@@ -1176,5 +1176,6 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
   }
 }
 
-contextBridge.exposeInMainWorld('electron', electronAPI)
+// Não expor electronAPI genérico (invoke/send sem allowlist).
+// Toda comunicação renderer↔main passa por `window.api` tipado abaixo.
 contextBridge.exposeInMainWorld('api', api)

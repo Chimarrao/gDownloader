@@ -211,46 +211,46 @@
       <div v-if="selectedDownloadIds.size > 0" class="selection-bar">
         <span class="selection-bar-count">
           <i class="pi pi-check-square"></i>
-          {{ selectedDownloadIds.size }} selecionado{{ selectedDownloadIds.size > 1 ? 's' : '' }}
+          {{ t('selectedCount', { n: selectedDownloadIds.size }) }}
         </span>
         <button
           v-if="canBulkResume"
           class="toolbar-btn"
-          title="Retomar selecionados"
+          :title="t('resumeSelectedTitle')"
           @click="runBulkAction('resume')"
         >
           <i class="pi pi-play"></i>
-          Retomar
+          {{ t('resumeSelected') }}
         </button>
         <button
           v-if="canBulkPause"
           class="toolbar-btn"
-          title="Pausar selecionados"
+          :title="t('pauseSelectedTitle')"
           @click="runBulkAction('pause')"
         >
           <i class="pi pi-pause"></i>
-          Pausar
+          {{ t('pauseSelected') }}
         </button>
         <button
           v-if="canBulkRemove"
           class="toolbar-btn"
-          title="Remover selecionados da lista"
+          :title="t('removeSelectedTitle')"
           @click="runBulkAction('remove')"
         >
           <i class="pi pi-trash"></i>
-          Remover
+          {{ t('removeSelected') }}
         </button>
-        <button class="toolbar-btn" title="Selecionar todos" @click="selectAllVisibleDownloads">
+        <button class="toolbar-btn" :title="t('selectAllTitle')" @click="selectAllVisibleDownloads">
           <i class="pi pi-list"></i>
-          Todos
+          {{ t('selectAll') }}
         </button>
         <button
           class="toolbar-btn selection-bar-clear"
-          title="Limpar seleção (Esc)"
+          :title="t('clearSelectionTitle')"
           @click="clearDownloadSelection"
         >
           <i class="pi pi-times"></i>
-          Limpar
+          {{ t('clearSelection') }}
         </button>
       </div>
       <div class="items-stack">
@@ -381,7 +381,7 @@
               </template>
               <template v-if="item.status === 'downloading' && hasColumn('eta')">
                 <span class="meta-sep">·</span>
-                <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} restante</span>
+                <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} {{ t('remainingSuffix') }}</span>
               </template>
 
               <template v-else-if="item.status === 'verifying'">
@@ -396,7 +396,7 @@
                 </template>
                 <template v-if="!item.expectedHash && (item.etaSec ?? 0) > 0">
                   <span class="meta-sep">·</span>
-                  <span class="meta-eta">{{ formatEta(item.etaSec) }} restante</span>
+                  <span class="meta-eta">{{ formatEta(item.etaSec) }} {{ t('remainingSuffix') }}</span>
                 </template>
               </template>
 
@@ -404,7 +404,9 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ item.retryAt && item.retryAt > nowTick ? formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) + ' para desbloquear' : 'Bloqueado por limite de taxa' }}
+                  {{ item.retryAt && item.retryAt > nowTick
+                    ? t('rateLimitCountdown', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
+                    : t('rateLimitBlocked') }}
                 </span>
               </template>
 
@@ -412,7 +414,7 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-captcha-wait">
                   <i class="pi pi-shield"></i>
-                  Aguardando resolução do captcha
+                  {{ t('waitingCaptcha') }}
                 </span>
               </template>
 
@@ -420,7 +422,7 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ formatEta(retryCountdownNow(item)) }} para tentar novamente
+                  {{ t('waitingRetryIn', { time: formatEta(retryCountdownNow(item)) }) }}
                 </span>
               </template>
 
@@ -451,19 +453,28 @@
                 <span class="meta-sep">·</span>
                 <span class="meta-disk-full">
                   <i class="pi pi-database"></i>
-                  Espaço em disco insuficiente
+                  {{ t('diskFullShort') }}
                 </span>
               </template>
 
               <template v-else-if="(item.status === 'error' || item.status === 'corrupted') && item.error">
                 <span class="meta-sep">·</span>
+                <span
+                  v-if="errorKindLabel(item)"
+                  class="meta-error-kind"
+                  :class="`kind-${resolveErrorKind(item)}`"
+                  :title="item.error"
+                >{{ errorKindLabel(item) }}</span>
                 <span class="meta-error" :title="item.error">{{ item.error }}</span>
               </template>
 
               <template v-if="(item.maxRetries ?? 0) > 0">
                 <span class="meta-sep">·</span>
                 <span class="meta-retries">
-                  tentativa {{ (item.retryCount ?? 0) + 1 }}/{{ (item.maxRetries ?? 0) >= 1_000_000 ? '∞' : (item.maxRetries ?? 0) + 1 }}
+                  {{ t('retryAttempt', {
+                    current: (item.retryCount ?? 0) + 1,
+                    max: (item.maxRetries ?? 0) >= 1_000_000 ? '∞' : (item.maxRetries ?? 0) + 1,
+                  }) }}
                 </span>
               </template>
 
@@ -517,20 +528,30 @@
             <!-- ErrorState for specific error types -->
             <ErrorState
               v-if="item.status === 'disk_full'"
-              title="Disco cheio"
-              :description="item.error || 'Não há espaço suficiente para salvar o arquivo.'"
+              :title="t('diskFullTitle')"
+              :description="item.error || t('diskFullDesc')"
               icon="pi pi-database"
               :actions="[
-                { label: 'Trocar pasta', icon: 'pi pi-folder', variant: 'primary', handler: () => chooseOutputDir() },
-                { label: 'Tentar novamente', icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+                { label: t('changeFolder'), icon: 'pi pi-folder', variant: 'primary', handler: () => chooseOutputDir() },
+                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+              ]"
+            />
+            <ErrorState
+              v-else-if="item.status === 'corrupted'"
+              :title="t('corruptedTitle')"
+              :description="item.error || t('corruptedDesc')"
+              icon="pi pi-shield"
+              :actions="[
+                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'primary', handler: () => retry(item.id) },
               ]"
             />
             <ErrorState
               v-else-if="item.status === 'error' && item.error"
-              :title="item.error"
+              :title="errorKindLabel(item) || item.error"
+              :description="errorKindLabel(item) ? item.error : undefined"
               icon="pi pi-exclamation-circle"
               :actions="[
-                { label: 'Tentar novamente', icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
               ]"
             />
 
@@ -575,7 +596,7 @@
                         <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
                       </div>
                       <div class="child-meta">
-                        <span class="child-status">{{ childStatusText(node.status) }}</span>
+                        <span class="child-status">{{ t(childStatusTextKey(node.status) as Parameters<typeof t>[0]) }}</span>
                         <span class="meta-sep">·</span>
                         <span>{{ childPercent(node) }}%</span>
                         <template v-if="(node.speedBps ?? 0) > 0">
@@ -649,7 +670,7 @@
                           <span v-if="node.isFolder" class="child-folder-badge">{{ node.fileCount }} item(ns)</span>
                         </div>
                         <div class="child-meta">
-                          <span class="child-status">{{ childStatusText(node.status) }}</span>
+                          <span class="child-status">{{ t(childStatusTextKey(node.status) as Parameters<typeof t>[0]) }}</span>
                           <span class="meta-sep">·</span>
                           <span>{{ childPercent(node) }}%</span>
                           <template v-if="(node.speedBps ?? 0) > 0">
@@ -927,6 +948,38 @@
         </div>
       </div>
     </div>
+
+    <!-- Confirm dialog (acessível) -->
+    <div
+      v-if="confirmDialog.visible"
+      class="confirm-modal-backdrop"
+      role="presentation"
+      @click.self="closeConfirmDialog(false)"
+    >
+      <div
+        ref="confirmDialogRef"
+        class="confirm-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-labelledby="'confirm-dialog-title'"
+        tabindex="-1"
+        @keydown="onConfirmDialogKeydown"
+      >
+        <div class="confirm-modal-header">
+          <strong id="confirm-dialog-title">{{ confirmDialog.title }}</strong>
+          <button class="action-btn" :title="t('close')" @click="closeConfirmDialog(false)">
+            <i class="pi pi-times"></i>
+          </button>
+        </div>
+        <p class="confirm-modal-body">{{ confirmDialog.body }}</p>
+        <div class="confirm-modal-actions">
+          <button class="toolbar-btn" @click="closeConfirmDialog(false)">{{ t('confirmCancel') }}</button>
+          <button class="toolbar-btn confirm-danger" @click="closeConfirmDialog(true)">
+            {{ confirmDialog.confirmLabel }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -939,19 +992,23 @@ import { getFileTypeAppIcon } from '../assets/file-type-icons'
 import { getProviderIcon, getProviderColor, hasProviderIcon } from '../assets/provider-icons'
 import torIconSvg from '../assets/tor.svg?raw'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
+import { useI18n } from '../i18n'
 import {
-  childStatusText,
+  childStatusTextKey,
   compareDownloads,
   DOWNLOAD_SORT_OPTIONS,
   effectiveEta,
   effectiveSpeed,
+  errorKindI18nKey,
   getDownloadActions,
   isClearable,
+  itemNeedsCountdown,
+  resolveErrorKind,
+  statusTextKey,
   isTerminal,
   isWaitingRetry,
   retryCountdown,
   STATUS_COLORS,
-  statusText,
   type DownloadSortMode,
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatMediaDuration, formatSpeed } from '../utils/format'
@@ -975,6 +1032,7 @@ const props = withDefaults(defineProps<{ skeletonCount?: number; torActive?: boo
 })
 const skeletonCount = computed(() => props.skeletonCount)
 const torActive = computed(() => props.torActive)
+const { t } = useI18n()
 
 // ── Emits ──────────────────────────────────────────────────
 const emit = defineEmits<{
@@ -1072,7 +1130,21 @@ let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 let scheduledHydrateTimer: number | null = null
 const torCircuitRetryIds = new Set<string>()
-const sortOptions = DOWNLOAD_SORT_OPTIONS
+const sortOptions = computed(() =>
+  DOWNLOAD_SORT_OPTIONS.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey as Parameters<typeof t>[0]),
+  })),
+)
+// Modal de confirmação acessível (substitui window.confirm).
+const confirmDialog = ref<{
+  visible: boolean
+  title: string
+  body: string
+  confirmLabel: string
+  resolve: ((ok: boolean) => void) | null
+}>({ visible: false, title: '', body: '', confirmLabel: '', resolve: null })
+const confirmDialogRef = ref<HTMLElement | null>(null)
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
 const downloadChildNodeCache = new WeakMap<DownloadChild[], DerivedChildNode[]>()
@@ -1115,7 +1187,7 @@ const typeTags = computed(() => {
   return [...counts.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'pt-BR'))
 })
 const currentSortLabel = computed(() =>
-  sortOptions.find((option) => option.value === sortMode.value)?.label ?? 'Mais recentes'
+  sortOptions.value.find((option) => option.value === sortMode.value)?.label ?? t('sortNewest')
 )
 
 const orderedItems = computed(() =>
@@ -1717,12 +1789,14 @@ onMounted(async () => {
       .reduce((sum, item) => sum + Math.max(0, (item.size ?? 0) * (1 - (item.percent ?? 0) / 100)), 0)
     emit('queued-bytes', Math.round(queuedBytes))
   }, 1000)
+  // Hydrate de reconciliação: o WS é a fonte da verdade. Full list só a cada 15s
+  // (antes 4s) para capturar drift, sem martelar a API e re-renderizar a lista.
   hydrateTimer = window.setInterval(() => {
     if (!isMounted) return
     const hasLiveQueue = items.value.some((item) => !isTerminal(item.status))
     if (!hasLiveQueue && items.value.length > 0) return
     void hydrate()
-  }, 4000)
+  }, 15_000)
 
   // Load module metadata for labels
   const modules = await window.api.modules.list().catch(() => [])
@@ -2409,11 +2483,53 @@ async function remove(id: string): Promise<void> {
 }
 
 async function removeWithFiles(id: string): Promise<void> {
-  if (!window.confirm('Remover da lista e apagar os arquivos físicos deste download?')) {
-    return
-  }
+  const ok = await askConfirm({
+    title: t('confirmRemoveWithFilesTitle'),
+    body: t('confirmRemoveWithFilesBody'),
+    confirmLabel: t('confirmRemove'),
+  })
+  if (!ok) return
   await window.api.downloads.removeWithFiles(id).catch(() => null)
   await hydrate()
+}
+
+function askConfirm(options: {
+  title: string
+  body: string
+  confirmLabel: string
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmDialog.value = {
+      visible: true,
+      title: options.title,
+      body: options.body,
+      confirmLabel: options.confirmLabel,
+      resolve,
+    }
+    void nextTick(() => focusFirstDialogElement(confirmDialogRef.value))
+  })
+}
+
+function closeConfirmDialog(ok: boolean): void {
+  const resolve = confirmDialog.value.resolve
+  confirmDialog.value = {
+    visible: false,
+    title: '',
+    body: '',
+    confirmLabel: '',
+    resolve: null,
+  }
+  resolve?.(ok)
+}
+
+function onConfirmDialogKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeConfirmDialog(false)
+    return
+  }
+  trapDialogTab(event, confirmDialogRef.value)
 }
 
 async function clearFinished(): Promise<void> {
@@ -2508,10 +2624,20 @@ function openContextFile(): void {
   if (path) void window.api.openPath(path).catch(() => null)
 }
 
-function showContextUrl(): void {
+async function showContextUrl(): Promise<void> {
   const url = contextMenuItem.value?.url
   closeContextMenu()
-  if (url) window.alert(url)
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+  } catch {
+    // Fallback: dialog acessível com a URL (sem window.alert).
+    await askConfirm({
+      title: t('copyUrl'),
+      body: url,
+      confirmLabel: t('close'),
+    })
+  }
 }
 
 function showContextDetails(): void {
@@ -2786,7 +2912,12 @@ function statusTextValue(item: DownloadItem): string {
   if (item.status === DownloadStatusEnum.Downloading && stageLabels.value[item.id]) {
     return stageLabels.value[item.id]
   }
-  return statusText(item, nowTick.value)
+  return t(statusTextKey(item, nowTick.value) as Parameters<typeof t>[0])
+}
+
+function errorKindLabel(item: DownloadItem): string {
+  const key = errorKindI18nKey(resolveErrorKind(item))
+  return key ? t(key as Parameters<typeof t>[0]) : ''
 }
 
 function sameYouTubeSelection(left: string, right: string): boolean {
@@ -2842,9 +2973,9 @@ function isExpanded(id: string): boolean {
 }
 
 // Chave de memoização da linha (v-memo): o Vue só re-renderiza o card quando
-// algum destes valores muda. Inclui todos os campos exibidos + estados de UI
-// (seleção, flash, expandido, detalhes) e `nowTick` para os contadores de tempo.
-// Assim a lista para de re-renderizar linhas inalteradas a cada evento/tick.
+// algum destes valores muda. `nowTick` só entra quando a linha PRECISA de relógio
+// (countdown de rate-limit/retry ou "conectando"), evitando re-render de todas
+// as linhas a cada segundo.
 function rowMemoKey(item: DownloadItem): unknown[] {
   return [
     item.status,
@@ -2853,6 +2984,7 @@ function rowMemoKey(item: DownloadItem): unknown[] {
     item.speedBps,
     item.etaSec,
     item.error,
+    item.errorKind,
     item.pinned,
     item.title,
     item.retryAt,
@@ -2870,7 +3002,7 @@ function rowMemoKey(item: DownloadItem): unknown[] {
     detailLogs.value[item.id]?.length ?? 0,
     uiDensity.value,
     visibleColumns.value.join(','),
-    nowTick.value,
+    itemNeedsCountdown(item, nowTick.value) ? nowTick.value : 0,
   ]
 }
 
@@ -4338,6 +4470,46 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   max-width: 200px;
 }
 
+.meta-error-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: rgba(239, 68, 68, 0.14);
+  color: #fca5a5;
+  flex-shrink: 0;
+}
+
+.meta-error-kind.kind-rate_limit {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+}
+
+.meta-error-kind.kind-network {
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+}
+
+.meta-error-kind.kind-premium,
+.meta-error-kind.kind-removed,
+.meta-error-kind.kind-permanent {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fca5a5;
+}
+
+.meta-error-kind.kind-integrity {
+  background: rgba(168, 85, 247, 0.16);
+  color: #d8b4fe;
+}
+
+.meta-error-kind.kind-captcha {
+  background: rgba(139, 92, 246, 0.16);
+  color: #c4b5fd;
+}
+
 .meta-retries {
   color: var(--text-muted);
   font-size: 10.5px;
@@ -5095,5 +5267,59 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 .dot-disk_full {
   background: #ef4444;
+}
+
+/* ── Confirm dialog ─────────────────────────────────────────── */
+.confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.confirm-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--surface, #111827);
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.25));
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  padding: 16px;
+  color: var(--text, #e5e7eb);
+}
+
+.confirm-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.confirm-modal-header strong {
+  font-size: 15px;
+}
+
+.confirm-modal-body {
+  margin: 0 0 16px;
+  color: var(--text-muted, #94a3b8);
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-modal-actions .confirm-danger {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
 }
 </style>

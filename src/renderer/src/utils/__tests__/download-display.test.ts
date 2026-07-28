@@ -7,8 +7,11 @@ import {
   effectiveSpeed,
   getDownloadActions,
   isClearable,
+  itemNeedsCountdown,
+  resolveErrorKind,
   retryCountdown,
   statusText,
+  statusTextKey,
 } from '../download-display'
 
 function makeItem(overrides: Partial<DownloadItem> = {}): DownloadItem {
@@ -77,6 +80,24 @@ describe('download-display helpers', () => {
     expect(actions.canOpenCaptcha).toBe(true)
     expect(actions.canCancel).toBe(true)
     expect(actions.canPause).toBe(false)
+  })
+
+  it('classifica errorKind e marca countdown só quando necessário', () => {
+    const now = 10_000
+    expect(resolveErrorKind(makeItem({ errorKind: 'premium' }))).toBe('premium')
+    expect(resolveErrorKind(makeItem({ status: DownloadStatus.Corrupted }))).toBe('integrity')
+    expect(resolveErrorKind(makeItem({ status: DownloadStatus.Error, error: 'Arquivo não localizado' }))).toBe(
+      'removed',
+    )
+    expect(statusTextKey(makeItem({ status: DownloadStatus.Downloading, speedBps: 0 }), now)).toBe(
+      'statusConnecting',
+    )
+
+    const waiting = makeItem({ status: DownloadStatus.RateLimited, retryAt: now + 5000 })
+    expect(itemNeedsCountdown(waiting, now)).toBe(true)
+
+    const complete = makeItem({ status: DownloadStatus.Complete })
+    expect(itemNeedsCountdown(complete, now)).toBe(false)
   })
 
   it('limpar concluídos preserva downloads interrompidos na metade', () => {

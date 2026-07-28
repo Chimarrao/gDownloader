@@ -12,18 +12,19 @@ export type DownloadSortMode =
   | 'progress_desc'
   | 'speed_desc'
 
-export const DOWNLOAD_SORT_OPTIONS: Array<{ value: DownloadSortMode; label: string }> = [
-  { value: 'newest', label: 'Mais recentes' },
-  { value: 'oldest', label: 'Mais antigos' },
-  { value: 'active_first', label: 'Ativos primeiro' },
-  { value: 'name_asc', label: 'Nome A-Z' },
-  { value: 'name_desc', label: 'Nome Z-A' },
-  { value: 'size_desc', label: 'Maior tamanho' },
-  { value: 'size_asc', label: 'Menor tamanho' },
-  { value: 'progress_desc', label: 'Maior progresso' },
-  { value: 'speed_desc', label: 'Maior velocidade' },
+export const DOWNLOAD_SORT_OPTIONS: Array<{ value: DownloadSortMode; labelKey: string }> = [
+  { value: 'newest', labelKey: 'sortNewest' },
+  { value: 'oldest', labelKey: 'sortOldest' },
+  { value: 'active_first', labelKey: 'sortActiveFirst' },
+  { value: 'name_asc', labelKey: 'sortNameAsc' },
+  { value: 'name_desc', labelKey: 'sortNameDesc' },
+  { value: 'size_desc', labelKey: 'sortSizeDesc' },
+  { value: 'size_asc', labelKey: 'sortSizeAsc' },
+  { value: 'progress_desc', labelKey: 'sortProgressDesc' },
+  { value: 'speed_desc', labelKey: 'sortSpeedDesc' },
 ]
 
+/** Fallback labels (pt-BR) when i18n is not wired into a caller. */
 export const STATUS_LABELS: Record<string, string> = {
   [DownloadStatus.Pending]: 'Na fila',
   [DownloadStatus.Downloading]: 'Baixando',
@@ -36,6 +37,32 @@ export const STATUS_LABELS: Record<string, string> = {
   [DownloadStatus.RateLimited]: 'Aguardando',
   [DownloadStatus.WaitingCaptcha]: 'Captcha',
   [DownloadStatus.DiskFull]: 'Disco cheio',
+}
+
+export const STATUS_I18N_KEYS: Record<string, string> = {
+  [DownloadStatus.Pending]: 'statusPending',
+  [DownloadStatus.Downloading]: 'statusDownloading',
+  [DownloadStatus.Verifying]: 'statusVerifying',
+  [DownloadStatus.Complete]: 'statusComplete',
+  [DownloadStatus.Corrupted]: 'statusCorrupted',
+  [DownloadStatus.Error]: 'statusError',
+  [DownloadStatus.Cancelled]: 'statusCancelled',
+  [DownloadStatus.Paused]: 'statusPaused',
+  [DownloadStatus.RateLimited]: 'statusRateLimited',
+  [DownloadStatus.WaitingCaptcha]: 'statusWaitingCaptcha',
+  [DownloadStatus.DiskFull]: 'statusDiskFull',
+}
+
+export const ERROR_KIND_I18N_KEYS: Record<string, string> = {
+  rate_limit: 'errorKindRateLimit',
+  network: 'errorKindNetwork',
+  captcha: 'errorKindCaptcha',
+  premium: 'errorKindPremium',
+  removed: 'errorKindRemoved',
+  integrity: 'errorKindIntegrity',
+  disk_full: 'errorKindDiskFull',
+  temporary: 'errorKindTemporary',
+  permanent: 'errorKindPermanent',
 }
 
 export const STATUS_COLORS: Record<string, string> = {
@@ -106,8 +133,19 @@ export function statusText(item: DownloadItem, nowTick: number): string {
   return STATUS_LABELS[item.status] ?? item.status
 }
 
+export function statusTextKey(item: DownloadItem, nowTick: number): string {
+  if (item.status === DownloadStatus.Downloading && effectiveSpeed(item, nowTick) <= 0) {
+    return 'statusConnecting'
+  }
+  return STATUS_I18N_KEYS[item.status] ?? 'statusPending'
+}
+
 export function childStatusText(status?: DownloadChild['status']): string {
   return STATUS_LABELS[status ?? DownloadStatus.Pending] ?? 'Na fila'
+}
+
+export function childStatusTextKey(status?: DownloadChild['status']): string {
+  return STATUS_I18N_KEYS[status ?? DownloadStatus.Pending] ?? 'statusPending'
 }
 
 export function retryCountdown(item: DownloadItem, nowTick: number): number {
@@ -119,6 +157,45 @@ export function retryCountdown(item: DownloadItem, nowTick: number): number {
 
 export function isWaitingRetry(item: DownloadItem, nowTick: number): boolean {
   return item.status === DownloadStatus.Pending && retryCountdown(item, nowTick) > 0
+}
+
+/** True when the row needs a live clock (countdown / connecting stale speed). */
+export function itemNeedsCountdown(item: DownloadItem, nowTick: number): boolean {
+  if (item.status === DownloadStatus.RateLimited) return true
+  if (item.status === DownloadStatus.WaitingCaptcha) return true
+  if (isWaitingRetry(item, nowTick)) return true
+  if (item.status === DownloadStatus.Downloading) {
+    if (!item.lastProgressAt) return true
+    return nowTick - item.lastProgressAt > 3000
+  }
+  return false
+}
+
+export function resolveErrorKind(item: DownloadItem): string | undefined {
+  if (item.errorKind) return item.errorKind
+  if (item.status === DownloadStatus.RateLimited) return 'rate_limit'
+  if (item.status === DownloadStatus.WaitingCaptcha) return 'captcha'
+  if (item.status === DownloadStatus.DiskFull) return 'disk_full'
+  if (item.status === DownloadStatus.Corrupted) return 'integrity'
+  const message = (item.error ?? '').toLowerCase()
+  if (!message) return undefined
+  if (message.includes('premium')) return 'premium'
+  if (message.includes('não localizado') || message.includes('nao localizado') || message.includes('not found') || message.includes('removid')) {
+    return 'removed'
+  }
+  if (message.includes('corromp') || message.includes('integridade') || message.includes('hash')) {
+    return 'integrity'
+  }
+  if (message.includes('conexão') || message.includes('conexao') || message.includes('rede') || message.includes('network') || message.includes('timeout')) {
+    return 'network'
+  }
+  if (item.status === DownloadStatus.Error) return 'temporary'
+  return undefined
+}
+
+export function errorKindI18nKey(kind: string | undefined): string | undefined {
+  if (!kind) return undefined
+  return ERROR_KIND_I18N_KEYS[kind]
 }
 
 export function compareDownloads(

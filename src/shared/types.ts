@@ -81,6 +81,8 @@ export interface DownloadItem {
   captchaSitekey?: string
   captchaPageUrl?: string
   error: string
+  /** Semantic error class from backend: network|rate_limit|captcha|premium|removed|integrity|disk_full|temporary|permanent */
+  errorKind?: string
   expectedHash?: ExpectedHash
   outputPath?: string
   priority?: number
@@ -186,6 +188,8 @@ export interface PersistedSettings {
   duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
   remoteAccess: {
     enabled: boolean
+    /** Quando true, escuta em 0.0.0.0 (LAN). Default false = só 127.0.0.1. */
+    allowLan?: boolean
     username: string
     password: string
     port: number
