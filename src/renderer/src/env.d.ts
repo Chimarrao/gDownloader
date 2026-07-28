@@ -118,7 +118,9 @@ interface RendererApi {
     info: () => Promise<{
       enabled: boolean
       running: boolean
+      allowLan: boolean
       lanIp: string
+      bindHost: string
       port: number
       username: string
       password: string

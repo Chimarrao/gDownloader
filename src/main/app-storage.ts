@@ -48,8 +48,11 @@ export const defaultPublicSettings: PersistedSettings = {
   ffmpegBinPath: '',
   remoteAccess: {
     enabled: false,
+    allowLan: false,
     username: 'gdownloader',
-    password: 'gd-1234',
+    // Placeholder fraco de propósito: o servidor se recusa a subir com isso
+    // e a UI pede para gerar credenciais fortes.
+    password: '',
     port: 9786,
   },
   visibleColumns: [

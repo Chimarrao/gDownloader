@@ -11,11 +11,14 @@ type RemoteAccessSettings = NonNullable<PersistedSettings['remoteAccess']>
 interface RemoteAccessInfo {
   enabled: boolean
   running: boolean
+  allowLan: boolean
   lanIp: string
+  bindHost: string
   port: number
   username: string
   password: string
   url: string
+  /** Link de login por token de uso único (sem senha na URL). */
   credentialUrl: string
   qrCodeDataUrl?: string
   sessions: RemoteAccessSession[]
@@ -57,11 +60,17 @@ const QRCode = require('qrcode') as {
   toDataURL: (text: string, options?: Record<string, unknown>) => Promise<string>
 }
 
+export function generateStrongRemotePassword(): string {
+  // 128 bits de entropia (32 hex). Prefixo só para legibilidade.
+  return `gd-${randomBytes(16).toString('hex')}`
+}
+
 export function generateRemoteAccessCredentials(): RemoteAccessSettings {
   return {
     enabled: false,
+    allowLan: false,
     username: 'gdownloader',
-    password: `gd-${randomBytes(2).toString('hex')}`,
+    password: generateStrongRemotePassword(),
     port: 9786,
   }
 }
@@ -70,10 +79,42 @@ export function normalizeRemoteAccess(settings: PersistedSettings): RemoteAccess
   const current = settings.remoteAccess
   return {
     enabled: Boolean(current?.enabled),
+    allowLan: Boolean(current?.allowLan),
     username: String(current?.username || 'gdownloader').trim() || 'gdownloader',
-    password: String(current?.password || 'gd-1234').trim() || 'gd-1234',
+    password: String(current?.password ?? '').trim(),
     port: clampPort(current?.port ?? 9786),
   }
+}
+
+const WEAK_PASSWORDS = new Set([
+  '',
+  'gd-1234',
+  '123456',
+  'password',
+  'admin',
+  'gdownloader',
+  'senha',
+  '1234',
+  '12345',
+  '12345678',
+])
+
+export function credentialsAreInsecure(settings: RemoteAccessSettings): boolean {
+  const username = settings.username.trim().toLowerCase()
+  const password = settings.password
+  if (WEAK_PASSWORDS.has(password.toLowerCase())) return true
+  if (password.length < 16) return true
+  if (username === 'admin' && password.length < 20) return true
+  if (username === 'gdownloader' && password === 'gd-1234') return true
+  return false
+}
+
+function bindHostFor(settings: RemoteAccessSettings): string {
+  return settings.allowLan ? '0.0.0.0' : '127.0.0.1'
+}
+
+function displayHostFor(settings: RemoteAccessSettings, lanIp: string): string {
+  return settings.allowLan ? lanIp : '127.0.0.1'
 }
 
 export function getLanIp(): string {
@@ -174,18 +215,12 @@ function authRequired(res: ServerResponse): void {
   res.end('Autenticação necessária')
 }
 
-function buildCredentialUrl(settings: RemoteAccessSettings, lanIp: string): string {
-  const username = encodeURIComponent(settings.username)
-  const password = encodeURIComponent(settings.password)
-  return `http://${username}:${password}@${lanIp}:${settings.port}/`
+function buildTokenUrl(settings: RemoteAccessSettings, host: string, token: string): string {
+  return `http://${host}:${settings.port}/auth?t=${encodeURIComponent(token)}`
 }
 
-function buildTokenUrl(settings: RemoteAccessSettings, lanIp: string, token: string): string {
-  return `http://${lanIp}:${settings.port}/auth?t=${encodeURIComponent(token)}`
-}
-
-function buildUrl(settings: RemoteAccessSettings, lanIp: string): string {
-  return `http://${lanIp}:${settings.port}/`
+function buildUrl(settings: RemoteAccessSettings, host: string): string {
+  return `http://${host}:${settings.port}/`
 }
 
 async function qrCodeDataUrl(text: string): Promise<string> {
@@ -206,10 +241,39 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
   let lastError = ''
   const loginTokens = new Map<string, number>()
   const sessions = new Map<string, RemoteAccessSession>()
+  /** Rate-limit de auth por IP: bloqueia após N falhas. */
+  const authFailures = new Map<string, { count: number; blockedUntil: number }>()
+  const AUTH_MAX_FAILURES = 8
+  const AUTH_BLOCK_MS = 60_000
 
   function requestIp(req: IncomingMessage): string {
-    const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim()
-    return forwarded || req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'desconhecido'
+    // Não confia em X-Forwarded-For (fácil de forjar em bind local/LAN).
+    return req.socket.remoteAddress?.replace(/^::ffff:/, '') || 'desconhecido'
+  }
+
+  function isAuthBlocked(ip: string): boolean {
+    const entry = authFailures.get(ip)
+    if (!entry) return false
+    if (entry.blockedUntil > Date.now()) return true
+    if (entry.blockedUntil > 0 && entry.blockedUntil <= Date.now()) {
+      authFailures.delete(ip)
+    }
+    return false
+  }
+
+  function recordAuthFailure(ip: string): void {
+    const entry = authFailures.get(ip) ?? { count: 0, blockedUntil: 0 }
+    entry.count += 1
+    if (entry.count >= AUTH_MAX_FAILURES) {
+      entry.blockedUntil = Date.now() + AUTH_BLOCK_MS
+      entry.count = 0
+      logMain('remote-access', 'IP bloqueado temporariamente por falhas de auth', { ip })
+    }
+    authFailures.set(ip, entry)
+  }
+
+  function clearAuthFailures(ip: string): void {
+    authFailures.delete(ip)
   }
 
   function parseCookies(req: IncomingMessage): Record<string, string> {
@@ -252,14 +316,6 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     return [...sessions.values()]
       .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
       .map((session) => ({ ...session, current: session.id === currentId }))
-  }
-
-  function credentialsAreInsecure(settings: RemoteAccessSettings): boolean {
-    const username = settings.username.trim().toLowerCase()
-    return (
-      (username === 'admin' && settings.password === '123456')
-      || (username === 'gdownloader' && settings.password === 'gd-1234')
-    )
   }
 
   async function backendFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -354,6 +410,18 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     stream.pipe(res)
   }
 
+  function publicRemoteSettings(settings: PersistedSettings): Record<string, unknown> {
+    // Nunca vaza proxy, remoteAccess, cookies nem outros secrets pela UI remota.
+    return {
+      outputDir: settings.outputDir,
+      maxConcurrentDownloads: settings.maxConcurrentDownloads,
+      maxRetriesPerDownload: settings.maxRetriesPerDownload,
+      speedLimitKib: settings.speedLimitKib ?? 0,
+      duplicateAction: settings.duplicateAction,
+      nativeNotification: settings.nativeNotification,
+    }
+  }
+
   async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
     if (req.method === 'GET' && pathname === '/api/state') {
       const [downloads, settings, packages, stats] = await Promise.all([
@@ -362,25 +430,64 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
         backendJson<unknown[]>('/packages').catch(() => []),
         backendJson<unknown>('/stats/realtime').catch(() => ({ ticks: [] })),
       ])
-      jsonResponse(res, 200, { downloads, settings, packages, stats })
+      // dest_path completo no celular é útil para download; não é secret de app.
+      jsonResponse(res, 200, {
+        downloads,
+        settings: publicRemoteSettings(settings),
+        packages,
+        stats,
+      })
       return
     }
 
     if (req.method === 'GET' && pathname === '/api/settings') {
-      jsonResponse(res, 200, await backendJson<PersistedSettings>('/config/public'))
+      const settings = await backendJson<PersistedSettings>('/config/public')
+      jsonResponse(res, 200, publicRemoteSettings(settings))
       return
     }
 
     if (req.method === 'POST' && pathname === '/api/settings') {
-      const payload = await readBody(req) as Partial<PersistedSettings>
+      // Superfície mínima: a UI remota NÃO pode alterar remoteAccess, proxy,
+      // credenciais, Tor nem pastas arbitrárias — só preferências de fila seguras.
+      const payload = (await readBody(req)) as Record<string, unknown>
       const current = options.getSettings()
-      const next = {
+      const next: PersistedSettings = {
         ...current,
-        ...payload,
-        remoteAccess: normalizeRemoteAccess({ ...current, ...payload } as PersistedSettings),
+        maxConcurrentDownloads: clampInt(
+          payload.maxConcurrentDownloads,
+          current.maxConcurrentDownloads,
+          1,
+          20,
+        ),
+        speedLimitKib: clampInt(payload.speedLimitKib, current.speedLimitKib ?? 0, 0, 100_000_000),
+        maxRetriesPerDownload: clampInt(
+          payload.maxRetriesPerDownload,
+          current.maxRetriesPerDownload ?? 3,
+          0,
+          1_000_000,
+        ),
+        nativeNotification: typeof payload.nativeNotification === 'boolean'
+          ? payload.nativeNotification
+          : current.nativeNotification,
+        duplicateAction:
+          payload.duplicateAction === 'ask'
+          || payload.duplicateAction === 'skip'
+          || payload.duplicateAction === 'rename'
+          || payload.duplicateAction === 'always_download'
+            ? payload.duplicateAction
+            : current.duplicateAction,
+        // remoteAccess e secrets nunca vêm do cliente remoto
+        remoteAccess: current.remoteAccess,
       }
       await options.persistSettings(next)
-      jsonResponse(res, 200, options.getSettings())
+      jsonResponse(res, 200, {
+        maxConcurrentDownloads: next.maxConcurrentDownloads,
+        speedLimitKib: next.speedLimitKib,
+        maxRetriesPerDownload: next.maxRetriesPerDownload,
+        nativeNotification: next.nativeNotification,
+        duplicateAction: next.duplicateAction,
+        outputDir: next.outputDir,
+      })
       return
     }
 
@@ -424,7 +531,14 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     const actionMatch = pathname.match(/^\/api\/downloads\/([^/]+)\/(pause|resume|retry|restart|force|pin|remove|remove-with-files)$/)
     if (req.method === 'POST' && actionMatch) {
       const [, id, action] = actionMatch
-      const method = action === 'remove' || action === 'remove-with-files' ? 'DELETE' : 'POST'
+      // Apagar arquivos do disco pela LAN é perigoso demais — só no app principal.
+      if (action === 'remove-with-files') {
+        jsonResponse(res, 403, {
+          error: 'Remover com arquivos só está disponível no app principal por segurança.',
+        })
+        return
+      }
+      const method = action === 'remove' ? 'DELETE' : 'POST'
       const backendPath =
         action === 'remove'
           ? `/downloads/${encodeURIComponent(id)}`
@@ -440,18 +554,32 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
   async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const settings = activeSettings
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+    const ip = requestIp(req)
+
+    if (isAuthBlocked(ip)) {
+      res.writeHead(429, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Retry-After': '60',
+        'Cache-Control': 'no-store',
+      })
+      res.end('Muitas tentativas de autenticação. Tente novamente em 1 minuto.')
+      return
+    }
 
     if (req.method === 'GET' && url.pathname === '/auth') {
       const token = url.searchParams.get('t') ?? ''
       const expiresAt = loginTokens.get(token) ?? 0
       loginTokens.delete(token)
       if (!token || expiresAt < Date.now()) {
+        recordAuthFailure(ip)
         authRequired(res)
         return
       }
+      clearAuthFailures(ip)
       const session = createSession(req)
       res.writeHead(302, {
         Location: '/',
+        // Sem Secure: HTTP local. HttpOnly + SameSite=Lax + Path=/
         'Set-Cookie': `gdl_remote_session=${encodeURIComponent(session.id)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`,
         'Cache-Control': 'no-store',
       })
@@ -459,10 +587,15 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
       return
     }
 
-    if (!sessionFromRequest(req) && !isAuthorized(req, settings)) {
-      authRequired(res)
-      return
+    const session = sessionFromRequest(req)
+    if (!session) {
+      if (!isAuthorized(req, settings)) {
+        recordAuthFailure(ip)
+        authRequired(res)
+        return
+      }
     }
+    clearAuthFailures(ip)
 
     try {
       // Servir o arquivo baixado de volta para o dispositivo (celular), com suporte a
@@ -494,6 +627,14 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     lastError = ''
     if (server) return
 
+    if (credentialsAreInsecure(settings)) {
+      lastError =
+        'Credenciais inseguras ou ausentes. Gere uma senha forte nas configurações antes de ativar o acesso remoto.'
+      logMain('remote-access', lastError)
+      return
+    }
+
+    const host = bindHostFor(settings)
     server = createServer((req, res) => {
       void handleRequest(req, res)
     })
@@ -501,7 +642,7 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     await new Promise<void>((resolve, reject) => {
       const activeServer = server!
       activeServer.once('error', reject)
-      activeServer.listen(settings.port, '0.0.0.0', () => {
+      activeServer.listen(settings.port, host, () => {
         activeServer.off('error', reject)
         resolve()
       })
@@ -513,7 +654,9 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     })
 
     logMain('remote-access', 'Servidor remoto local iniciado', {
-      url: buildUrl(settings, getLanIp()),
+      bind: host,
+      allowLan: Boolean(settings.allowLan),
+      url: buildUrl(settings, displayHostFor(settings, getLanIp())),
       username: settings.username,
     })
   }
@@ -528,10 +671,14 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
 
   async function configure(rawSettings: PersistedSettings): Promise<void> {
     const next = normalizeRemoteAccess(rawSettings)
-    const needsRestart = server && next.port !== activeSettings.port
+    const needsRestart =
+      server
+      && (next.port !== activeSettings.port
+        || Boolean(next.allowLan) !== Boolean(activeSettings.allowLan))
     activeSettings = next
     if (!next.enabled) {
       await stop()
+      lastError = ''
       return
     }
     if (needsRestart) await stop()
@@ -545,20 +692,25 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
   async function info(rawSettings = options.getSettings()): Promise<RemoteAccessInfo> {
     const settings = normalizeRemoteAccess(rawSettings)
     const lanIp = getLanIp()
-    const url = buildUrl(settings, lanIp)
-    const credentialUrl = buildCredentialUrl(settings, lanIp)
-    const tokenUrl = buildTokenUrl(settings, lanIp, createLoginToken())
+    const host = displayHostFor(settings, lanIp)
+    const url = buildUrl(settings, host)
+    // Link de login = token de uso único (nunca user:senha na URL).
+    const tokenUrl = buildTokenUrl(settings, host, createLoginToken())
     const enabled = Boolean(settings.enabled)
     return {
       enabled,
       running: Boolean(server),
+      allowLan: Boolean(settings.allowLan),
       lanIp,
+      bindHost: bindHostFor(settings),
       port: settings.port,
       username: settings.username,
       password: settings.password,
       url,
-      credentialUrl,
-      qrCodeDataUrl: enabled ? await qrCodeDataUrl(tokenUrl).catch(() => undefined) : undefined,
+      credentialUrl: tokenUrl,
+      qrCodeDataUrl: enabled && !credentialsAreInsecure(settings)
+        ? await qrCodeDataUrl(tokenUrl).catch(() => undefined)
+        : undefined,
       sessions: activeSessions(),
       insecureCredentials: credentialsAreInsecure(settings),
       error: lastError || undefined,
@@ -575,6 +727,12 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     info,
     revokeSession,
   }
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Math.trunc(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
 }
 
 function remoteHtml(): string {
@@ -705,12 +863,11 @@ function remoteHtml(): string {
     function renderSettings() {
       const s = state.settings || {};
       document.getElementById('settingsForm').innerHTML = [
-        field('outputDir', 'Pasta padrão', s.outputDir || '~/Downloads'),
+        '<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Só preferências de fila. Acesso remoto, proxy e pastas do sistema ficam só no app principal.</p>',
         field('maxConcurrentDownloads', 'Downloads simultâneos', s.maxConcurrentDownloads || 3, 'number'),
         field('speedLimitKib', 'Limite KB/s', s.speedLimitKib || 0, 'number'),
-        field('parallelPartsPerDownload', 'Partes paralelas', s.parallelPartsPerDownload || 4, 'number'),
+        field('maxRetriesPerDownload', 'Máximo de tentativas', s.maxRetriesPerDownload || 3, 'number'),
         select('duplicateAction', 'Duplicatas', s.duplicateAction || 'ask', [['ask','Perguntar'],['skip','Ignorar'],['rename','Renomear'],['always_download','Baixar mesmo assim']]),
-        checkbox('clipboardMonitorEnabled', 'Monitor de clipboard', !!s.clipboardMonitorEnabled),
         checkbox('nativeNotification', 'Notificações nativas', !!s.nativeNotification)
       ].join('');
     }
@@ -747,12 +904,10 @@ function remoteHtml(): string {
     };
     document.getElementById('saveSettings').onclick = async () => {
       const patch = {
-        outputDir: cfg_outputDir.value,
         maxConcurrentDownloads: Number(cfg_maxConcurrentDownloads.value),
         speedLimitKib: Number(cfg_speedLimitKib.value),
-        parallelPartsPerDownload: Number(cfg_parallelPartsPerDownload.value),
+        maxRetriesPerDownload: Number(cfg_maxRetriesPerDownload.value),
         duplicateAction: cfg_duplicateAction.value,
-        clipboardMonitorEnabled: cfg_clipboardMonitorEnabled.value === 'true',
         nativeNotification: cfg_nativeNotification.value === 'true'
       };
       await api('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch) }).then(() => showToast('Configurações salvas')).catch(e => showToast(e.message));

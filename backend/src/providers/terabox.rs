@@ -18,10 +18,18 @@ fn electron_proxy_port() -> Option<u16> {
         .filter(|&p| p > 0)
 }
 
+fn helper_proxy_token() -> Option<String> {
+    std::env::var("GDOWNLOADER_HELPER_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Faz GET via proxy Electron (usa sessão persist:terabox com cookies reais).
 /// Se o proxy não estiver disponível, retorna None e o caller usa reqwest diretamente.
 async fn proxy_get(url: &str, referer: &str) -> Option<Value> {
     let port = electron_proxy_port()?;
+    let token = helper_proxy_token()?;
     let proxy_url = format!("http://127.0.0.1:{port}/");
     let body = serde_json::json!({
         "url": url,
@@ -29,17 +37,30 @@ async fn proxy_get(url: &str, referer: &str) -> Option<Value> {
         "headers": { "Referer": referer }
     });
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build().ok()?;
-    let resp = client.post(&proxy_url).json(&body).send().await.ok()?;
+    let resp = client
+        .post(&proxy_url)
+        .header("X-GDownloader-Token", token)
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
     resp.json::<Value>().await.ok()
 }
 
 async fn proxy_action(payload: Value) -> Result<Value> {
     let port = electron_proxy_port().ok_or_else(|| anyhow!("Proxy local do TeraBox não disponível"))?;
+    let token = helper_proxy_token()
+        .ok_or_else(|| anyhow!("Token do proxy local do TeraBox não disponível"))?;
     let proxy_url = format!("http://127.0.0.1:{port}/");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
         .build()?;
-    let resp = client.post(&proxy_url).json(&payload).send().await?;
+    let resp = client
+        .post(&proxy_url)
+        .header("X-GDownloader-Token", token)
+        .json(&payload)
+        .send()
+        .await?;
     Ok(resp.json::<Value>().await?)
 }
 

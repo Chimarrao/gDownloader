@@ -30,9 +30,11 @@ import { createCaptchaWindowService } from './captcha-window-service'
 import { logMain } from './debug-log'
 import { createKatfileService } from './katfile-service'
 import { createRemoteAccessServer, generateRemoteAccessCredentials } from './remote-access-server'
+import { assertSafeFilesystemPath, assertSafeHttpUrl } from './path-safety'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
 import { createYtdlpService } from './ytdlp-service'
 import { createFfmpegService } from './ffmpeg-service'
+import { randomBytes } from 'crypto'
 
 const legacySettingsPaths = [
   join(process.cwd(), 'settings.json'),
@@ -397,6 +399,8 @@ let lastClipboardSignature = ''
 let managedTorProcess: ReturnType<typeof spawn> | null = null
 let managedTorBootstrap = 0
 let lastTorExit: { ip: string; country?: string; countryCode?: string; isTor: boolean } | null = null
+/** Token one-shot de processo para o proxy local Terabox/Akira/Kat (não é secret de usuário). */
+const helperProxyToken = randomBytes(24).toString('hex')
 const backendRuntime = createBackendRuntime({
   dbPath: getDatabasePath(),
   createEnv: (dbPath) => {
@@ -408,6 +412,7 @@ const backendRuntime = createBackendRuntime({
       TERABOX_PROXY_PORT: String(teraboxProxyPort),
       AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
       KATFILE_PROXY_PORT: String(teraboxProxyPort),
+      GDOWNLOADER_HELPER_TOKEN: helperProxyToken,
       GDOWNLOADER_DB_PATH: dbPath,
       GDOWNLOADER_YTDLP_BIN: ytdlpBin,
       // Vazio quando nenhum ffmpeg foi resolvido: o backend só passa
@@ -693,6 +698,25 @@ async function teraboxNetRequest(params: {
 
 /** Local HTTP proxy para o backend Rust chamar requisições Terabox via sessão Electron */
 let teraboxProxyPort = 0
+
+function allowedFilesystemRoots(): string[] {
+  const settings = storage.getPublicSettings()
+  const roots = [
+    app.getPath('home'),
+    app.getPath('userData'),
+    app.getPath('downloads'),
+    app.getPath('temp'),
+    app.getPath('documents'),
+    app.getPath('desktop'),
+  ]
+  const outputDir = settings.outputDir?.replace(/^~(?=$|[/\\])/, app.getPath('home'))
+  if (outputDir) roots.push(outputDir)
+  return roots
+}
+
+function safeUserPath(raw: unknown): string {
+  return assertSafeFilesystemPath(raw, allowedFilesystemRoots())
+}
 
 async function syncBackendConfig(maxConcurrentDownloads: number): Promise<void> {
   await postBackend('/config/downloads', {
@@ -1351,21 +1375,27 @@ app.whenReady().then(async () => {
   ipcMain.handle('backend:getPort', () => rustPort)
   ipcMain.handle('terabox:getProxyPort', () => teraboxProxyPort)
 
-  // IPC: shell
-  ipcMain.handle('shell:openPath', (_e, p: string) => shell.openPath(p))
+  // IPC: shell (paths validados — evita open/show arbitrário via XSS no renderer)
+  ipcMain.handle('shell:openPath', (_e, p: string) => {
+    const safe = safeUserPath(p)
+    return shell.openPath(safe)
+  })
   ipcMain.handle('shell:showInFolder', (_e, p: string) => {
+    const safe = safeUserPath(p)
     try {
-      if (existsSync(p) && lstatSync(p).isDirectory()) {
-        return shell.openPath(p)
+      if (existsSync(safe) && lstatSync(safe).isDirectory()) {
+        return shell.openPath(safe)
       }
     } catch {
       // fallback abaixo
     }
-    shell.showItemInFolder(p)
+    shell.showItemInFolder(safe)
     return ''
   })
   ipcMain.handle('clipboard:writeText', (_e, text: string) => {
-    clipboard.writeText(text)
+    if (typeof text !== 'string') return false
+    // Cap defensivo: evita dump enorme de memória via IPC
+    clipboard.writeText(text.slice(0, 2_000_000))
     return true
   })
   ipcMain.handle('logs:tail', (_e, maxLines?: number) => {
@@ -1400,15 +1430,16 @@ app.whenReady().then(async () => {
     return true
   })
   ipcMain.handle('archive:extract', async (_e, archivePath: string) => {
-    return extractArchive(archivePath)
+    return extractArchive(safeUserPath(archivePath))
   })
   ipcMain.handle('archive:auto-extract', async (_e, archivePath: string, passwords: string[]) => {
+    const safeArchivePath = safeUserPath(archivePath)
     const { autoExtract, shouldAutoExtractFile, allPartsReady } = await import('./archive-service')
-    if (!shouldAutoExtractFile(archivePath)) {
+    if (!shouldAutoExtractFile(safeArchivePath)) {
       return { success: false, error: 'not_extractable' }
     }
     // For multipart, check all parts are present first
-    if (!allPartsReady(archivePath)) {
+    if (!allPartsReady(safeArchivePath)) {
       return { success: false, error: 'parts_missing' }
     }
     const learned = await fetchBackendConfig<Array<{ password: string }>>(
@@ -1423,7 +1454,7 @@ app.whenReady().then(async () => {
         ...(Array.isArray(passwords) ? passwords : []),
       ]),
     ]
-    const result = await autoExtract(archivePath, mergedPasswords)
+    const result = await autoExtract(safeArchivePath, mergedPasswords)
     if (result.success && result.passwordUsed) {
       await postBackend('/archive-passwords/success', {
         password: result.passwordUsed,
@@ -1459,7 +1490,10 @@ app.whenReady().then(async () => {
         body?: string
       },
     ) => {
-      return teraboxNetRequest(reqParams)
+      return teraboxNetRequest({
+        ...reqParams,
+        url: assertSafeHttpUrl(reqParams.url),
+      })
     },
   )
   ipcMain.handle('dialog:chooseDirectory', async () => {
@@ -1712,7 +1746,13 @@ app.whenReady().then(async () => {
         sourceUrl?: string
       },
     ) => {
-      return captchaWindowService.solve(params)
+      const pageUrl = params.pageUrl ? assertSafeHttpUrl(params.pageUrl) : ''
+      const sourceUrl = params.sourceUrl ? assertSafeHttpUrl(params.sourceUrl) : undefined
+      return captchaWindowService.solve({
+        provider: params.provider,
+        pageUrl,
+        sourceUrl,
+      })
     },
   )
 
@@ -1767,7 +1807,8 @@ app.whenReady().then(async () => {
     },
   )
 
-  // Inicia o proxy local do Terabox (usa sessão browser com cookies reais)
+  // Inicia o proxy local do Terabox (usa sessão browser com cookies reais).
+  // Exige header X-GDownloader-Token — só o backend Rust da sessão conhece o token.
   await new Promise<void>((resolve) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const http = require('http') as typeof import('http')
@@ -1777,8 +1818,24 @@ app.whenReady().then(async () => {
         res.end()
         return
       }
+      const tokenHeader = String(req.headers['x-gdownloader-token'] ?? '')
+      if (!tokenHeader || tokenHeader !== helperProxyToken) {
+        res.writeHead(401, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unauthorized' }))
+        return
+      }
       const chunks: Buffer[] = []
-      req.on('data', (c: Buffer) => chunks.push(c))
+      let size = 0
+      req.on('data', (c: Buffer) => {
+        size += c.byteLength
+        if (size > 8 * 1024 * 1024) {
+          res.writeHead(413)
+          res.end()
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
       req.on('end', async () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
@@ -1788,6 +1845,12 @@ app.whenReady().then(async () => {
             headers?: Record<string, string>
             destPath?: string
             jobId?: string
+          }
+          if (body.url) {
+            body.url = assertSafeHttpUrl(body.url)
+          }
+          if (body.destPath) {
+            body.destPath = safeUserPath(body.destPath)
           }
           const result = body.action?.startsWith('terabox_')
             ? await teraboxService.handleAction(body)
@@ -1811,7 +1874,7 @@ app.whenReady().then(async () => {
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number }
       teraboxProxyPort = addr.port
-      logMain('terabox-proxy', `porta ${teraboxProxyPort}`)
+      logMain('terabox-proxy', `porta ${teraboxProxyPort} (token auth)`)
       resolve()
     })
   })

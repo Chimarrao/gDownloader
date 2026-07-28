@@ -14,13 +14,27 @@ fn electron_proxy_port() -> Option<u16> {
         .filter(|&value| value > 0)
 }
 
+fn helper_proxy_token() -> Option<String> {
+    std::env::var("GDOWNLOADER_HELPER_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 async fn proxy_action(payload: serde_json::Value) -> Result<serde_json::Value> {
     let port = electron_proxy_port().ok_or_else(|| anyhow!("Helper local do AkiraBox não disponível"))?;
+    let token = helper_proxy_token()
+        .ok_or_else(|| anyhow!("Token do helper local do AkiraBox não disponível"))?;
     let proxy_url = format!("http://127.0.0.1:{port}/");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(180))
         .build()?;
-    let response = client.post(&proxy_url).json(&payload).send().await?;
+    let response = client
+        .post(&proxy_url)
+        .header("X-GDownloader-Token", token)
+        .json(&payload)
+        .send()
+        .await?;
     Ok(response.json::<serde_json::Value>().await?)
 }
 

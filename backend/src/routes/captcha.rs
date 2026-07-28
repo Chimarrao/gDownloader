@@ -149,6 +149,7 @@ mod tests {
             captcha_page_url: Some("https://example.com/captcha".to_string()),
             captcha_token: None,
             error: Some("captcha".to_string()),
+            error_kind: Some("captcha".to_string()),
             priority: 0,
             created_at: 1,
             started_at: None,

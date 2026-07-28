@@ -290,6 +290,17 @@ export function createCaptchaWindowService() {
     if (!startUrl) {
       throw new Error('Captcha sem URL de origem.')
     }
+    // Defesa em profundidade: só http/https (mesmo se o IPC já validou).
+    let safeUrl: string
+    try {
+      const parsed = new URL(startUrl)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('protocol')
+      }
+      safeUrl = parsed.toString()
+    } catch {
+      throw new Error('URL de captcha inválida (somente http/https).')
+    }
 
     logMain('captcha-window', 'Abrindo resolvedor manual', {
       provider: request.provider,
@@ -305,7 +316,7 @@ export function createCaptchaWindowService() {
       logMain('captcha-window', 'Janela manual encerrada pelo usuário')
     })
 
-    await win.loadURL(startUrl)
+    await win.loadURL(safeUrl)
     await prepareProviderPage(win, request).catch(() => undefined)
     await focusCaptchaSurface(win).catch(() => undefined)
     win.show()

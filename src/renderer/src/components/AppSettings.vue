@@ -389,12 +389,29 @@
 
       <div class="setting-row">
         <div class="setting-info">
-          <span class="setting-label">Web UI na rede local</span>
-          <span class="setting-desc">Permite controlar e configurar o app por outro aparelho no mesmo roteador</span>
+          <span class="setting-label">Web UI local</span>
+          <span class="setting-desc">Sobe a interface web do gDownloader (por padrão só em 127.0.0.1)</span>
         </div>
         <label class="toggle">
           <input
             v-model="settings.remoteAccess.enabled"
+            type="checkbox"
+            @change="save"
+          />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Expor na LAN</span>
+          <span class="setting-desc">Quando ligado, escuta em 0.0.0.0 e o celular/outro PC da rede consegue acessar (HTTP sem TLS)</span>
+        </div>
+        <label class="toggle">
+          <input
+            v-model="settings.remoteAccess.allowLan"
             type="checkbox"
             @change="save"
           />
@@ -419,13 +436,14 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Senha</span>
-          <span class="setting-desc">Senha simples gerada para o acesso local</span>
+          <span class="setting-desc">Use “Gerar” para criar senha forte (mín. 16 caracteres). Sem isso o servidor não sobe.</span>
         </div>
         <div class="remote-inline">
           <input
             v-model="settings.remoteAccess.password"
             class="setting-input"
-            type="text"
+            type="password"
+            autocomplete="new-password"
             @change="save"
           />
           <button class="browse-btn" @click="generateRemoteCredentials">Gerar</button>
@@ -435,7 +453,7 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Porta local</span>
-          <span class="setting-desc">Endereço exposto apenas na rede local, sem TLS público</span>
+          <span class="setting-desc">Porta HTTP local (sem TLS). Prefira não expor na internet.</span>
         </div>
         <input
           v-model.number="settings.remoteAccess.port"
@@ -450,7 +468,11 @@
       <div class="remote-access-card">
         <div class="remote-access-info">
           <span class="remote-status" :class="{ active: remoteInfo?.running, error: remoteInfo?.error }">
-            {{ remoteInfo?.running ? 'Online na rede local' : settings.remoteAccess.enabled ? 'Ativando...' : 'Desativado' }}
+            {{
+              remoteInfo?.running
+                ? (settings.remoteAccess.allowLan ? 'Online na rede local (LAN)' : 'Online só neste computador')
+                : settings.remoteAccess.enabled ? 'Ativando...' : 'Desativado'
+            }}
           </span>
           <a
             v-if="remoteInfo?.url"
@@ -463,7 +485,9 @@
           </a>
           <span v-if="remoteInfo?.error" class="remote-error">{{ remoteInfo.error }}</span>
           <div class="remote-actions">
-            <button class="browse-btn" :disabled="!remoteInfo?.url" @click="copyRemoteUrl">Copiar link</button>
+            <button class="browse-btn" :disabled="!remoteInfo?.credentialUrl" @click="copyRemoteUrl">
+              Copiar link de login
+            </button>
             <button class="browse-btn" :disabled="!remoteInfo?.qrCodeDataUrl" @click="showRemoteQr = !showRemoteQr">
               {{ showRemoteQr ? 'Ocultar QR Code' : 'Gerar QR Code' }}
             </button>
@@ -478,7 +502,10 @@
         />
       </div>
       <div v-if="remoteInfo?.insecureCredentials" class="remote-security-alert">
-        Credenciais padrão detectadas. Altere usuário e senha antes de manter o acesso remoto ativo na rede local.
+        Senha fraca ou ausente. Clique em “Gerar” para criar uma senha forte — o servidor remoto não sobe sem isso.
+      </div>
+      <div v-if="settings.remoteAccess.allowLan && settings.remoteAccess.enabled" class="remote-security-alert">
+        Acesso na LAN ativo em HTTP sem TLS. Use só em rede confiável e com senha forte.
       </div>
       <div class="remote-sessions">
         <div class="remote-sessions-header">
@@ -719,8 +746,9 @@ const settings = reactive<AppSettingsSnapshot>({
   ffmpegBinPath: '',
   remoteAccess: {
     enabled: false,
+    allowLan: false,
     username: 'gdownloader',
-    password: 'gd-1234',
+    password: '',
     port: 9786,
   },
 })
@@ -917,12 +945,15 @@ async function generateRemoteCredentials(): Promise<void> {
   settings.remoteAccess = {
     ...generated,
     enabled: settings.remoteAccess.enabled,
+    allowLan: settings.remoteAccess.allowLan ?? false,
     port: settings.remoteAccess.port || generated.port,
   }
   await save()
+  await refreshRemoteInfo()
 }
 
 async function copyRemoteUrl(): Promise<void> {
+  // Sempre o link de login por token (nunca user:senha na URL).
   const value = remoteInfo.value?.credentialUrl || remoteInfo.value?.url
   if (!value) return
   await window.api.clipboard.writeText(value)
