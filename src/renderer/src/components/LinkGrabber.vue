@@ -580,7 +580,12 @@ const selectedEntries = computed<QueueEntry[]>(() => {
 
   return entries
 })
-const selectedCount = computed(() => selectedEntries.value.length)
+// Conta UNIDADES selecionadas (arquivos, contando cada filho de pasta), igual ao
+// `availableCount` — antes contava "entries" (pasta = 1), então "1 selecionado ·
+// 5 disponíveis" aparecia inconsistente. Agora "5 selecionados · 5 disponíveis".
+const selectedCount = computed(() =>
+  rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0),
+)
 // Espaço em disco livre na pasta de destino padrão (mesmo cálculo da barra do topo),
 // usado para avisar se o TOTAL selecionado não cabe (A1 parte 2).
 // Espaço livre POR DISCO DE DESTINO: cada download pode ir para uma pasta/disco

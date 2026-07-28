@@ -1147,6 +1147,8 @@ const confirmDialog = ref<{
 const confirmDialogRef = ref<HTMLElement | null>(null)
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
+// Só estes status disparam o flash (evita piscar no ciclo de auto-retry).
+const NOTABLE_FLASH_STATUSES = new Set<string>(['complete', 'corrupted', 'waiting_captcha', 'disk_full'])
 const downloadChildNodeCache = new WeakMap<DownloadChild[], DerivedChildNode[]>()
 
 // ── Computed ───────────────────────────────────────────────
@@ -2088,11 +2090,15 @@ onMounted(async () => {
           speedBps: 0,
           etaSec: 0,
         })
-        // Flash animation for status change
-        flashingIds.value = new Set([...flashingIds.value, ev.id])
-        setTimeout(() => {
-          flashingIds.value = new Set([...flashingIds.value].filter((id) => id !== ev.id))
-        }, 400)
+        // Flash só em transições NOTÁVEIS (concluído, corrompido, captcha, disco
+        // cheio). O churn de auto-retry (Error→Pending→Baixando→Error…) NÃO pisca —
+        // antes um download falho a retentar ficava piscando sem parar.
+        if (ev.status && NOTABLE_FLASH_STATUSES.has(ev.status)) {
+          flashingIds.value = new Set([...flashingIds.value, ev.id])
+          setTimeout(() => {
+            flashingIds.value = new Set([...flashingIds.value].filter((id) => id !== ev.id))
+          }, 400)
+        }
         void maybeResolveCaptchaById(ev.id)
         if (props.torActive && ev.status === DownloadStatusEnum.RateLimited && !torCircuitRetryIds.has(ev.id)) {
           torCircuitRetryIds.add(ev.id)
