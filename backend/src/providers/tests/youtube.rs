@@ -43,10 +43,12 @@ fn parses_ytdlp_progress_with_synthetic_total_when_total_is_na() {
 
 #[test]
 fn split_media_phase_progress_does_not_overlap_ranges() {
-    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 1, true), 4_500);
-    assert_eq!(YouTubeProvider::phase_progress(0, 2, true), 4_500);
-    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 2, true), 9_000);
-    assert_eq!(YouTubeProvider::merge_progress(true), 9_250);
+    // Vídeo recebe a maior fatia (0–85%), áudio uma pequena (85–95%), sem sobrepor,
+    // e o merge fica logo acima do fim do áudio.
+    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 1, true), 8_500);
+    assert_eq!(YouTubeProvider::phase_progress(0, 2, true), 8_500);
+    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 2, true), 9_500);
+    assert_eq!(YouTubeProvider::merge_progress(true), 9_600);
 }
 
 #[test]

@@ -694,10 +694,14 @@ impl YouTubeProvider {
             return (0, 9_500);
         }
 
+        // O stream de VÍDEO é muito maior (e mais lento) que o de áudio. Dando 45%
+        // da barra a cada um, o vídeo (fase longa) só enchia até 45% e o áudio
+        // (fase curta) pulava de 45% a 90% "do nada". Agora o vídeo recebe a maior
+        // fatia (0–85%) e o áudio uma pequena (85–95%), refletindo o tempo real.
         match phase_count {
-            0 | 1 => (0, 4_500),
-            2 => (4_500, 4_500),
-            _ => (9_000, 0),
+            0 | 1 => (0, 8_500),
+            2 => (8_500, 1_000),
+            _ => (9_500, 0),
         }
     }
 
@@ -712,7 +716,7 @@ impl YouTubeProvider {
 
     fn merge_progress(has_split_media: bool) -> u64 {
         if has_split_media {
-            9_250
+            9_600
         } else {
             9_750
         }
