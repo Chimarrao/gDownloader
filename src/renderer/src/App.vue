@@ -20,16 +20,16 @@
         <button
           class="quick-toggle-btn"
           :class="{ active: clipboardMonitorEnabled }"
-          :title="clipboardMonitorEnabled ? 'Captura de links ativa' : 'Captura de links desligada'"
+          :title="clipboardMonitorEnabled ? t('clipboardCaptureOn') : t('clipboardCaptureOff')"
           @click="toggleClipboardMonitor"
         >
           <i class="pi pi-link"></i>
-          <span>Captura</span>
+          <span>{{ t('clipboardCapture') }}</span>
         </button>
-        <button class="quick-icon-btn" title="Alternar tema claro/escuro" @click="toggleQuickTheme">
+        <button class="quick-icon-btn" :title="t('toggleTheme')" @click="toggleQuickTheme">
           <i :class="effectiveTheme === 'light' ? 'pi pi-moon' : 'pi pi-sun'"></i>
         </button>
-        <div class="top-speed" title="Velocidade agregada">
+        <div class="top-speed" :title="t('aggregateSpeed')">
           <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
           <span>{{ formatSpeed(currentSpeed) }}</span>
         </div>
@@ -38,7 +38,7 @@
             type="button"
             class="top-disk"
             :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
-            :title="`Disco ${diskUsage.mount}: ${formatBytes(diskUsage.used)} usados · ${formatBytes(queuedBytes)} na fila · ${formatBytes(diskUsage.available)} livres de ${formatBytes(diskUsage.total)}${diskQueueOverflows ? ' — a fila NÃO cabe no espaço livre!' : ''} (clique para ver todos os discos)`"
+            :title="diskTooltip"
             @click="toggleDisksPopover"
           >
             <i class="pi pi-database"></i>
@@ -51,21 +51,21 @@
                   :style="{ width: `${diskQueuedPercent}%` }"
                 ></span>
               </div>
-              <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} livres</span>
+              <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} {{ t('diskFreeLabel').toLowerCase() }}</span>
             </div>
           </button>
 
           <div v-if="disksPopoverOpen" class="disks-popover" @click.stop>
             <div class="disks-popover-head">
-              <span>Discos e volumes</span>
+              <span>{{ t('disksAndVolumes') }}</span>
               <button class="disks-popover-close" @click="disksPopoverOpen = false"><i class="pi pi-times"></i></button>
             </div>
             <div class="disks-legend">
-              <span><i class="dot used"></i>Usado</span>
-              <span><i class="dot queued"></i>Fila (disco atual)</span>
-              <span><i class="dot free"></i>Livre</span>
+              <span><i class="dot used"></i>{{ t('diskUsed') }}</span>
+              <span><i class="dot queued"></i>{{ t('diskQueued') }}</span>
+              <span><i class="dot free"></i>{{ t('diskFreeLabel') }}</span>
             </div>
-            <div v-if="allDisks.length === 0" class="disks-empty">Sem informação de discos.</div>
+            <div v-if="allDisks.length === 0" class="disks-empty">{{ t('noDiskInfo') }}</div>
             <div
               v-for="disk in allDisks"
               :key="disk.mount"
@@ -75,7 +75,7 @@
               <div class="disk-row-head">
                 <i class="pi" :class="disk.removable ? 'pi-usb' : 'pi-database'"></i>
                 <span class="disk-name" :title="disk.mount">{{ disk.name }}</span>
-                <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ' · removível' : '' }}</span>
+                <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ` · ${t('removableDisk')}` : '' }}</span>
               </div>
               <div class="disk-row-bar">
                 <span class="seg-used" :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"></span>
@@ -583,6 +583,14 @@ const diskQueuedPercent = computed(() => {
 const diskQueueOverflows = computed(
   () => diskUsage.value.total > 0 && queuedBytes.value > diskUsage.value.available,
 )
+
+const diskTooltip = computed(() => {
+  const freeOf = t('diskFreeOf', {
+    available: formatBytes(diskUsage.value.available),
+    total: formatBytes(diskUsage.value.total),
+  })
+  return `Disco ${diskUsage.value.mount}: ${formatBytes(diskUsage.value.used)} ${t('diskUsed').toLowerCase()} · ${formatBytes(queuedBytes.value)} · ${freeOf}${diskQueueOverflows.value ? t('diskQueueOverflow') : ''}${t('diskClickAll')}`
+})
 
 function onQueuedBytes(bytes: number): void {
   queuedBytes.value = Math.max(0, bytes)
