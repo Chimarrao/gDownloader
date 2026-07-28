@@ -551,6 +551,7 @@ pub async fn add_download_internal(
         captcha_page_url: None,
         captcha_token: None,
         error: None,
+        error_kind: None,
         priority: req.priority.unwrap_or(0),
         created_at: now,
         started_at: None,
@@ -596,7 +597,17 @@ pub async fn add_download_internal(
 pub async fn list_downloads(State(state): State<AppState>) -> Json<Vec<Download>> {
     let map = state.downloads.lock().await;
     // Coleta os valores do HashMap em um Vec e ordena por prioridade e data de criação.
-    let mut list: Vec<Download> = map.values().cloned().collect();
+    let mut list: Vec<Download> = map
+        .values()
+        .cloned()
+        .map(|mut download| {
+            if download.error_kind.is_none() {
+                download.error_kind =
+                    classify_error_kind(&download.status, download.error.as_deref());
+            }
+            download
+        })
+        .collect();
     list.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
@@ -1932,6 +1943,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                                 d.speed_bps = 0;
                                 d.eta_secs = 0;
                                 d.error = Some(format!("Arquivo possivelmente corrompido: {reason}"));
+                                d.error_kind = Some("integrity".to_string());
                                 d.completed_at = Some(current_unix_secs());
                             }
                         }
@@ -2051,6 +2063,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                             d.captcha_type = Some(captcha_type.clone());
                             d.captcha_sitekey = Some(sitekey.clone());
                             d.captcha_page_url = Some(page_url.clone());
+                            d.error_kind = Some("captcha".to_string());
                             d.speed_bps = 0;
                             d.eta_secs = 0;
                             d.completed_at = None;
@@ -2102,6 +2115,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                                 d.error = Some(
                                     "Conexão perdida — aguardando a rede voltar para retomar do ponto onde parou…".to_string(),
                                 );
+                                d.error_kind = Some("network".to_string());
                                 d.completed_at = None;
                                 if let Some(children) = d.children.as_mut() {
                                     for child in children.iter_mut() {
@@ -2156,6 +2170,9 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 let retry_policy = classify_retry_policy(&provider_name, &err_str, attempt);
                 let is_rate_limit = err_str.starts_with("RATE_LIMIT:");
                 let is_premium_required = err_str.starts_with("PREMIUM_REQUIRED:");
+                // Erros permanentes (arquivo removido, premium obrigatório, link morto)
+                // NÃO entram no loop de retry — falham na hora com mensagem clara.
+                let is_permanent = is_permanent_error(&err_str);
                 // Flag por-download: "usar Tor ao atingir o limite". Só entra em
                 // cena DEPOIS de esgotar as tentativas normais (attempt >= max_retries):
                 // primeiro tenta o máximo pela rede normal, só então troca pro Tor.
@@ -2172,10 +2189,13 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 let isolated_tor_port = *state.isolated_tor_port.lock().await;
                 let normal_retries_exhausted = attempt >= max_retries;
                 let isolated_tor_retry = should_assign_isolated_route(download_auto_tor, isolated_tor_port)
-                    && normal_retries_exhausted;
+                    && normal_retries_exhausted
+                    && !is_permanent;
                 // Retenta enquanto: for rate-limit, ainda houver orçamento normal, ou
                 // o download estiver marcado p/ Tor (segue tentando até o Tor entrar).
-                let should_retry = !is_premium_required
+                // Nunca retenta erros permanentes (removed/premium/unsupported).
+                let should_retry = !is_permanent
+                    && !is_premium_required
                     && (is_rate_limit || attempt < max_retries || download_auto_tor);
                 if should_retry {
                     let settings = state.db.lock().ok()
@@ -2199,6 +2219,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     let retry_delay_secs = if isolated_tor_retry { 3 } else { retry_policy.retry_delay_secs };
                     let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
                     let wait_status = if is_rate_limit && !isolated_tor_retry { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
+                    let wait_kind = classify_error_kind(&wait_status, Some(&retry_policy.wait_message));
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
@@ -2207,6 +2228,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                             d.eta_secs = retry_delay_secs;
                             d.retry_at = Some(retry_at);
                             d.error = Some(retry_policy.wait_message.clone());
+                            d.error_kind = wait_kind;
                             d.completed_at = None;
                             if let Some(children) = d.children.as_mut() {
                                 for child in children.iter_mut() {
@@ -2350,6 +2372,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                             d.eta_secs = 0;
                             d.retry_at = Some(retry_at);
                             d.error = Some(retry_message.clone());
+                            d.error_kind = Some("temporary".to_string());
                             d.completed_at = None;
                             if let Some(children) = d.children.as_mut() {
                                 for child in children.iter_mut() {
@@ -3233,11 +3256,14 @@ async fn is_dir_empty(path: &FsPath) -> Result<bool, std::io::Error> {
 
 // Helper: atualiza status para Error e emite evento WebSocket
 async fn update_error(state: &AppState, id: &str, message: &str) {
+    let pretty = prettify_download_error(message);
+    let kind = classify_error_kind(&DownloadStatus::Error, Some(&pretty));
     {
         let mut map = state.downloads.lock().await;
         if let Some(d) = map.get_mut(id) {
             d.status = DownloadStatus::Error;
-            d.error = Some(message.to_string());
+            d.error = Some(pretty.clone());
+            d.error_kind = kind.clone();
             d.speed_bps = 0;
             d.eta_secs = 0;
             d.retry_at = None;
@@ -3254,10 +3280,10 @@ async fn update_error(state: &AppState, id: &str, message: &str) {
         }
     }
     persist_download_snapshot(state, id).await;
-    record_download_event(state, id, "error", message);
+    record_download_event(state, id, kind.as_deref().unwrap_or("error"), &pretty);
     state.broadcast(WsEvent::Error {
         id: id.to_string(),
-        message: message.to_string(),
+        message: pretty,
     });
 }
 
@@ -3340,6 +3366,12 @@ pub async fn recover_downloads_from_db(state: AppState) {
         let dest_path = download.dest_path.clone();
         {
             let mut map = state.downloads.lock().await;
+            // Recalcula error_kind a partir do status/mensagem persistidos.
+            let mut download = download;
+            if download.error_kind.is_none() {
+                download.error_kind =
+                    classify_error_kind(&download.status, download.error.as_deref());
+            }
             map.insert(download_id.clone(), download);
         }
         if cleanup_temps {
@@ -3355,6 +3387,12 @@ pub async fn recover_downloads_from_db(state: AppState) {
 fn prettify_download_error(message: &str) -> String {
     if let Some(premium_message) = parse_premium_required_error(message) {
         return premium_message;
+    }
+    if let Some(removed) = parse_prefixed_error(message, "REMOVED:") {
+        return removed;
+    }
+    if let Some(unsupported) = parse_prefixed_error(message, "UNSUPPORTED:") {
+        return unsupported;
     }
 
     let lower = message.to_lowercase();
@@ -3376,6 +3414,17 @@ fn prettify_download_error(message: &str) -> String {
     }
 
     message.to_string()
+}
+
+/// Extrai mensagem legível de prefixos `KIND:provider:detail` ou `KIND:detail`.
+fn parse_prefixed_error(message: &str, prefix: &str) -> Option<String> {
+    let payload = message.strip_prefix(prefix)?;
+    let mut parts = payload.splitn(2, ':');
+    let first = parts.next()?.trim();
+    match parts.next() {
+        Some(detail) if !detail.trim().is_empty() => Some(detail.trim().to_string()),
+        _ => Some(first.to_string()),
+    }
 }
 
 struct RetryPolicy {
@@ -3438,10 +3487,18 @@ fn select_downloads_to_start(
     active_by_provider: &std::collections::HashMap<String, usize>,
     slots: usize,
 ) -> Vec<QueueCandidate> {
+    // Fairness entre hosts: prioridade formal primeiro; em empate, hosts com
+    // MENOS downloads ativos saem na frente (evita um host monopolizar a fila);
+    // por último, ordem de chegada (FIFO).
     pending.sort_by(|left, right| {
         right
             .priority
             .cmp(&left.priority)
+            .then_with(|| {
+                let left_used = active_by_provider.get(&left.provider).copied().unwrap_or(0);
+                let right_used = active_by_provider.get(&right.provider).copied().unwrap_or(0);
+                left_used.cmp(&right_used)
+            })
             .then_with(|| left.created_at.cmp(&right.created_at))
     });
 
@@ -3456,6 +3513,9 @@ fn select_downloads_to_start(
                 continue;
             }
             active_by_provider.insert(provider, used + 1);
+        } else {
+            // Mesmo sem hard-cap, conta o ativo para fairness nas próximas escolhas.
+            *active_by_provider.entry(provider).or_insert(0) += 1;
         }
 
         selected.push(candidate);
@@ -3465,6 +3525,88 @@ fn select_downloads_to_start(
     }
 
     selected
+}
+
+/// Classifica o erro/estado para a UI e políticas de retry.
+/// Valores estáveis (snake_case) consumidos pelo frontend.
+fn classify_error_kind(status: &DownloadStatus, message: Option<&str>) -> Option<String> {
+    match status {
+        DownloadStatus::RateLimited => return Some("rate_limit".to_string()),
+        DownloadStatus::WaitingCaptcha => return Some("captcha".to_string()),
+        DownloadStatus::DiskFull => return Some("disk_full".to_string()),
+        DownloadStatus::Corrupted => return Some("integrity".to_string()),
+        _ => {}
+    }
+
+    let message = message?;
+    if message.starts_with("RATE_LIMIT:") {
+        return Some("rate_limit".to_string());
+    }
+    if message.starts_with("CAPTCHA_REQUIRED:") {
+        return Some("captcha".to_string());
+    }
+    if message.starts_with("PREMIUM_REQUIRED:") {
+        return Some("premium".to_string());
+    }
+    if message.starts_with("REMOVED:") {
+        return Some("removed".to_string());
+    }
+    if message.starts_with("UNSUPPORTED:") {
+        return Some("permanent".to_string());
+    }
+    if is_connection_error(message) {
+        return Some("network".to_string());
+    }
+
+    let lower = message.to_lowercase();
+    if lower.contains("corromp")
+        || lower.contains("integridade")
+        || lower.contains("hash")
+        || lower.contains("assinatura")
+    {
+        return Some("integrity".to_string());
+    }
+    if lower.contains("não localizado")
+        || lower.contains("nao localizado")
+        || lower.contains("not found")
+        || lower.contains("file was deleted")
+        || lower.contains("file has been removed")
+        || lower.contains("arquivo removido")
+    {
+        return Some("removed".to_string());
+    }
+    if lower.contains("premium") {
+        return Some("premium".to_string());
+    }
+    if lower.contains("disco") && (lower.contains("cheio") || lower.contains("espaço") || lower.contains("espaco")) {
+        return Some("disk_full".to_string());
+    }
+    if is_permanent_error(message) {
+        return Some("permanent".to_string());
+    }
+    if matches!(status, DownloadStatus::Error | DownloadStatus::Pending) {
+        return Some("temporary".to_string());
+    }
+    None
+}
+
+/// Erros que NÃO devem consumir o loop de retry (falha definitiva na hora).
+fn is_permanent_error(message: &str) -> bool {
+    if message.starts_with("PREMIUM_REQUIRED:")
+        || message.starts_with("REMOVED:")
+        || message.starts_with("UNSUPPORTED:")
+    {
+        return true;
+    }
+    let lower = message.to_lowercase();
+    lower.contains("arquivo não localizado")
+        || lower.contains("arquivo nao localizado")
+        || lower.contains("file not found")
+        || lower.contains("file was deleted")
+        || lower.contains("file has been removed")
+        || lower.contains("arquivo removido")
+        || lower.contains("link não suportado")
+        || lower.contains("link nao suportado")
 }
 
 /// Quantos slots de concorrência um download ocupa. Cada download ATIVO ocupa
@@ -3837,6 +3979,73 @@ mod tests {
         );
 
         assert_eq!(policy.retry_delay_secs, 8109);
+    }
+
+    #[test]
+    fn permanent_errors_are_classified() {
+        assert!(is_permanent_error("REMOVED:Rapidgator:Arquivo não localizado no Rapidgator"));
+        assert!(is_permanent_error("PREMIUM_REQUIRED:Rapidgator:precisa premium"));
+        assert!(is_permanent_error("UNSUPPORTED:Foo:Link não suportado"));
+        assert!(!is_permanent_error("RATE_LIMIT:60:aguarde"));
+        assert!(!is_permanent_error("error sending request"));
+
+        assert_eq!(
+            classify_error_kind(&DownloadStatus::Error, Some("REMOVED:X:gone")).as_deref(),
+            Some("removed")
+        );
+        assert_eq!(
+            classify_error_kind(&DownloadStatus::RateLimited, Some("wait")).as_deref(),
+            Some("rate_limit")
+        );
+        assert_eq!(
+            classify_error_kind(&DownloadStatus::Corrupted, Some("bad")).as_deref(),
+            Some("integrity")
+        );
+        assert_eq!(
+            classify_error_kind(
+                &DownloadStatus::Pending,
+                Some("error sending request: connection reset")
+            )
+            .as_deref(),
+            Some("network")
+        );
+    }
+
+    #[test]
+    fn scheduler_prefers_less_busy_hosts_on_priority_tie() {
+        let mut active = std::collections::HashMap::new();
+        active.insert("Mega".to_string(), 2);
+        active.insert("MediaFire".to_string(), 0);
+
+        let selected = select_downloads_to_start(
+            vec![
+                candidate("mega-item", "Mega", 10, 1),
+                candidate("mf-item", "MediaFire", 10, 2),
+            ],
+            &active,
+            1,
+        );
+
+        let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["mf-item".to_string()]);
+    }
+
+    #[test]
+    fn scheduler_respects_host_parallel_cap() {
+        let mut active = std::collections::HashMap::new();
+        active.insert("1Fichier".to_string(), 1); // cap free = 1
+
+        let selected = select_downloads_to_start(
+            vec![
+                candidate("a", "1Fichier", 10, 1),
+                candidate("b", "MediaFire", 5, 2),
+            ],
+            &active,
+            2,
+        );
+
+        let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["b".to_string()]);
     }
 
     #[test]

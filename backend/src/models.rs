@@ -59,6 +59,11 @@ pub struct Download {
     pub captcha_page_url: Option<String>,
     pub captcha_token: Option<String>,    // preenchido quando o usuário resolve
     pub error: Option<String>,   // Option = pode ser Some("mensagem") ou None — como string|null no PHP
+    /// Classificação semântica do erro/estado para a UI e políticas de retry.
+    /// Valores: network | rate_limit | captcha | premium | removed | integrity |
+    /// disk_full | temporary | permanent. Não é coluna SQL — recalculado em memória.
+    #[serde(default)]
+    pub error_kind: Option<String>,
     pub priority: i32,           // Prioridade formal da fila; maior = inicia antes
     pub created_at: u64,         // Timestamp Unix em segundos (como time() no PHP)
     pub started_at: Option<u64>,
@@ -200,9 +205,13 @@ pub struct SecureSettings {
 pub struct RemoteAccessSettings {
     #[serde(default)]
     pub enabled: bool,
+    /// Quando true, o app Electron escuta em 0.0.0.0 (LAN). Default false = loopback.
+    #[serde(default)]
+    pub allow_lan: bool,
     #[serde(default = "default_remote_username")]
     pub username: String,
-    #[serde(default = "default_remote_password")]
+    /// Vazio por padrão: o app exige gerar senha forte antes de subir o servidor.
+    #[serde(default)]
     pub password: String,
     #[serde(default = "default_remote_port")]
     pub port: u16,
@@ -210,10 +219,6 @@ pub struct RemoteAccessSettings {
 
 fn default_remote_username() -> String {
     "gdownloader".to_string()
-}
-
-fn default_remote_password() -> String {
-    "gd-1234".to_string()
 }
 
 fn default_remote_port() -> u16 {
@@ -224,8 +229,9 @@ impl Default for RemoteAccessSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            allow_lan: false,
             username: default_remote_username(),
-            password: default_remote_password(),
+            password: String::new(),
             port: default_remote_port(),
         }
     }

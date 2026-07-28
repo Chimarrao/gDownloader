@@ -222,11 +222,12 @@ pub fn path_segments(url: &str) -> Vec<String> {
 }
 
 pub fn removed_error(provider: &str) -> anyhow::Error {
-    anyhow!("Arquivo não localizado no {provider}")
+    // Prefixo REMOVED: permite classificar como erro permanente (sem retry infinito).
+    anyhow!("REMOVED:{provider}:Arquivo não localizado no {provider}")
 }
 
 pub fn unsupported_error(provider: &str) -> anyhow::Error {
-    anyhow!("Link não suportado pelo fluxo atual do {provider}")
+    anyhow!("UNSUPPORTED:{provider}:Link não suportado pelo fluxo atual do {provider}")
 }
 
 pub fn premium_required_error(provider: &str, detail: &str) -> anyhow::Error {
@@ -849,20 +850,25 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         "MoonDL" => ProviderCapabilities {
             supports_auto_captcha: true,
             free_cooldown_secs: Some(3600),
+            // Free hosts costumam aceitar só 1 download simultâneo por IP.
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         "1Fichier" => ProviderCapabilities {
             free_cooldown_secs: Some(300),
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         "AkiraBox" => ProviderCapabilities {
             requires_browser_helper: true,
             supports_auto_captcha: true,
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         "Katfile" => ProviderCapabilities {
             requires_browser_helper: true,
             supports_auto_captcha: true,
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         "Terabox" => ProviderCapabilities {
@@ -889,11 +895,13 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         "Rapidgator" => ProviderCapabilities {
             supports_auto_captcha: true,
             free_cooldown_secs: Some(3600),
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         "BRUpload" => ProviderCapabilities {
             supports_auto_captcha: true,
             free_cooldown_secs: Some(60),
+            max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
         _ => ProviderCapabilities::default(),
