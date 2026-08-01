@@ -1,6 +1,6 @@
 <template>
   <div class="app-root">
-    <header class="topbar">
+    <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">
           <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
@@ -14,8 +14,62 @@
             <path d="M4 19 H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
           </svg>
         </div>
-        <strong>{{ t('appName') }}</strong>
+        <div class="brand-text">
+          <strong>{{ t('appName') }}</strong>
+          <span class="brand-version">v2.0.0</span>
+        </div>
       </div>
+      <nav class="sidebar-nav" data-tour="tab-bar">
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'downloads' }"
+          data-tour="downloads-tab"
+          @click="activeTab = 'downloads'"
+        >
+          <i class="pi pi-download"></i>
+          <span>{{ t('downloads') }}</span>
+          <span v-if="downloadCount > 0" class="nav-badge">{{ downloadCount }}</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'grabber' }"
+          data-tour="grabber-tab"
+          @click="activeTab = 'grabber'"
+        >
+          <i class="pi pi-link"></i>
+          <span>{{ t('linkGrabber') }}</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'account' }"
+          data-tour="accounts-tab"
+          @click="activeTab = 'account'"
+        >
+          <i class="pi pi-user"></i>
+          <span>{{ t('account') }}</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'logs' }"
+          data-tour="logs-tab"
+          @click="activeTab = 'logs'"
+        >
+          <i class="pi pi-list"></i>
+          <span>Logs</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'settings' }"
+          data-tour="settings-tab"
+          @click="activeTab = 'settings'"
+        >
+          <i class="pi pi-cog"></i>
+          <span>{{ t('settings') }}</span>
+        </button>
+      </nav>
+    </aside>
+    <div class="app-body">
+    <header class="topbar">
       <div class="topbar-actions">
         <button
           class="quick-toggle-btn"
@@ -181,49 +235,6 @@
       </div>
     </header>
 
-    <nav class="tab-bar" data-tour="tab-bar">
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'downloads' }"
-        data-tour="downloads-tab"
-        @click="activeTab = 'downloads'"
-      >
-        <i class="pi pi-download"></i>
-        <span>{{ t('downloads') }}</span>
-        <span v-if="downloadCount > 0" class="tab-badge">{{ downloadCount }}</span>
-      </button>
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'grabber' }"
-        data-tour="grabber-tab"
-        @click="activeTab = 'grabber'"
-      >
-        <i class="pi pi-link"></i>
-        <span>{{ t('linkGrabber') }}</span>
-      </button>
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'settings' }"
-        data-tour="settings-tab"
-        @click="activeTab = 'settings'"
-      >
-        <i class="pi pi-cog"></i>
-        <span>{{ t('settings') }}</span>
-      </button>
-      <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'account' }"
-        data-tour="accounts-tab"
-        @click="activeTab = 'account'"
-      >
-        <i class="pi pi-user"></i>
-        <span>{{ t('account') }}</span>
-      </button>
-      <button class="tab-btn" :class="{ active: activeTab === 'logs' }" data-tour="logs-tab" @click="activeTab = 'logs'">
-        <i class="pi pi-list"></i>
-        <span>Logs</span>
-      </button>
-    </nav>
 
     <main class="app-main">
       <section v-show="activeTab === 'downloads'" class="panel downloads-panel" data-tour="download-queue">
@@ -259,6 +270,7 @@
         <LogsView />
       </section>
     </main>
+    </div>
     <OnboardingTour
       v-if="showOnboarding"
       :active-tab="activeTab"
@@ -869,17 +881,39 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 .app-root {
   height: 100vh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--bg-primary);
   color: var(--text-primary);
+  overflow: hidden;
+}
+
+/* ── Sidebar (navegação lateral) ─────────────────────────────── */
+.sidebar {
+  width: 244px;
+  flex: 0 0 244px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 12px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+.app-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
+  justify-content: flex-end;
+  padding: 12px 18px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-secondary);
 }
@@ -1578,6 +1612,19 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   align-items: center;
   gap: 10px;
   font-size: 15px;
+  padding: 6px 8px 14px;
+}
+
+.brand-text {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.brand-version {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 .brand-mark {
@@ -1591,43 +1638,51 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   color: var(--accent-color);
 }
 
-.tab-bar {
+.sidebar-nav {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px 0;
-  background: var(--bg-primary);
-  border-bottom: 1px solid var(--border-color);
+  flex-direction: column;
+  gap: 3px;
 }
 
-.tab-btn {
-  display: inline-flex;
+.nav-item {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 11px;
+  width: 100%;
   padding: 10px 12px;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
+  text-align: left;
   transition:
     color 0.15s ease,
-    border-color 0.15s ease;
+    background 0.15s ease;
 }
 
-.tab-btn:hover {
+.nav-item i {
+  font-size: 16px;
+  width: 18px;
+  text-align: center;
+}
+
+.nav-item:hover {
   color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
-.tab-btn.active {
+.nav-item.active {
   color: var(--accent-color);
-  border-bottom-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  font-weight: 600;
 }
 
-.tab-badge {
-  min-width: 18px;
-  height: 18px;
+.nav-badge {
+  min-width: 20px;
+  height: 20px;
+  margin-left: auto;
   padding: 0 6px;
   display: inline-flex;
   align-items: center;
