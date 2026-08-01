@@ -562,6 +562,7 @@ pub async fn add_download_internal(
         request_headers: req.request_headers.clone(),
         network_route: None,
         thumbnail_url: file_info.thumbnail_url,
+        thumbnail_data: None,
         channel_name: file_info.channel_name,
         channel_thumbnail_url: file_info.channel_thumbnail_url,
         auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(false),
@@ -576,6 +577,11 @@ pub async fn add_download_internal(
     if let Ok(db) = state.db.lock() {
         let _ = crate::db::upsert(&db, &download);
         let _ = crate::db::insert_download_event(&db, &download.id, "created", "Adicionado à fila");
+    }
+
+    // Cacheia a thumbnail em base64 em background (persiste entre reaberturas).
+    if let Some(thumb) = download.thumbnail_url.clone() {
+        spawn_thumbnail_cache(state.clone(), download.id.clone(), thumb);
     }
 
     info!(
@@ -2807,6 +2813,64 @@ fn hash_algorithm_label(algorithm: &HashAlgorithm) -> &'static str {
         HashAlgorithm::Sha256 => "SHA256",
         HashAlgorithm::Crc32 => "CRC32",
     }
+}
+
+/// Baixa a thumbnail e guarda em base64 (data URL) no download, persistindo entre
+/// reaberturas do app — a URL de thumbnail do YouTube é assinada/expira, então sem
+/// isso o item voltava a mostrar só o logo do provider. Best-effort: qualquer falha
+/// é silenciosa (fica só a URL). Roda em background, não bloqueia a adição.
+fn spawn_thumbnail_cache(state: AppState, id: String, thumbnail_url: String) {
+    use base64::Engine;
+    if thumbnail_url.trim().is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        {
+            let map = state.downloads.lock().await;
+            match map.get(&id) {
+                Some(d) if d.thumbnail_data.is_some() => return, // já em cache
+                Some(_) => {}
+                None => return,
+            }
+        }
+        let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .user_agent("gDownloader")
+            .build()
+        else {
+            return;
+        };
+        let Ok(resp) = client.get(&thumbnail_url).send().await else {
+            return;
+        };
+        let Ok(resp) = resp.error_for_status() else {
+            return;
+        };
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| value.starts_with("image/"))
+            .unwrap_or("image/jpeg")
+            .to_string();
+        let Ok(bytes) = resp.bytes().await else {
+            return;
+        };
+        // Ignora vazio ou grande demais (thumbnails são pequenas).
+        if bytes.is_empty() || bytes.len() > 3_000_000 {
+            return;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let data_url = format!("data:{content_type};base64,{encoded}");
+        {
+            let mut map = state.downloads.lock().await;
+            match map.get_mut(&id) {
+                Some(d) => d.thumbnail_data = Some(data_url),
+                None => return,
+            }
+        }
+        persist_download_snapshot(&state, &id).await;
+    });
 }
 
 async fn persist_download_snapshot(state: &AppState, id: &str) {

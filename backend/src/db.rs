@@ -187,8 +187,9 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               parallel_parts, selected_children_json, expected_hash_json,
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
-              completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, duration_secs, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33)
+              completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, duration_secs,
+              thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?34,?35,?36,?37,?33)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -220,6 +221,10 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              network_route_json     = excluded.network_route_json,
              auto_tor_on_limit      = excluded.auto_tor_on_limit,
              duration_secs          = excluded.duration_secs,
+             thumbnail_url          = excluded.thumbnail_url,
+             thumbnail_data         = excluded.thumbnail_data,
+             channel_name           = excluded.channel_name,
+             channel_thumbnail_url  = excluded.channel_thumbnail_url,
              updated_at             = excluded.updated_at",
         params![
             d.id,
@@ -255,6 +260,10 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             if d.auto_tor_on_limit { 1i64 } else { 0i64 },
             d.duration_secs.map(|value| value as i64),
             now_secs(),
+            d.thumbnail_url,
+            d.thumbnail_data,
+            d.channel_name,
+            d.channel_thumbnail_url,
         ],
     )?;
     Ok(())
@@ -385,7 +394,8 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 captcha_type, captcha_sitekey, captcha_page_url, captcha_token,
                 error, priority, created_at, started_at, completed_at, last_progress_at,
                 COALESCE(pinned, 0) as pinned, package_id, network_route_json,
-                COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit, duration_secs
+                COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit, duration_secs,
+                thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -445,9 +455,10 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 request_headers: None,
                 speed_bps: 0,
                 eta_secs: 0,
-                thumbnail_url: None,
-                channel_name: None,
-                channel_thumbnail_url: None,
+                thumbnail_url: row.get(33).ok().flatten(),
+                thumbnail_data: row.get(34).ok().flatten(),
+                channel_name: row.get(35).ok().flatten(),
+                channel_thumbnail_url: row.get(36).ok().flatten(),
                 auto_tor_on_limit: row.get::<_, i64>(31)? != 0,
             })
         })?
@@ -1235,6 +1246,7 @@ mod tests {
             request_headers: None,
             network_route: None,
             thumbnail_url: None,
+            thumbnail_data: None,
             channel_name: None,
             channel_thumbnail_url: None,
             auto_tor_on_limit: false,

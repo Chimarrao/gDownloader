@@ -1170,6 +1170,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,
     lastProgressAt: d.last_progress_at ? (d.last_progress_at as number) * 1000 : undefined,
     thumbnailUrl: typeof d.thumbnail_url === 'string' ? d.thumbnail_url : undefined,
+    thumbnailData: typeof d.thumbnail_data === 'string' ? d.thumbnail_data : undefined,
     channelName: typeof d.channel_name === 'string' ? d.channel_name : undefined,
     channelThumbnailUrl: typeof d.channel_thumbnail_url === 'string' ? d.channel_thumbnail_url : undefined,
     autoTorOnLimit: Boolean(d.auto_tor_on_limit),

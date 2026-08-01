@@ -107,6 +107,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "add_media_duration_columns",
         apply: migration_add_media_duration_columns,
     },
+    Migration {
+        version: 20,
+        name: "add_download_thumbnail_columns",
+        apply: migration_add_download_thumbnail_columns,
+    },
 ];
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -354,6 +359,37 @@ fn migration_add_media_duration_columns(conn: &Connection) -> Result<()> {
         "file_info_cache",
         "duration_secs",
         "ALTER TABLE file_info_cache ADD COLUMN duration_secs INTEGER",
+    )
+}
+
+fn migration_add_download_thumbnail_columns(conn: &Connection) -> Result<()> {
+    // Persiste a thumbnail (e o canal) do download. `thumbnail_data` guarda a
+    // imagem em base64 (data URL) para sobreviver à expiração da URL assinada do
+    // YouTube e ao modo offline — antes nada disso era gravado, então ao reabrir
+    // o app o item voltava a mostrar só o logo do provider.
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "thumbnail_url",
+        "ALTER TABLE downloads ADD COLUMN thumbnail_url TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "channel_name",
+        "ALTER TABLE downloads ADD COLUMN channel_name TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "channel_thumbnail_url",
+        "ALTER TABLE downloads ADD COLUMN channel_thumbnail_url TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "thumbnail_data",
+        "ALTER TABLE downloads ADD COLUMN thumbnail_data TEXT",
     )
 }
 

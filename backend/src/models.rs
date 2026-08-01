@@ -79,6 +79,10 @@ pub struct Download {
     pub network_route: Option<DownloadNetworkRoute>,
     #[serde(default)]
     pub thumbnail_url: Option<String>,
+    /// Thumbnail em base64 (data URL). Cache persistente que sobrevive à expiração
+    /// da URL assinada do YouTube e ao offline — a UI prefere este campo.
+    #[serde(default)]
+    pub thumbnail_data: Option<String>,
     #[serde(default)]
     pub channel_name: Option<String>,
     #[serde(default)]

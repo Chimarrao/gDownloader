@@ -97,6 +97,7 @@ export interface DownloadItem {
   completedAt?: number
   lastProgressAt?: number
   thumbnailUrl?: string
+  thumbnailData?: string
   channelName?: string
   channelThumbnailUrl?: string
   autoTorOnLimit?: boolean

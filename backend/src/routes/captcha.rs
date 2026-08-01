@@ -160,6 +160,7 @@ mod tests {
             request_headers: None,
             network_route: None,
             thumbnail_url: None,
+            thumbnail_data: None,
             channel_name: None,
             channel_thumbnail_url: None,
             auto_tor_on_limit: false,

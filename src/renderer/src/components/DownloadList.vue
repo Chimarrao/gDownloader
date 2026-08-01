@@ -278,11 +278,11 @@
           </label>
           <!-- Left: provider icon -->
           <div
-            v-if="hasColumn('host') && item.moduleId === 'youtube' && item.thumbnailUrl"
+            v-if="hasColumn('host') && item.moduleId === 'youtube' && (item.thumbnailData || item.thumbnailUrl)"
             class="provider-icon provider-icon-thumb"
             :title="moduleLabel(item.moduleId)"
           >
-            <img :src="item.thumbnailUrl" class="item-thumb-img" />
+            <img :src="item.thumbnailData || item.thumbnailUrl" class="item-thumb-img" />
           </div>
           <div
             v-else-if="hasColumn('host')"
@@ -2997,6 +2997,7 @@ function rowMemoKey(item: DownloadItem): unknown[] {
     item.autoTorOnLimit,
     item.outputPath,
     item.thumbnailUrl,
+    item.thumbnailData,
     item.children?.length ?? 0,
     selectedDownloadIds.value.has(item.id),
     flashingIds.value.has(item.id),
