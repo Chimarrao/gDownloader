@@ -1,5 +1,42 @@
 <template>
   <div class="download-list" :class="[`density-${uiDensity}`, { 'queue-panel-collapsed': queuePanelCollapsed }]">
+    <!-- Cartões de resumo (dashboard) -->
+    <div class="stat-cards">
+      <div class="stat-card">
+        <div class="stat-head">
+          <span>Downloads ativos</span>
+          <span class="stat-icon accent"><i class="pi pi-download"></i></span>
+        </div>
+        <strong class="stat-value">{{ statActiveCount }}</strong>
+        <span class="stat-sub">de {{ items.length }}</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-head">
+          <span>Velocidade atual</span>
+          <span class="stat-icon green"><i class="pi pi-chart-line"></i></span>
+        </div>
+        <strong class="stat-value">{{ formatSpeed(statSpeedBps) }}</strong>
+        <span class="stat-sub">Máxima: {{ formatSpeed(statMaxSpeedBps) }}</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-head">
+          <span>Arquivos concluídos</span>
+          <span class="stat-icon purple"><i class="pi pi-check-circle"></i></span>
+        </div>
+        <strong class="stat-value">{{ statCompletedCount }}</strong>
+        <span class="stat-sub">Concluídos na lista</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-head">
+          <span>Tempo restante</span>
+          <span class="stat-icon amber"><i class="pi pi-clock"></i></span>
+        </div>
+        <strong class="stat-value">{{ statRemainingSecs > 0 ? formatEta(statRemainingSecs) : '—' }}</strong>
+        <span class="stat-sub">Maior ETA ativo</span>
+      </div>
+    </div>
+
+    <div class="download-list-body">
     <!-- Empty state -->
     <div v-if="items.length === 0 && skeletonCount === 0" class="empty-state">
       <div class="empty-icon">
@@ -817,6 +854,7 @@
         </div>
       </template>
     </aside>
+    </div>
 
     <div
       v-if="contextMenu.visible && contextMenuItem"
@@ -1205,6 +1243,30 @@ const orderedItems = computed(() =>
 const finishedCount = computed(() =>
   items.value.filter((item) => isClearable(item)).length
 )
+
+// ── Cartões de estatística do topo (dashboard) ──
+const statActiveCount = computed(
+  () => items.value.filter((item) => item.status === DownloadStatusEnum.Downloading).length,
+)
+const statSpeedBps = computed(() =>
+  items.value.reduce(
+    (sum, item) => (item.status === DownloadStatusEnum.Downloading ? sum + (item.speedBps || 0) : sum),
+    0,
+  ),
+)
+const statMaxSpeedBps = ref(0)
+watch(statSpeedBps, (value) => {
+  if (value > statMaxSpeedBps.value) statMaxSpeedBps.value = value
+})
+const statCompletedCount = computed(
+  () => items.value.filter((item) => item.status === DownloadStatusEnum.Complete).length,
+)
+const statRemainingSecs = computed(() => {
+  const etas = items.value
+    .filter((item) => item.status === DownloadStatusEnum.Downloading)
+    .map((item) => item.etaSec || 0)
+  return etas.length ? Math.max(...etas) : 0
+})
 // Pausar/retomar todos (item 6).
 const bulkPauseBusy = ref(false)
 const hasActiveDownloads = computed(() =>
@@ -3146,14 +3208,98 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .download-list {
   --row-height: 56px;
   display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  gap: 14px;
+  align-self: stretch;
+  overflow: hidden;
+}
+
+.download-list-body {
+  display: flex;
   flex-direction: row;
   flex: 1;
   width: 100%;
   min-width: 0;
   min-height: 0;
   gap: 0;
-  align-self: stretch;
   overflow: hidden;
+}
+
+/* ── Cartões de resumo (dashboard) ─────────────────────────────── */
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  flex: 0 0 auto;
+}
+
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+.stat-icon.accent {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  color: var(--accent-color);
+}
+.stat-icon.green {
+  background: rgba(34, 197, 94, 0.14);
+  color: #16a34a;
+}
+.stat-icon.purple {
+  background: rgba(139, 92, 246, 0.14);
+  color: #7c3aed;
+}
+.stat-icon.amber {
+  background: rgba(245, 158, 11, 0.16);
+  color: #d97706;
+}
+
+.stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 1100px) {
+  .stat-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .download-list.density-compact {
