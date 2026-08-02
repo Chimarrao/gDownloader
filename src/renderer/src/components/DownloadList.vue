@@ -3859,10 +3859,14 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .items-stack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   width: 100%;
   min-width: 0;
   align-self: stretch;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+  overflow: hidden;
 }
 
 .selection-bar {
@@ -3924,12 +3928,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 14px;
+  padding: 12px 16px;
   min-height: var(--row-height);
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  transition: background 0.15s ease;
   position: relative;
   overflow: hidden;
   width: 100%;
@@ -3937,6 +3942,10 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-self: stretch;
   content-visibility: auto;
   contain: layout style;
+}
+
+.items-stack-rows .download-card:last-child {
+  border-bottom: none;
 }
 
 .density-compact .download-card {
@@ -3956,8 +3965,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   top: 0;
   bottom: 0;
   width: 3px;
-  border-radius: 12px 0 0 12px;
-  background: var(--status-indicator, var(--border-color));
+  border-radius: 0;
+  background: var(--status-indicator, transparent);
 }
 
 .download-card.status-bg-downloading::before {
@@ -3984,13 +3993,11 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .download-card:hover {
-  border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
-  box-shadow: var(--shadow-card);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .download-card.selected {
-  border-color: color-mix(in srgb, var(--accent-color) 70%, var(--border-color));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
 }
 
 .selection-badge {
