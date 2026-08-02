@@ -67,6 +67,76 @@
           <span>{{ t('settings') }}</span>
         </button>
       </nav>
+
+      <div v-if="diskUsage.total > 0" class="sidebar-disk-wrap">
+        <button
+          type="button"
+          class="sidebar-disk"
+          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
+          :title="diskTooltip"
+          @click="toggleDisksPopover"
+        >
+          <span class="sidebar-disk-title">Espaço em disco</span>
+          <div class="sidebar-disk-stats">
+            <div><strong>{{ formatBytes(diskUsage.used) }}</strong><span>{{ t('diskUsed') }}</span></div>
+            <div><strong>{{ formatBytes(diskUsage.available) }}</strong><span>{{ t('diskFreeLabel') }}</span></div>
+          </div>
+          <div class="sidebar-disk-bar">
+            <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
+            <span
+              class="seg-queued"
+              :class="{ overflow: diskQueueOverflows }"
+              :style="{ width: `${diskQueuedPercent}%` }"
+            ></span>
+          </div>
+          <span class="sidebar-disk-total">Total: {{ formatBytes(diskUsage.total) }}</span>
+        </button>
+
+        <div v-if="disksPopoverOpen" class="disks-popover sidebar-disks-popover" @click.stop>
+          <div class="disks-popover-head">
+            <span>{{ t('disksAndVolumes') }}</span>
+            <button class="disks-popover-close" @click="disksPopoverOpen = false"><i class="pi pi-times"></i></button>
+          </div>
+          <div class="disks-legend">
+            <span><i class="dot used"></i>{{ t('diskUsed') }}</span>
+            <span><i class="dot queued"></i>{{ t('diskQueued') }}</span>
+            <span><i class="dot free"></i>{{ t('diskFreeLabel') }}</span>
+          </div>
+          <div v-if="allDisks.length === 0" class="disks-empty">{{ t('noDiskInfo') }}</div>
+          <div
+            v-for="disk in allDisks"
+            :key="disk.mount"
+            class="disk-row"
+            :class="{ active: disk.mount === diskUsage.mount }"
+          >
+            <div class="disk-row-head">
+              <i class="pi" :class="disk.removable ? 'pi-usb' : 'pi-database'"></i>
+              <span class="disk-name" :title="disk.mount">{{ disk.name }}</span>
+              <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ` · ${t('removableDisk')}` : '' }}</span>
+            </div>
+            <div class="disk-row-bar">
+              <span class="seg-used" :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"></span>
+              <span
+                v-if="disk.mount === diskUsage.mount && queuedBytes > 0"
+                class="seg-queued"
+                :style="{ width: `${diskPercent(Math.min(queuedBytes, disk.available), disk.total)}%` }"
+              ></span>
+            </div>
+            <div class="disk-row-sub">
+              <span>{{ formatBytes(disk.used) }} usados</span>
+              <span>{{ formatBytes(disk.available) }} livres de {{ formatBytes(disk.total) }}</span>
+            </div>
+            <div class="disk-row-io">
+              <span class="io-read" title="Leitura">
+                <i class="pi pi-arrow-down"></i>{{ formatBytes(disk.readBps ?? 0) }}/s
+              </span>
+              <span class="io-write" title="Escrita">
+                <i class="pi pi-arrow-up"></i>{{ formatBytes(disk.writeBps ?? 0) }}/s
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
     </aside>
     <div class="app-body">
     <header class="topbar">
@@ -86,73 +156,6 @@
         <div class="top-speed" :title="t('aggregateSpeed')">
           <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
           <span>{{ formatSpeed(currentSpeed) }}</span>
-        </div>
-        <div v-if="diskUsage.total > 0" class="top-disk-wrap">
-          <button
-            type="button"
-            class="top-disk"
-            :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
-            :title="diskTooltip"
-            @click="toggleDisksPopover"
-          >
-            <i class="pi pi-database"></i>
-            <div class="top-disk-info">
-              <div class="top-disk-bar">
-                <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
-                <span
-                  class="seg-queued"
-                  :class="{ overflow: diskQueueOverflows }"
-                  :style="{ width: `${diskQueuedPercent}%` }"
-                ></span>
-              </div>
-              <span class="top-disk-label">{{ formatBytes(diskUsage.available) }} {{ t('diskFreeLabel').toLowerCase() }}</span>
-            </div>
-          </button>
-
-          <div v-if="disksPopoverOpen" class="disks-popover" @click.stop>
-            <div class="disks-popover-head">
-              <span>{{ t('disksAndVolumes') }}</span>
-              <button class="disks-popover-close" @click="disksPopoverOpen = false"><i class="pi pi-times"></i></button>
-            </div>
-            <div class="disks-legend">
-              <span><i class="dot used"></i>{{ t('diskUsed') }}</span>
-              <span><i class="dot queued"></i>{{ t('diskQueued') }}</span>
-              <span><i class="dot free"></i>{{ t('diskFreeLabel') }}</span>
-            </div>
-            <div v-if="allDisks.length === 0" class="disks-empty">{{ t('noDiskInfo') }}</div>
-            <div
-              v-for="disk in allDisks"
-              :key="disk.mount"
-              class="disk-row"
-              :class="{ active: disk.mount === diskUsage.mount }"
-            >
-              <div class="disk-row-head">
-                <i class="pi" :class="disk.removable ? 'pi-usb' : 'pi-database'"></i>
-                <span class="disk-name" :title="disk.mount">{{ disk.name }}</span>
-                <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ` · ${t('removableDisk')}` : '' }}</span>
-              </div>
-              <div class="disk-row-bar">
-                <span class="seg-used" :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"></span>
-                <span
-                  v-if="disk.mount === diskUsage.mount && queuedBytes > 0"
-                  class="seg-queued"
-                  :style="{ width: `${diskPercent(Math.min(queuedBytes, disk.available), disk.total)}%` }"
-                ></span>
-              </div>
-              <div class="disk-row-sub">
-                <span>{{ formatBytes(disk.used) }} usados</span>
-                <span>{{ formatBytes(disk.available) }} livres de {{ formatBytes(disk.total) }}</span>
-              </div>
-              <div class="disk-row-io">
-                <span class="io-read" title="Leitura">
-                  <i class="pi pi-arrow-down"></i>{{ formatBytes(disk.readBps ?? 0) }}/s
-                </span>
-                <span class="io-write" title="Escrita">
-                  <i class="pi pi-arrow-up"></i>{{ formatBytes(disk.writeBps ?? 0) }}/s
-                </span>
-              </div>
-            </div>
-          </div>
         </div>
         <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
           <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
@@ -1047,6 +1050,94 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 .top-disk {
   cursor: pointer;
   font: inherit;
+}
+
+.sidebar-disk-wrap {
+  margin-top: auto;
+  position: relative;
+  padding-top: 12px;
+}
+
+.sidebar-disk {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-disk.warn {
+  border-color: #e0a800;
+}
+
+.sidebar-disk-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+}
+
+.sidebar-disk-stats {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-disk-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-disk-stats strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.sidebar-disk-stats span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.sidebar-disk-bar {
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-primary) 9%, transparent);
+  overflow: hidden;
+  display: flex;
+}
+
+.sidebar-disk-bar .seg-used {
+  height: 100%;
+  background: var(--accent-color);
+}
+
+.sidebar-disk-bar .seg-queued {
+  height: 100%;
+  background: #f5b301;
+}
+
+.sidebar-disk-bar .seg-queued.overflow {
+  background: #dc2626;
+}
+
+.sidebar-disk-total {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.sidebar-disks-popover {
+  top: auto;
+  right: 0;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: auto;
 }
 
 .disks-popover {
