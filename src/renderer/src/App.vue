@@ -273,6 +273,16 @@
         <LogsView />
       </section>
     </main>
+    <footer class="status-bar">
+      <span class="status-item">
+        <i class="status-dot" :class="{ on: currentSpeed > 0 }"></i>
+        {{ t('aggregateSpeed') }}: ↓ {{ formatSpeed(currentSpeed) }}
+      </span>
+      <span class="status-item">
+        <i class="status-dot" :class="{ on: torState.state === 'connected' }"></i>
+        Proxy/Tor: {{ torState.state === 'connected' ? 'Ativo' : 'Inativo' }}
+      </span>
+    </footer>
     </div>
     <OnboardingTour
       v-if="showOnboarding"
@@ -919,6 +929,37 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   padding: 12px 18px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-secondary);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex: 0 0 auto;
+  padding: 7px 18px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+.status-dot.on {
+  background: #22c55e;
+  opacity: 1;
 }
 
 .topbar-actions {
