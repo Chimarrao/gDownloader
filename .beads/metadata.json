@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "gDownloader",
+  "project_id": "5a1d5645-0d56-40b9-99f2-c35ff05bd488"
+}

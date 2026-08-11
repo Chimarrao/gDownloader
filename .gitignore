@@ -27,3 +27,8 @@ backend/backend/
 # Documentos de trabalho locais (não versionados)
 melhorias.odt
 .~lock.*#
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
