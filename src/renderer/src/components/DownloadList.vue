@@ -3841,7 +3841,10 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   flex: 1;
   min-height: 0;
+  /* Único scroll vertical da fila — precisa de altura limitada (flex + min-height:0). */
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   gap: 10px;
   padding-right: 2px;
 }
@@ -3853,6 +3856,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 12px;
   width: 100%;
   min-width: 0;
+  flex: 0 0 auto;
 }
 
 .list-count {
@@ -4046,6 +4050,11 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border: 1px solid var(--border-color);
   border-radius: 14px;
   background: var(--bg-card);
+  /* overflow:hidden + flex default encolhia o bloco (min-size vira 0) e CORTAVA
+     os itens do fundo sem o .items-container poder rolar. Não encolher: o pai rola. */
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  min-height: min-content;
   overflow: hidden;
 }
 
@@ -4059,6 +4068,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border-radius: 10px;
   background: var(--accent-soft, rgba(99, 102, 241, 0.1));
   border: 1px solid var(--accent, rgba(99, 102, 241, 0.35));
+  flex: 0 0 auto;
 }
 
 .selection-bar-count {
@@ -4080,6 +4090,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   flex-direction: column;
   width: 100%;
   min-width: 0;
+  flex: 0 0 auto;
+  min-height: min-content;
 }
 
 /* Reordenação suave (FLIP do Vue) — habilitada só fora da virtualização. */
