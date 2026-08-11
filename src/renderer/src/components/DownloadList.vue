@@ -297,7 +297,7 @@
         <div class="items-stack-rows">
         <div
           v-for="item in visibleItems"
-          :key="item.id"
+          :key="`${item.id}:${rowLayoutVersion}`"
           v-memo="rowMemoKey(item)"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id) }]"
@@ -331,12 +331,19 @@
 
           <!-- Center: info -->
           <div class="item-body">
-            <!-- Row 1: filename + status + actions -->
+            <!-- Row 1: filename + status + quick actions -->
             <div class="item-header">
               <div class="item-title-wrap">
                 <template v-if="hasColumn('name')">
                 <span class="item-title" :title="item.title">{{ item.title || item.url }}</span>
                 </template>
+                <span
+                  v-if="item.pinned"
+                  class="pin-indicator"
+                  title="Fixado no topo"
+                >
+                  <i class="pi pi-star-fill"></i>
+                </span>
               </div>
               <div class="item-actions">
                 <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
@@ -346,6 +353,74 @@
                 <span v-if="selectedDownloadIds.has(item.id)" class="selection-badge">
                   {{ selectedDownloadIds.size }}
                 </span>
+
+                <!-- Ações rápidas (info operacional de volta, no layout novo) -->
+                <div class="quick-actions" @click.stop>
+                  <button
+                    v-if="actionsFor(item).canPause"
+                    class="action-btn"
+                    title="Pausar"
+                    aria-label="Pausar"
+                    @click="pause(item.id)"
+                  >
+                    <i class="pi pi-pause"></i>
+                  </button>
+                  <button
+                    v-if="actionsFor(item).canResume"
+                    class="action-btn"
+                    title="Retomar"
+                    aria-label="Retomar"
+                    @click="resume(item.id)"
+                  >
+                    <i class="pi pi-play"></i>
+                  </button>
+                  <button
+                    v-if="actionsFor(item).canOpenCaptcha"
+                    class="action-btn"
+                    title="Resolver captcha"
+                    aria-label="Resolver captcha"
+                    @click="openCaptcha(item.id)"
+                  >
+                    <i class="pi pi-shield"></i>
+                  </button>
+                  <button
+                    v-if="actionsFor(item).canCancel"
+                    class="action-btn cancel-btn"
+                    title="Cancelar"
+                    aria-label="Cancelar"
+                    @click="cancel(item.id)"
+                  >
+                    <i class="pi pi-times"></i>
+                  </button>
+                  <button
+                    v-if="actionsFor(item).canRetry"
+                    class="action-btn"
+                    title="Tentar novamente"
+                    aria-label="Tentar novamente"
+                    @click="retry(item.id)"
+                  >
+                    <i class="pi pi-refresh"></i>
+                  </button>
+                  <button
+                    v-if="actionsFor(item).canOpenFolder"
+                    class="action-btn open-btn"
+                    title="Mostrar na pasta"
+                    aria-label="Mostrar na pasta"
+                    @click="openFolder(item.outputPath!)"
+                  >
+                    <i class="pi pi-folder-open"></i>
+                  </button>
+                  <button
+                    v-if="item.isFolder && (item.children?.length ?? 0) > 0"
+                    class="action-btn"
+                    :title="isExpanded(item.id) ? 'Ocultar itens' : 'Mostrar itens'"
+                    :aria-label="isExpanded(item.id) ? 'Ocultar itens' : 'Mostrar itens'"
+                    @click="toggleFolder(item.id)"
+                  >
+                    <i class="pi" :class="isExpanded(item.id) ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
+                  </button>
+                </div>
+
                 <button
                   class="action-btn"
                   title="Mais ações"
@@ -357,10 +432,34 @@
               </div>
             </div>
 
-            <!-- Channel line (YouTube only) -->
-            <div v-if="item.channelName" class="item-channel">
-              <img v-if="item.channelThumbnailUrl" :src="item.channelThumbnailUrl" class="item-channel-avatar" />
-              <span>{{ item.channelName }}</span>
+            <!-- Subtitle: host · tipo · duração (sempre legível sem abrir detalhes) -->
+            <div class="item-subtitle">
+              <span v-if="hasColumn('host')" class="meta-host" :title="moduleLabel(item.moduleId)">
+                <i class="pi pi-globe"></i>
+                {{ moduleLabel(item.moduleId) }}
+              </span>
+              <template v-if="item.channelName">
+                <span class="meta-sep">·</span>
+                <span class="item-channel-inline">
+                  <img v-if="item.channelThumbnailUrl" :src="item.channelThumbnailUrl" class="item-channel-avatar" />
+                  {{ item.channelName }}
+                </span>
+              </template>
+              <template v-if="item.durationSecs">
+                <span class="meta-sep">·</span>
+                <span class="meta-duration">{{ formatMediaDuration(item.durationSecs) }}</span>
+              </template>
+              <template v-if="item.isFolder && (item.children?.length ?? 0) > 0">
+                <span class="meta-sep">·</span>
+                <span class="meta-size">{{ item.children?.length }} item(ns)</span>
+              </template>
+              <template v-if="networkRouteLabel(item) !== 'Conexão direta'">
+                <span class="meta-sep">·</span>
+                <span class="meta-network" :title="networkRouteLabel(item)">
+                  <span v-if="flagClass(item.networkRoute?.exitCountryCode)" :class="flagClass(item.networkRoute?.exitCountryCode)"></span>
+                  {{ networkRouteLabel(item) }}
+                </span>
+              </template>
             </div>
 
             <div v-if="showYouTubeStages(item)" class="youtube-stage-strip" aria-label="Etapas do YouTube">
@@ -401,6 +500,7 @@
               ></div>
             </div>
 
+            <!-- Stats line: sempre densa, inclusive em downloads antigos/concluídos -->
             <div class="item-meta">
               <canvas
                 v-if="hasSpeedSparkline(item)"
@@ -410,36 +510,67 @@
                 height="22"
                 aria-hidden="true"
               ></canvas>
-              <span class="meta-percent">{{ item.percent }}%</span>
 
-              <template v-if="item.status === 'downloading' && hasColumn('speed')">
-                <span class="meta-sep">·</span>
-                <span class="meta-speed">{{ formatSpeed(effectiveSpeedValue(item)) }}</span>
+              <span v-if="hasColumn('progress')" class="meta-chip meta-percent">{{ item.percent }}%</span>
+
+              <!-- Tamanho: total em concluídos; baixado/total nos demais -->
+              <template v-if="displayTotal(item) > 0 && hasColumn('size')">
+                <span
+                  v-if="item.status === 'complete' || item.percent >= 100"
+                  class="meta-chip meta-size"
+                  title="Tamanho total"
+                >
+                  {{ formatBytes(displayTotal(item)) }}
+                </span>
+                <span v-else class="meta-chip meta-size" title="Baixado / total">
+                  {{ formatBytes(Math.floor((item.percent / 100) * displayTotal(item))) }}
+                  / {{ formatBytes(displayTotal(item)) }}
+                </span>
               </template>
-              <template v-if="item.status === 'downloading' && hasColumn('eta')">
-                <span class="meta-sep">·</span>
-                <span class="meta-eta">{{ formatEta(effectiveEtaValue(item)) }} {{ t('remainingSuffix') }}</span>
+              <span
+                v-else-if="hasColumn('size')"
+                class="meta-chip meta-size meta-unknown"
+                title="Tamanho ainda desconhecido"
+              >Tamanho —</span>
+
+              <!-- Velocidade / ETA: só quando faz sentido (não em concluídos) -->
+              <template v-if="hasColumn('speed') && item.status !== 'complete' && item.status !== 'cancelled'">
+                <span
+                  v-if="item.status === 'downloading'"
+                  class="meta-chip meta-speed"
+                >{{ formatSpeed(effectiveSpeedValue(item)) }}</span>
+                <span
+                  v-else-if="item.status === 'verifying' && !item.expectedHash && (item.speedBps ?? 0) > 0"
+                  class="meta-chip meta-speed"
+                >{{ formatSpeed(item.speedBps) }}</span>
               </template>
 
-              <template v-else-if="item.status === 'verifying'">
-                <span class="meta-sep">·</span>
-                <span class="meta-verifying">
+              <template v-if="hasColumn('eta') && item.status !== 'complete' && item.status !== 'cancelled'">
+                <span
+                  v-if="item.status === 'downloading'"
+                  class="meta-chip meta-eta"
+                >
+                  <i class="pi pi-clock"></i>
+                  {{ formatEta(effectiveEtaValue(item)) }} {{ t('remainingSuffix') }}
+                </span>
+                <span
+                  v-else-if="item.status === 'verifying' && !item.expectedHash && (item.etaSec ?? 0) > 0"
+                  class="meta-chip meta-eta"
+                >
+                  <i class="pi pi-clock"></i>
+                  {{ formatEta(item.etaSec) }} {{ t('remainingSuffix') }}
+                </span>
+              </template>
+
+              <template v-if="item.status === 'verifying'">
+                <span class="meta-chip meta-verifying">
                   <i class="pi" :class="item.expectedHash ? 'pi-shield' : 'pi-cog'"></i>
                   {{ item.expectedHash ? `Verificando ${item.expectedHash.algorithm.toUpperCase()}` : 'Juntando partes…' }}
                 </span>
-                <template v-if="!item.expectedHash && (item.speedBps ?? 0) > 0">
-                  <span class="meta-sep">·</span>
-                  <span class="meta-speed">{{ formatSpeed(item.speedBps) }}</span>
-                </template>
-                <template v-if="!item.expectedHash && (item.etaSec ?? 0) > 0">
-                  <span class="meta-sep">·</span>
-                  <span class="meta-eta">{{ formatEta(item.etaSec) }} {{ t('remainingSuffix') }}</span>
-                </template>
               </template>
 
               <template v-else-if="item.status === 'rate_limited'">
-                <span class="meta-sep">·</span>
-                <span class="meta-wait">
+                <span class="meta-chip meta-wait">
                   <i class="pi pi-clock"></i>
                   {{ item.retryAt && item.retryAt > nowTick
                     ? t('rateLimitCountdown', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
@@ -448,66 +579,43 @@
               </template>
 
               <template v-else-if="item.status === 'waiting_captcha'">
-                <span class="meta-sep">·</span>
-                <span class="meta-captcha-wait">
+                <span class="meta-chip meta-captcha-wait">
                   <i class="pi pi-shield"></i>
                   {{ t('waitingCaptcha') }}
                 </span>
               </template>
 
               <template v-else-if="isWaitingRetryNow(item)">
-                <span class="meta-sep">·</span>
-                <span class="meta-wait">
+                <span class="meta-chip meta-wait">
                   <i class="pi pi-clock"></i>
                   {{ t('waitingRetryIn', { time: formatEta(retryCountdownNow(item)) }) }}
                 </span>
               </template>
 
-              <template v-if="displayTotal(item) > 0 && hasColumn('size')">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">
-                  {{ formatBytes(Math.floor((item.percent / 100) * displayTotal(item))) }}
-                  / {{ formatBytes(displayTotal(item)) }}
-                </span>
-              </template>
-
-              <template v-if="item.durationSecs">
-                <span class="meta-sep">·</span>
-                <span class="meta-duration">{{ formatMediaDuration(item.durationSecs) }}</span>
-              </template>
-
-              <template v-if="item.isFolder && (item.children?.length ?? 0) > 0">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">{{ item.children?.length }} item(ns)</span>
-              </template>
-
               <template v-if="isWaitingRetryNow(item) && item.error">
-                <span class="meta-sep">·</span>
-                <span class="meta-wait-reason" :title="item.error">{{ item.error }}</span>
+                <span class="meta-chip meta-wait-reason" :title="item.error">{{ item.error }}</span>
               </template>
 
               <template v-else-if="item.status === 'disk_full'">
-                <span class="meta-sep">·</span>
-                <span class="meta-disk-full">
+                <span class="meta-chip meta-disk-full">
                   <i class="pi pi-database"></i>
                   {{ t('diskFullShort') }}
                 </span>
               </template>
 
               <template v-else-if="(item.status === 'error' || item.status === 'corrupted') && item.error">
-                <span class="meta-sep">·</span>
                 <span
                   v-if="errorKindLabel(item)"
-                  class="meta-error-kind"
+                  class="meta-chip meta-error-kind"
                   :class="`kind-${resolveErrorKind(item)}`"
                   :title="item.error"
                 >{{ errorKindLabel(item) }}</span>
-                <span class="meta-error" :title="item.error">{{ item.error }}</span>
+                <span class="meta-chip meta-error" :title="item.error">{{ item.error }}</span>
               </template>
 
-              <template v-if="(item.maxRetries ?? 0) > 0">
-                <span class="meta-sep">·</span>
-                <span class="meta-retries">
+              <!-- Tentativas: só em estados onde ainda importa (não polui concluídos) -->
+              <template v-if="showRetryChip(item)">
+                <span class="meta-chip meta-retries">
                   {{ t('retryAttempt', {
                     current: (item.retryCount ?? 0) + 1,
                     max: (item.maxRetries ?? 0) >= 1_000_000 ? '∞' : (item.maxRetries ?? 0) + 1,
@@ -516,8 +624,7 @@
               </template>
 
               <template v-if="packages.length > 0 && hasColumn('package')">
-                <span class="meta-sep">·</span>
-                <label class="package-picker">
+                <label class="package-picker meta-chip" @click.stop>
                   <span
                     class="package-dot"
                     :style="{ backgroundColor: packageColor(item.packageId) }"
@@ -538,17 +645,31 @@
                   </select>
                 </label>
               </template>
-              <template v-if="hasColumn('added')">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">Adicionado {{ formatDateTime(item.addedAt) }}</span>
+              <template v-if="hasColumn('added') && item.addedAt">
+                <span class="meta-chip meta-time">
+                  <i class="pi pi-calendar"></i>
+                  {{ formatDateTime(item.addedAt) }}
+                </span>
               </template>
               <template v-if="item.completedAt && hasColumn('completed')">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">Concluído {{ formatDateTime(item.completedAt) }}</span>
+                <span class="meta-chip meta-time meta-completed">
+                  <i class="pi pi-check"></i>
+                  {{ formatDateTime(item.completedAt) }}
+                </span>
               </template>
+              <!-- Path ao lado da data de conclusão (ou sozinho se ainda estiver baixando/pausado) -->
+              <button
+                v-if="item.outputPath"
+                type="button"
+                class="meta-chip meta-path"
+                :title="item.outputPath"
+                @click.stop="openFolder(item.outputPath!)"
+              >
+                <i class="pi pi-folder"></i>
+                <span>{{ shortPath(item.outputPath) }}</span>
+              </button>
               <template v-if="item.expectedHash && hasColumn('hash')">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">{{ item.expectedHash.algorithm.toUpperCase() }}</span>
+                <span class="meta-chip meta-hash">{{ item.expectedHash.algorithm.toUpperCase() }}</span>
               </template>
               <span
                 v-for="badge in rowBadges(item)"
@@ -1119,6 +1240,9 @@ const speedLimitModal = ref<{
 
 const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
 const visibleColumns = ref<string[]>([...defaultColumns])
+// Bump quando o layout do card mudar — invalida :key + v-memo dos itens já montados
+// (senão HMR/reloads deixam downloads antigos com o DOM esparso anterior).
+const rowLayoutVersion = 4
 const filterStatuses = ref<string[]>([])
 const filterHosts = ref<string[]>([])
 const filterPackages = ref<string[]>([])
@@ -1538,6 +1662,42 @@ function formatDateTime(timestamp: number): string {
   })
 }
 
+/** Encurta path longo mantendo início e o arquivo final (legível na linha). */
+function shortPath(path: string): string {
+  if (!path) return ''
+  const normalized = path.replace(/\\/g, '/')
+  if (normalized.length <= 64) return path
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts.length <= 2) return path
+  const file = parts[parts.length - 1]
+  const parent = parts[parts.length - 2]
+  const root = parts[0]
+  return `${root}/…/${parent}/${file}`
+}
+
+/** Tentativas só importam enquanto o item ainda pode rodar/retryar. */
+function showRetryChip(item: DownloadItem): boolean {
+  if ((item.maxRetries ?? 0) <= 0) return false
+  if (
+    item.status === DownloadStatusEnum.Complete
+    || item.status === DownloadStatusEnum.Cancelled
+  ) {
+    return false
+  }
+  return (
+    item.status === DownloadStatusEnum.Pending
+    || item.status === DownloadStatusEnum.Downloading
+    || item.status === DownloadStatusEnum.Paused
+    || item.status === DownloadStatusEnum.Error
+    || item.status === DownloadStatusEnum.Corrupted
+    || item.status === DownloadStatusEnum.RateLimited
+    || item.status === DownloadStatusEnum.WaitingCaptcha
+    || item.status === DownloadStatusEnum.DiskFull
+    || item.status === DownloadStatusEnum.Verifying
+    || (item.retryCount ?? 0) > 0
+  )
+}
+
 function recordSpeedSample(id: string, speed: number): void {
   const samples = speedSamples.value[id] ?? []
   speedSamples.value = {
@@ -1797,7 +1957,9 @@ const virtualizationEnabled = computed(() => orderedItems.value.length > 40)
 // linhas quando qualquer uma abria, superdimensionando os espaçadores e causando o
 // drift (linhas "sumindo/aparecendo") ao rolar. Uma linha aberta só fica mais alta
 // que o slot dela na janela — não quebra a virtualização das visíveis.
-const estimatedRowHeight = 148
+// Altura média estimada da linha (subtitle + meta chips + path).
+// Só afeta virtualização (>40 itens); linhas reais crescem com o conteúdo.
+const estimatedRowHeight = 168
 const overscan = 8
 const visibleRange = computed(() => {
   if (!virtualizationEnabled.value) {
@@ -2937,8 +3099,10 @@ function effectiveEtaValue(item: DownloadItem): number {
 type YouTubeStageState = 'done' | 'current' | 'pending'
 
 function showYouTubeStages(item: DownloadItem): boolean {
+  // Só durante o download/junção — em concluídos polui a linha e empurra o layout.
   return item.moduleId === 'youtube'
-    && [DownloadStatusEnum.Downloading, DownloadStatusEnum.Verifying, DownloadStatusEnum.Complete].includes(item.status)
+    && (item.status === DownloadStatusEnum.Downloading
+      || item.status === DownloadStatusEnum.Verifying)
 }
 
 function youtubeStages(item: DownloadItem): Array<{ label: string; state: YouTubeStageState; icon: string }> {
@@ -3046,6 +3210,7 @@ function isExpanded(id: string): boolean {
 // as linhas a cada segundo.
 function rowMemoKey(item: DownloadItem): unknown[] {
   return [
+    rowLayoutVersion,
     item.status,
     item.percent,
     item.size,
@@ -3056,15 +3221,30 @@ function rowMemoKey(item: DownloadItem): unknown[] {
     item.pinned,
     item.title,
     item.retryAt,
+    item.retryCount,
+    item.maxRetries,
     item.autoTorOnLimit,
     item.outputPath,
     item.thumbnailUrl,
     item.thumbnailData,
+    item.channelName,
+    item.packageId,
+    item.completedAt,
+    item.addedAt,
+    item.networkRoute?.mode,
+    item.networkRoute?.exitIp,
+    item.networkRoute?.exitCountryCode,
+    item.networkRoute?.circuitChanges,
+    item.parallelParts,
+    item.speedLimitKib,
     item.children?.length ?? 0,
+    modulesById.value[item.moduleId]?.name ?? item.moduleId,
     selectedDownloadIds.value.has(item.id),
     flashingIds.value.has(item.id),
     isExpanded(item.id),
+    isDetailExpanded(item.id),
     singleConnectionDownloads.value.has(item.id),
+    captchaSolvedIds.value.has(item.id),
     stageLabels.value[item.id],
     detailTabs.value[item.id],
     detailEvents.value[item.id]?.length ?? 0,
@@ -3894,10 +4074,12 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   margin-left: auto;
 }
 
-/* Wrapper do TransitionGroup: display:contents mantém os cards como filhos
-   diretos do flex (preserva o layout e a virtualização). */
+/* Coluna real (não display:contents): evita bugs de stacking/altura entre cards. */
 .items-stack-rows {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
 }
 
 /* Reordenação suave (FLIP do Vue) — habilitada só fora da virtualização. */
@@ -3930,18 +4112,20 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 12px;
   padding: 12px 16px;
   min-height: var(--row-height);
-  background: transparent;
+  /* Fundo opaco: evita texto “fantasma” da linha de baixo vazando no card. */
+  background: var(--bg-card);
   border: none;
   border-bottom: 1px solid var(--border-color);
   border-radius: 0;
   transition: background 0.15s ease;
   position: relative;
+  /* hidden evita overlap entre linhas; a altura cresce com o conteúdo (min-height).
+     NÃO reativar content-visibility:auto — com size containment cortava/empilhava. */
   overflow: hidden;
   width: 100%;
   box-sizing: border-box;
   align-self: stretch;
-  content-visibility: auto;
-  contain: layout style;
+  isolation: isolate;
 }
 
 .items-stack-rows .download-card:last-child {
@@ -3956,6 +4140,23 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .density-dense .download-card {
   padding: 7px 10px;
   gap: 8px;
+}
+
+/* Em densidade densa, as ações rápidas ficam só no hover/seleção para não poluir. */
+.density-dense .quick-actions {
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  overflow: hidden;
+  transition: opacity 0.12s ease;
+}
+
+.density-dense .download-card:hover .quick-actions,
+.density-dense .download-card.selected .quick-actions {
+  opacity: 1;
+  pointer-events: auto;
+  width: auto;
+  overflow: visible;
 }
 
 .download-card::before {
@@ -3993,11 +4194,11 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .download-card:hover {
-  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 3.5%, var(--bg-card));
 }
 
 .download-card.selected {
-  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-card));
 }
 
 .selection-badge {
@@ -4114,13 +4315,42 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   display: block;
 }
 
-.item-channel {
+.item-subtitle {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--text-muted);
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 18px;
   margin-top: -2px;
+  font-size: 11px;
+  color: var(--text-secondary, var(--text-muted));
+}
+
+.meta-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-muted));
+}
+
+.meta-host .pi {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.meta-network {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+}
+
+.item-channel-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
 }
 
 .item-channel-avatar {
@@ -4129,6 +4359,20 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border-radius: 50%;
   object-fit: cover;
   display: block;
+}
+
+.pin-indicator {
+  display: inline-flex;
+  align-items: center;
+  color: #eab308;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.quick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .youtube-stage-strip {
@@ -4175,7 +4419,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
+  overflow: hidden;
 }
 
 /* ── Header row ─────────────────────────────────────────────── */
@@ -4366,10 +4611,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 /* ── Progress track ─────────────────────────────────────────── */
 .progress-track {
-  height: 6px;
+  height: 5px;
+  flex-shrink: 0;
   background: var(--surface-section);
   border-radius: 999px;
   overflow: hidden;
+  position: relative;
+  z-index: 0;
 }
 
 .progress-fill {
@@ -4377,6 +4625,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border-radius: 999px;
   transition: width 0.55s ease-out;
   min-width: 2px;
+  max-width: 100%;
   will-change: width;
 }
 
@@ -4553,9 +4802,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: rgba(124, 58, 237, 0.1);
 }
 
-.download-card:hover {
-  z-index: 14;
-}
+/* Hover não sobe z-index da linha inteira — isso empilhava cards uns sobre os outros. */
 
 @keyframes shimmer {
   0% { background-position: 200% 0; }
@@ -4568,17 +4815,35 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  min-height: 24px;
+  min-height: 22px;
+  max-width: 100%;
   font-size: 11px;
   color: var(--text-muted);
   /* Números com largura fixa: velocidade/ETA/% param de "tremer" ao atualizar. */
   font-variant-numeric: tabular-nums;
+  position: relative;
+  z-index: 1;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 3.5%, transparent);
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .meta-percent {
   font-weight: 700;
   color: var(--text-primary);
   min-width: 32px;
+  border-color: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
 }
 
 .meta-sep {
@@ -4589,18 +4854,42 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .meta-speed {
   color: var(--accent-color);
   font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent-color) 30%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
 }
 
 .meta-eta {
+  color: var(--text-secondary, var(--text-muted));
+}
+
+.meta-time,
+.meta-hash {
   color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.meta-time .pi,
+.meta-completed .pi {
+  font-size: 10px;
+}
+
+.meta-completed {
+  color: #16a34a;
+  border-color: rgba(22, 163, 74, 0.28);
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.meta-idle,
+.meta-unknown {
+  opacity: 0.72;
+  font-weight: 500;
 }
 
 .meta-wait,
 .meta-wait-reason {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.1);
 }
 
 .meta-wait {
@@ -4608,17 +4897,23 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .meta-verifying {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   color: #38bdf8;
   font-weight: 600;
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.meta-captcha-wait {
+  color: #a78bfa;
+  font-weight: 600;
+  border-color: rgba(139, 92, 246, 0.28);
+  background: rgba(139, 92, 246, 0.1);
 }
 
 .meta-size {
   color: var(--text-secondary);
   font-weight: 500;
-  font-family: 'Courier New', monospace;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
   font-size: 10.5px;
 }
 
@@ -4627,20 +4922,31 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 220px;
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .meta-error-kind {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border-radius: 999px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
   background: rgba(239, 68, 68, 0.14);
   color: #fca5a5;
   flex-shrink: 0;
+  border-color: rgba(239, 68, 68, 0.24);
+}
+
+.meta-disk-full {
+  color: #f87171;
+  font-weight: 600;
+  border-color: rgba(185, 28, 28, 0.3);
+  background: rgba(185, 28, 28, 0.1);
+}
+
+.meta-retries {
+  color: var(--text-muted);
+  font-size: 10.5px;
 }
 
 .meta-error-kind.kind-rate_limit {
@@ -4670,29 +4976,39 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   color: #c4b5fd;
 }
 
-.meta-retries {
+/* Path como chip na mesma linha de datas/conclusão */
+.meta-path {
+  max-width: min(420px, 100%);
   color: var(--text-muted);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
   font-size: 10.5px;
+  cursor: pointer;
+  border-color: color-mix(in srgb, var(--border-color) 85%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 2.5%, transparent);
 }
 
-/* ── Output path ────────────────────────────────────────────── */
-.item-path {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  font-family: 'Courier New', monospace;
+.meta-path > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-  transition: color 0.15s;
-  padding: 2px 0;
+  min-width: 0;
 }
 
-.item-path:hover {
+.meta-path .pi {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.meta-path:hover {
   color: var(--accent-color);
+  border-color: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+}
+
+button.meta-path {
+  font: inherit;
+  appearance: none;
+  margin: 0;
 }
 
 .folder-children {
@@ -5266,14 +5582,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   background: transparent;
 }
 
-.meta-captcha-wait {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #8b5cf6;
-  font-weight: 600;
-}
-
 .package-picker {
   display: inline-flex;
   align-items: center;
@@ -5361,15 +5669,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .skeleton-title    { height: 13px; width: 60%; }
 .skeleton-progress { height: 6px;  width: 100%; }
 .skeleton-meta     { height: 10px; width: 35%; }
-
-/* ── disk_full meta ─────────────────────────────────────────── */
-.meta-disk-full {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #ef4444;
-  font-weight: 600;
-}
 
 /* ── Status flash animation ─────────────────────────────────── */
 @keyframes statusFlash {
