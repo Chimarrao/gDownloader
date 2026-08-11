@@ -4092,7 +4092,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .row-select {
   display: flex;
   align-items: center;
-  align-self: center;
+  align-self: center; /* meio vertical do card */
   padding: 2px 2px 2px 0;
   cursor: pointer;
   flex: 0 0 auto;
@@ -4284,35 +4284,55 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   text-transform: uppercase;
 }
 
-/* ── Provider icon ──────────────────────────────────────────── */
+/* ── Provider icon / thumbnail ──────────────────────────────── */
 .provider-icon {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   flex-shrink: 0;
-  border-radius: 8px;
+  align-self: center; /* meio vertical do card (mesmo com detalhes abertos) */
+  border-radius: 10px;
   border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 2px;
+  margin-top: 0;
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
 .provider-icon :deep(svg) {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
+  display: block;
 }
 
 .provider-icon-thumb {
   padding: 0;
-  border-color: rgba(255,255,255,0.1);
+  border-color: color-mix(in srgb, var(--border-color) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-section) 70%, var(--bg-card));
 }
 
 .item-thumb-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   display: block;
+}
+
+.density-compact .provider-icon,
+.density-compact .provider-icon :deep(svg) {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+}
+
+.density-dense .provider-icon,
+.density-dense .provider-icon :deep(svg) {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
 }
 
 .item-subtitle {
