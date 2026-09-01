@@ -65,8 +65,15 @@ export function createKatfileService() {
   let pendingDownloadJobId: string | null = null
   const runExclusive = createExclusiveRunner()
 
+  function refreshHelperThrottling(): void {
+    if (!helperWindow || helperWindow.isDestroyed()) return
+    const hasPendingBrowserWork = [...jobs.values()].some((job) => job.status === 'pending')
+    helperWindow.webContents.setBackgroundThrottling(!hasPendingBrowserWork)
+  }
+
   function getWindow(): BrowserWindow {
     if (helperWindow && !helperWindow.isDestroyed()) {
+      refreshHelperThrottling()
       return helperWindow
     }
 
@@ -81,7 +88,7 @@ export function createKatfileService() {
         partition: KATFILE_PARTITION,
         contextIsolation: true,
         sandbox: false,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
       },
     })
 
@@ -90,6 +97,7 @@ export function createKatfileService() {
     helperWindow.on('closed', () => {
       helperWindow = null
     })
+    refreshHelperThrottling()
     return helperWindow
   }
 
@@ -370,6 +378,7 @@ export function createKatfileService() {
       item.setSavePath(job.destPath)
 
       job.status = 'downloading'
+      refreshHelperThrottling()
       job.filename = item.getFilename() || job.filename
       job.totalBytes = item.getTotalBytes() > 0 ? item.getTotalBytes() : job.totalBytes
       job.lastBytes = 0
@@ -536,6 +545,7 @@ export function createKatfileService() {
       clearJobTimers(job)
       pendingDownloadJobId = null
       job.status = 'error'
+      refreshHelperThrottling()
       job.speedBps = 0
       job.etaSecs = 0
       job.error = error instanceof Error ? error.message : String(error)

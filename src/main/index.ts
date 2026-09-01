@@ -14,7 +14,7 @@ import {
 } from 'electron'
 import { basename, dirname, extname, join, resolve } from 'path'
 import { spawn } from 'child_process'
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, watch } from 'fs'
+import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, statfsSync, watch } from 'fs'
 import { Socket } from 'net'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { AppSettingsSnapshot } from '../shared/types'
@@ -176,9 +176,26 @@ async function clearLocalCache(ids: string[]): Promise<Awaited<ReturnType<typeof
 function tailLogFile(maxLines = 500): { path: string; lines: string[] } {
   const path = getBackendLogPath()
   if (!existsSync(path)) return { path, lines: [] }
-  const raw = readFileSync(path, 'utf8')
-  const lines = raw.split(/\r?\n/).filter(Boolean)
-  return { path, lines: lines.slice(-maxLines) }
+  try {
+    // Ler apenas o fim evita carregar e dividir todo o arquivo a cada atualização
+    // da tela de logs. O limite é maior que o máximo exibido, mesmo com linhas longas.
+    const size = statSync(path).size
+    const bytesToRead = Math.min(size, 512 * 1024)
+    if (bytesToRead === 0) return { path, lines: [] }
+    const buffer = Buffer.allocUnsafe(bytesToRead)
+    const fd = openSync(path, 'r')
+    try {
+      readSync(fd, buffer, 0, bytesToRead, Math.max(0, size - bytesToRead))
+    } finally {
+      closeSync(fd)
+    }
+    const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean)
+    // O primeiro registro pode ter começado antes do trecho lido.
+    if (size > bytesToRead) lines.shift()
+    return { path, lines: lines.slice(-maxLines) }
+  } catch {
+    return { path, lines: [] }
+  }
 }
 
 async function fetchBackendConfig<T>(path: string, init?: RequestInit): Promise<T> {
@@ -421,7 +438,10 @@ const backendRuntime = createBackendRuntime({
     }
   },
   onStdErr: (message) => {
-    logMain('rust', 'stderr', message)
+    // O backend já grava seu próprio arquivo de logs. Não duplicamos cada linha
+    // em electron.log nem no terminal; erros de inicialização continuam visíveis
+    // pela rejeição de start() e pelos logs do backend.
+    void message
   },
   onRestarted: async (port) => {
     rustPort = port
@@ -1188,14 +1208,17 @@ function configureClipboardMonitor(enabled: boolean): void {
   lastClipboardSignature = ''
   clipboardMonitorTimer = setInterval(() => {
     void inspectClipboardForLinks()
-  }, 350)
+  }, 1000)
   void inspectClipboardForLinks()
   logMain('clipboard', 'Monitor de clipboard ativado')
 }
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
-const logWatchers = new Map<number, ReturnType<typeof watch>>()
+const logWatchers = new Map<
+  number,
+  { watcher: ReturnType<typeof watch>; timer: ReturnType<typeof setTimeout> | null }
+>()
 
 function createTray(win: BrowserWindow): void {
   const iconPath = getAppIconPath()
@@ -1403,25 +1426,42 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('logs:watch-start', (event) => {
     const senderId = event.sender.id
-    logWatchers.get(senderId)?.close()
+    const previous = logWatchers.get(senderId)
+    previous?.watcher.close()
+    if (previous?.timer) clearTimeout(previous.timer)
     const logPath = getBackendLogPath()
     try {
       mkdirSync(dirname(logPath), { recursive: true })
-      const watcher = watch(dirname(logPath), { persistent: false }, () => {
-        event.sender.send('logs:update', tailLogFile(500))
-      })
-      logWatchers.set(senderId, watcher)
+      const record: { watcher: ReturnType<typeof watch>; timer: ReturnType<typeof setTimeout> | null } = {
+        watcher: undefined as unknown as ReturnType<typeof watch>,
+        timer: null,
+      }
+      const sendUpdate = (): void => {
+        if (record.timer) clearTimeout(record.timer)
+        record.timer = setTimeout(() => {
+          record.timer = null
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('logs:update', tailLogFile(500))
+          }
+        }, 350)
+      }
+      record.watcher = watch(dirname(logPath), { persistent: false }, sendUpdate)
+      logWatchers.set(senderId, record)
       event.sender.once('destroyed', () => {
-        logWatchers.get(senderId)?.close()
+        const active = logWatchers.get(senderId)
+        active?.watcher.close()
+        if (active?.timer) clearTimeout(active.timer)
         logWatchers.delete(senderId)
       })
     } catch {
-      // polling pelo renderer ainda pode chamar logs:tail.
+      // A tela continua exibindo o conteúdo já carregado se o watcher falhar.
     }
   })
   ipcMain.on('logs:watch-stop', (event) => {
     const senderId = event.sender.id
-    logWatchers.get(senderId)?.close()
+    const active = logWatchers.get(senderId)
+    active?.watcher.close()
+    if (active?.timer) clearTimeout(active.timer)
     logWatchers.delete(senderId)
   })
   ipcMain.handle('system:notify', (_e, title: string, body?: string) => {

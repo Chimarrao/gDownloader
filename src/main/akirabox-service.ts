@@ -81,6 +81,12 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
   let pendingDownloadJobId: string | null = null
   const runExclusive = createExclusiveRunner()
 
+  function refreshHelperThrottling(): void {
+    if (!helperWindow || helperWindow.isDestroyed()) return
+    const hasPendingBrowserWork = [...jobs.values()].some((job) => job.status === 'pending')
+    helperWindow.webContents.setBackgroundThrottling(!hasPendingBrowserWork)
+  }
+
   // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   function getSession() {
     return session.fromPartition(AKIRABOX_PARTITION)
@@ -88,6 +94,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
 
   function getWindow(): BrowserWindow {
     if (helperWindow && !helperWindow.isDestroyed()) {
+      refreshHelperThrottling()
       return helperWindow
     }
 
@@ -101,7 +108,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
         partition: AKIRABOX_PARTITION,
         contextIsolation: true,
         sandbox: false,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
       },
     })
     helperWindow.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
@@ -117,6 +124,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
       logMain('akirabox', 'Janela helper encerrada')
       helperWindow = null
     })
+    refreshHelperThrottling()
     return helperWindow
   }
 
@@ -551,6 +559,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
       item.setSavePath(job.destPath)
 
       job.status = 'downloading'
+      refreshHelperThrottling()
       job.filename = item.getFilename() || job.filename
       job.totalBytes = item.getTotalBytes() > 0 ? item.getTotalBytes() : job.totalBytes
       job.lastBytes = 0
@@ -838,6 +847,7 @@ export function createAkiraboxService(options: AkiraboxServiceOptions = {}) {
       clearJobTimers(job)
       pendingDownloadJobId = null
       job.status = 'error'
+      refreshHelperThrottling()
       job.speedBps = 0
       job.etaSecs = 0
       job.error = error instanceof Error ? error.message : String(error)

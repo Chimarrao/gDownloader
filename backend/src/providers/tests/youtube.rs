@@ -2,17 +2,31 @@ use super::{YouTubeProvider, SYNTHETIC_PROGRESS_TOTAL};
 
 #[test]
 fn matches_youtube_short_and_watch_urls() {
-    assert!(YouTubeProvider::matches("https://youtu.be/xF8l17MJkMk?si=abc"));
-    assert!(YouTubeProvider::matches("https://www.youtube.com/watch?v=xF8l17MJkMk"));
-    assert!(YouTubeProvider::matches("https://music.youtube.com/watch?v=xF8l17MJkMk"));
-    assert!(!YouTubeProvider::matches("https://example.com/watch?v=xF8l17MJkMk"));
+    assert!(YouTubeProvider::matches(
+        "https://youtu.be/xF8l17MJkMk?si=abc"
+    ));
+    assert!(YouTubeProvider::matches(
+        "https://www.youtube.com/watch?v=xF8l17MJkMk"
+    ));
+    assert!(YouTubeProvider::matches(
+        "https://music.youtube.com/watch?v=xF8l17MJkMk"
+    ));
+    assert!(!YouTubeProvider::matches(
+        "https://example.com/watch?v=xF8l17MJkMk"
+    ));
 }
 
 #[test]
 fn detects_channel_urls_and_limits_channel_capture() {
-    assert!(YouTubeProvider::is_channel_url("https://www.youtube.com/@canal/videos"));
-    assert!(YouTubeProvider::is_channel_url("https://www.youtube.com/channel/UCabc123"));
-    assert!(!YouTubeProvider::is_channel_url("https://www.youtube.com/watch?v=xF8l17MJkMk"));
+    assert!(YouTubeProvider::is_channel_url(
+        "https://www.youtube.com/@canal/videos"
+    ));
+    assert!(YouTubeProvider::is_channel_url(
+        "https://www.youtube.com/channel/UCabc123"
+    ));
+    assert!(!YouTubeProvider::is_channel_url(
+        "https://www.youtube.com/watch?v=xF8l17MJkMk"
+    ));
     assert_eq!(
         YouTubeProvider::channel_limit("https://www.youtube.com/@canal#ytdlp_channel_limit=40"),
         Some(40)
@@ -45,10 +59,34 @@ fn parses_ytdlp_progress_with_synthetic_total_when_total_is_na() {
 fn split_media_phase_progress_does_not_overlap_ranges() {
     // Vídeo recebe a maior fatia (0–85%), áudio uma pequena (85–95%), sem sobrepor,
     // e o merge fica logo acima do fim do áudio.
-    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 1, true), 8_500);
+    assert_eq!(
+        YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 1, true),
+        8_500
+    );
     assert_eq!(YouTubeProvider::phase_progress(0, 2, true), 8_500);
-    assert_eq!(YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 2, true), 9_500);
+    assert_eq!(
+        YouTubeProvider::phase_progress(SYNTHETIC_PROGRESS_TOTAL, 2, true),
+        9_500
+    );
     assert_eq!(YouTubeProvider::merge_progress(true), 9_600);
+}
+
+#[test]
+fn adds_best_fallback_when_split_format_has_none() {
+    assert_eq!(
+        YouTubeProvider::resolve_format_selector("bestvideo+bestaudio"),
+        "bestvideo+bestaudio/best"
+    );
+    assert_eq!(
+        YouTubeProvider::resolve_format_selector("136+bestaudio"),
+        "136+bestaudio/best"
+    );
+    assert_eq!(
+        YouTubeProvider::resolve_format_selector("bestvideo+bestaudio/best"),
+        "bestvideo+bestaudio/best"
+    );
+    assert_eq!(YouTubeProvider::resolve_format_selector("95"), "95");
+    assert_eq!(YouTubeProvider::resolve_format_selector("best"), "best");
 }
 
 #[test]
@@ -60,6 +98,9 @@ fn reads_selected_merge_format_from_child_fragment() {
         YouTubeProvider::selected_value(&children, "ytdlp_merge_format").as_deref(),
         Some("mkv")
     );
-    assert_eq!(YouTubeProvider::normalize_merge_format("MKV").as_deref(), Some("mkv"));
+    assert_eq!(
+        YouTubeProvider::normalize_merge_format("MKV").as_deref(),
+        Some("mkv")
+    );
     assert_eq!(YouTubeProvider::normalize_merge_format("avi"), None);
 }

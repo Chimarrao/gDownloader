@@ -54,7 +54,6 @@ const levelFilter = ref('all')
 const moduleFilter = ref('all')
 const search = ref('')
 let disposeWatch: (() => void) | null = null
-let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 type LogLevel = 'info' | 'warn' | 'error'
 
@@ -93,12 +92,10 @@ onMounted(async () => {
     logPath.value = payload.path
     lines.value = payload.lines
   })
-  refreshTimer = setInterval(refresh, 2500)
 })
 
 onUnmounted(() => {
   disposeWatch?.()
-  if (refreshTimer) clearInterval(refreshTimer)
 })
 
 async function refresh(): Promise<void> {

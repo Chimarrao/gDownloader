@@ -53,7 +53,9 @@ function createWindow(provider: CaptchaProvider): BrowserWindow {
       partition,
       contextIsolation: true,
       sandbox: false,
-      backgroundThrottling: false,
+      // A janela só fica ativa quando é exibida ao usuário; quando está oculta,
+      // pode seguir o throttling normal do Chromium.
+      backgroundThrottling: true,
     },
   })
 

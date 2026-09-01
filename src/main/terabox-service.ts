@@ -4,6 +4,7 @@ import { dirname } from 'path'
 
 import { BrowserWindow, session } from 'electron'
 import { delay, HOSTER_BROWSER_USER_AGENT, parseHumanSize } from './browser-helper-common'
+import { logMain } from './debug-log'
 
 const TERABOX_PARTITION = 'persist:terabox'
 const TERABOX_LOGIN_URL = 'https://www.terabox.com/portuguese/login'
@@ -158,6 +159,12 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
   let authPromise: Promise<void> | null = null
   let sessionWired = false
 
+  function refreshHelperThrottling(): void {
+    if (!helperWindow || helperWindow.isDestroyed()) return
+    const hasPendingBrowserWork = [...jobs.values()].some((job) => job.status === 'pending')
+    helperWindow.webContents.setBackgroundThrottling(!hasPendingBrowserWork)
+  }
+
   // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
   function getSession() {
     return session.fromPartition(TERABOX_PARTITION)
@@ -194,6 +201,7 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
 
   function getWindow(): BrowserWindow {
     if (helperWindow && !helperWindow.isDestroyed()) {
+      refreshHelperThrottling()
       return helperWindow
     }
 
@@ -206,10 +214,11 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
         partition: TERABOX_PARTITION,
         contextIsolation: true,
         sandbox: false,
-        backgroundThrottling: false,
+        backgroundThrottling: true,
       },
     })
     helperWindow.webContents.setUserAgent(HOSTER_BROWSER_USER_AGENT)
+    refreshHelperThrottling()
     return helperWindow
   }
 
@@ -533,6 +542,7 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
       item.setSavePath(job.destPath)
 
       job.status = 'downloading'
+      refreshHelperThrottling()
       job.filename = item.getFilename() || job.filename
       job.totalBytes = item.getTotalBytes() > 0 ? item.getTotalBytes() : job.totalBytes
       job.lastBytes = 0
@@ -1020,7 +1030,7 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
         try {
           await cleanupTemporaryCloudCopy()
         } catch (cleanupError) {
-          console.warn('[terabox] Falha ao limpar cópia temporária da conta:', cleanupError)
+          logMain('terabox', 'Falha ao limpar cópia temporária da conta', cleanupError)
         } finally {
           job.shouldCleanupCloudCopy = false
         }
@@ -1030,13 +1040,14 @@ export function createTeraboxService(options: CreateTeraboxServiceOptions) {
         try {
           await cleanupTemporaryCloudCopy()
         } catch (cleanupError) {
-          console.warn('[terabox] Falha ao limpar cópia temporária após erro:', cleanupError)
+          logMain('terabox', 'Falha ao limpar cópia temporária após erro', cleanupError)
         } finally {
           job.shouldCleanupCloudCopy = false
         }
       }
 
       job.status = 'error'
+      refreshHelperThrottling()
       job.error = error instanceof Error ? error.message : String(error)
       job.speedBps = 0
       job.etaSecs = 0

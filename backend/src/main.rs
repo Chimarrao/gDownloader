@@ -1,5 +1,37 @@
 use gdownloader_backend::{create_cnl_router, create_router_with_state, create_state};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
+
+const LOG_RETENTION_DAYS: u64 = 14;
+
+/// Remove arquivos de log rotacionados que já não ajudam no diagnóstico. Mantemos o
+/// arquivo atual e só tocamos nos logs do backend, para nunca apagar arquivos do usuário.
+fn cleanup_old_logs(log_dir: &std::path::Path) {
+    let now = std::time::SystemTime::now();
+    let retention = std::time::Duration::from_secs(LOG_RETENTION_DAYS * 24 * 60 * 60);
+
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        // tracing_appender usa app.log.YYYY-MM-DD e mirrors.log.YYYY-MM-DD.
+        if !((name.starts_with("app.log.") || name.starts_with("mirrors.log.")) && path.is_file()) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+            continue;
+        };
+        if now.duration_since(modified).is_ok_and(|age| age > retention) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     // Runtime tokio multi-thread explícito para poder LIMITAR o pool de threads
@@ -45,6 +77,7 @@ async fn async_main() -> anyhow::Result<()> {
         db_parent.join("logs")
     };
     std::fs::create_dir_all(&log_dir).ok();
+    cleanup_old_logs(&log_dir);
 
     // Writer para app.log (rotação diária)
     let app_appender = tracing_appender::rolling::daily(&log_dir, "app.log");
@@ -69,15 +102,18 @@ async fn async_main() -> anyhow::Result<()> {
             meta.target().starts_with("mirrors")
         }));
 
-    // Layer de stderr — saída colorida no terminal/Electron (comportamento anterior)
+    // O terminal é lento para processar um grande volume de texto e o Electron já
+    // persiste os logs em arquivo. Portanto, só avisos e erros chegam ao stderr,
+    // inclusive em builds de desenvolvimento.
     let stderr_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(true);
+        .with_ansi(false)
+        .with_filter(LevelFilter::WARN);
 
     tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,gdownloader_backend=debug,mirrors=debug")),
+                .unwrap_or_else(|_| EnvFilter::new("info,gdownloader_backend=info,mirrors=info")),
         )
         .with(stderr_layer)
         .with(app_layer)

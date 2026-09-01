@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'fs'
+import { appendFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 
 import { app } from 'electron'
@@ -10,6 +10,12 @@ function resolveLogPath(): string {
     return join(process.cwd(), 'logs', 'electron.log')
   }
 }
+
+const MAX_QUEUED_LOG_BYTES = 512 * 1024
+const pendingLines: string[] = []
+let pendingBytes = 0
+let flushScheduled = false
+let flushing = false
 
 function normalizePayload(payload: unknown): string {
   if (payload === undefined) {
@@ -31,27 +37,45 @@ function normalizePayload(payload: unknown): string {
   }
 }
 
+function scheduleFlush(): void {
+  if (flushScheduled || flushing) return
+  flushScheduled = true
+  setImmediate(() => {
+    flushScheduled = false
+    void flushLogs()
+  })
+}
+
+async function flushLogs(): Promise<void> {
+  if (flushing || pendingLines.length === 0) return
+  flushing = true
+  const lines = pendingLines.splice(0)
+  pendingBytes = 0
+
+  try {
+    const logPath = resolveLogPath()
+    await mkdir(join(logPath, '..'), { recursive: true })
+    await appendFile(logPath, lines.join(''), 'utf8')
+  } catch {
+    // Log é best effort; nunca deve atrasar a thread principal.
+  } finally {
+    flushing = false
+    if (pendingLines.length > 0) scheduleFlush()
+  }
+}
+
 export function logMain(scope: string, message: string, payload?: unknown): void {
   const timestamp = new Date().toISOString()
   const suffix = normalizePayload(payload)
   const line = `${timestamp} [${scope}] ${message}${suffix ? ` ${suffix}` : ''}\n`
 
-  try {
-    const logPath = resolveLogPath()
-    mkdirSync(join(logPath, '..'), { recursive: true })
-    appendFileSync(logPath, line, 'utf8')
-  } catch {
-    // Best effort only.
+  // Evita que uma rajada excepcional de eventos cresça a memória sem limite.
+  // Os eventos mais recentes são os mais úteis para diagnóstico.
+  if (pendingBytes + Buffer.byteLength(line, 'utf8') > MAX_QUEUED_LOG_BYTES) {
+    pendingLines.splice(0, Math.max(1, Math.floor(pendingLines.length / 2)))
+    pendingBytes = Buffer.byteLength(pendingLines.join(''), 'utf8')
   }
-
-  try {
-    if (payload === undefined) {
-      console.log(`[${scope}] ${message}`)
-    } else {
-      console.log(`[${scope}] ${message}`, payload)
-    }
-  } catch {
-    // ignore console failures
-  }
+  pendingLines.push(line)
+  pendingBytes += Buffer.byteLength(line, 'utf8')
+  scheduleFlush()
 }
-

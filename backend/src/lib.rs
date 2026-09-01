@@ -77,8 +77,8 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         });
     }
 
-    // Amostrador de I/O de disco (leitura/escrita por montagem, ao vivo).
-    routes::system::spawn_disk_io_sampler();
+    // O amostrador de I/O de disco é iniciado sob demanda pela rota /system/disks.
+    // Assim, a telemetria detalhada não consome recursos quando o painel está fechado.
 
     // Checkpoint periódico do WAL (a cada 2 min) para o arquivo não inchar mesmo com
     // escrita contínua. Trava o mutex do DB só por um instante; ignora qualquer erro.

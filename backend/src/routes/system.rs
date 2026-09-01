@@ -1,12 +1,19 @@
 use axum::{extract::Query, Json};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Mutex as StdMutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex as StdMutex, OnceLock,
+};
 use sysinfo::Disks;
 
 /// Taxas de I/O por ponto de montagem (leitura, escrita) em bytes/s, atualizadas
 /// uma vez por segundo pelo sampler. Chave = mount_point.
 static DISK_IO: OnceLock<StdMutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+/// Instante da última consulta ao painel de discos. O worker só faz refresh do
+/// sysinfo enquanto houver uma consulta recente (o painel atualizado está aberto).
+static DISK_IO_LAST_REQUEST_MS: AtomicU64 = AtomicU64::new(0);
+const DISK_IO_ACTIVE_WINDOW_MS: u64 = 4_000;
 
 fn disk_io_store() -> &'static StdMutex<HashMap<String, (u64, u64)>> {
     DISK_IO.get_or_init(|| StdMutex::new(HashMap::new()))
@@ -26,6 +33,14 @@ pub fn spawn_disk_io_sampler() {
             let mut disks = Disks::new_with_refreshed_list();
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let last_request = DISK_IO_LAST_REQUEST_MS.load(Ordering::Relaxed);
+                if now_ms.saturating_sub(last_request) > DISK_IO_ACTIVE_WINDOW_MS {
+                    continue;
+                }
                 // Reamostra sem remover discos que sumiram temporariamente.
                 disks.refresh(false);
                 let mut rates: HashMap<String, (u64, u64)> = HashMap::new();
@@ -44,6 +59,15 @@ pub fn spawn_disk_io_sampler() {
             }
         })
         .ok();
+}
+
+fn request_disk_io_sampling() {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    DISK_IO_LAST_REQUEST_MS.store(now_ms, Ordering::Relaxed);
+    spawn_disk_io_sampler();
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +150,7 @@ pub struct DiskEntry {
 /// Lista todos os discos/volumes montados (HD, SSD, pendrive…) com sua alocação.
 /// Alimenta o balão do widget de disco (multi-disco).
 pub async fn list_disks() -> Json<Vec<DiskEntry>> {
+    request_disk_io_sampling();
     let disks = Disks::new_with_refreshed_list();
     let io_rates = disk_io_store().lock().map(|m| m.clone()).unwrap_or_default();
     let mut seen_mount = std::collections::HashSet::new();
