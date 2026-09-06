@@ -5141,6 +5141,10 @@ button.meta-path {
   padding: 0 8px;
 }
 
+.download-table-header > span:nth-child(n + 4) {
+  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
 .download-card {
   display: grid;
   grid-template-columns: 30px 52px minmax(0, 1fr);
@@ -5188,6 +5192,10 @@ button.meta-path {
   grid-column: 7;
   grid-row: 1;
   justify-self: end;
+  align-self: stretch;
+  min-height: 42px;
+  padding-left: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
 }
 
 .table-size-cell,
@@ -5246,6 +5254,16 @@ button.meta-path {
   grid-row: 1;
 }
 
+.table-size-cell,
+.table-status-cell,
+.table-speed-cell,
+.table-eta-cell,
+.table-date-cell {
+  align-self: stretch;
+  min-height: 42px;
+  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+}
+
 .item-meta {
   grid-column: 1 / -1;
   grid-row: 2;
@@ -5295,6 +5313,12 @@ button.meta-path {
 
   .item-header {
     display: flex;
+  }
+
+  .item-actions {
+    min-height: 0;
+    padding-left: 0;
+    border-left: 0;
   }
 
   .table-size-cell,
