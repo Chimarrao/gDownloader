@@ -4010,6 +4010,17 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   padding-left: 8px;
 }
 
+/* A tabela é o foco desta tela: filtros permanecem na barra superior e a fila
+   continua funcionando, mas os dois painéis laterais não consomem largura. */
+.package-sidebar,
+.queue-preview-panel {
+  display: none;
+}
+
+.items-container {
+  padding-right: 0;
+}
+
 .queue-panel-handle {
   position: sticky;
   top: 0;
