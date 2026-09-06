@@ -291,6 +291,17 @@
         </button>
       </div>
       <div class="items-stack">
+        <div class="download-table-header" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span>Nome</span>
+          <span>Tamanho</span>
+          <span>Status</span>
+          <span>Velocidade</span>
+          <span>Tempo restante</span>
+          <span>Adicionado</span>
+          <span></span>
+        </div>
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
         <!-- FLIP só na lista pequena: com virtualização, a troca de nós visíveis
              pode animar fora da viewport e causar saltos na rolagem. -->
@@ -381,10 +392,6 @@
                 </div>
               </div>
               <div class="item-actions">
-                <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
-                  <span class="badge-dot" :class="`dot-${item.status}`"></span>
-                  {{ statusTextValue(item) }}
-                </span>
                 <span v-if="selectedDownloadIds.has(item.id)" class="selection-badge">
                   {{ selectedDownloadIds.size }}
                 </span>
@@ -479,30 +486,53 @@
               </span>
             </div>
 
-            <!-- Row 2: progress bar -->
-            <div v-if="hasColumn('progress')" class="progress-track">
-              <div v-if="isDetailExpanded(item.id) && downloadSegments(item)" class="progress-segments">
-                <div
-                  v-for="(seg, i) in downloadSegments(item)"
-                  :key="i"
-                  class="progress-segment"
-                >
+            <div class="table-status-cell">
+              <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
+                <span class="badge-dot" :class="`dot-${item.status}`"></span>
+                {{ statusTextValue(item) }}
+              </span>
+              <div v-if="hasColumn('progress')" class="progress-track">
+                <div v-if="isDetailExpanded(item.id) && downloadSegments(item)" class="progress-segments">
                   <div
-                    class="progress-fill"
-                    :class="{ 'progress-shimmer': item.status === 'downloading' }"
-                    :style="{ width: seg + '%', background: getProgressColor(item) }"
-                  ></div>
+                    v-for="(seg, i) in downloadSegments(item)"
+                    :key="i"
+                    class="progress-segment"
+                  >
+                    <div
+                      class="progress-fill"
+                      :class="{ 'progress-shimmer': item.status === 'downloading' }"
+                      :style="{ width: seg + '%', background: getProgressColor(item) }"
+                    ></div>
+                  </div>
                 </div>
+                <div
+                  v-else
+                  class="progress-fill"
+                  :class="{ 'progress-shimmer': item.status === 'downloading' || item.status === 'verifying' }"
+                  :style="{
+                    width: item.percent + '%',
+                    background: getProgressColor(item)
+                  }"
+                ></div>
               </div>
-              <div
-                v-else
-                class="progress-fill"
-                :class="{ 'progress-shimmer': item.status === 'downloading' || item.status === 'verifying' }"
-                :style="{
-                  width: item.percent + '%',
-                  background: getProgressColor(item)
-                }"
-              ></div>
+            </div>
+
+            <div class="table-size-cell">
+              <span v-if="displayTotal(item) > 0">
+                {{ item.status === 'complete' || item.percent >= 100
+                  ? formatBytes(displayTotal(item))
+                  : `${formatBytes(Math.floor((item.percent / 100) * displayTotal(item)))} / ${formatBytes(displayTotal(item))}` }}
+              </span>
+              <span v-else>—</span>
+            </div>
+            <div class="table-speed-cell">
+              {{ item.status === 'downloading' ? formatSpeed(effectiveSpeedValue(item)) : '—' }}
+            </div>
+            <div class="table-eta-cell">
+              {{ item.status === 'downloading' ? `${formatEta(effectiveEtaValue(item))} restante` : '—' }}
+            </div>
+            <div class="table-date-cell">
+              {{ item.status === 'complete' && item.completedAt ? formatDateTime(item.completedAt) : (item.addedAt ? formatDateTime(item.addedAt) : '—') }}
             </div>
 
             <!-- Stats line: sempre densa, inclusive em downloads antigos/concluídos -->
@@ -5078,6 +5108,210 @@ button.meta-path {
   font: inherit;
   appearance: none;
   margin: 0;
+}
+
+/* ── Lista tabular ─────────────────────────────────────────── */
+.download-table-header {
+  display: grid;
+  grid-template-columns: 30px 52px minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) auto;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.download-table-header > span {
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.download-card {
+  display: grid;
+  grid-template-columns: 30px 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 68px;
+  padding: 8px 12px;
+}
+
+.row-select {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.provider-icon {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.item-body {
+  grid-column: 3;
+  display: grid;
+  grid-template-columns: minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) auto;
+  grid-template-rows: minmax(42px, auto) auto;
+  align-items: center;
+  gap: 4px 0;
+  overflow: visible;
+}
+
+.item-header {
+  display: contents;
+}
+
+.item-title-wrap {
+  grid-column: 1;
+  grid-row: 1;
+  padding: 0 8px;
+}
+
+.item-title {
+  max-width: 72%;
+}
+
+.item-actions {
+  grid-column: 7;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.table-size-cell,
+.table-speed-cell,
+.table-eta-cell,
+.table-date-cell {
+  min-width: 0;
+  padding: 0 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-size-cell {
+  grid-column: 2;
+  grid-row: 1;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+.table-status-cell {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.table-status-cell .status-badge {
+  align-self: flex-start;
+}
+
+.table-status-cell .progress-track {
+  width: 100%;
+}
+
+.table-speed-cell {
+  grid-column: 4;
+  grid-row: 1;
+  color: var(--accent-color);
+  font-weight: 700;
+}
+
+.table-eta-cell {
+  grid-column: 5;
+  grid-row: 1;
+}
+
+.table-date-cell {
+  grid-column: 6;
+  grid-row: 1;
+}
+
+.item-meta {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-height: 18px;
+  gap: 4px;
+  padding: 0 8px;
+}
+
+/* Os campos já viraram colunas; a faixa extra guarda somente contexto e ações secundárias. */
+.item-meta > .meta-percent,
+.item-meta > .meta-size,
+.item-meta > .meta-speed,
+.item-meta > .meta-eta,
+.item-meta > .meta-time {
+  display: none;
+}
+
+.youtube-stage-strip,
+.tor-limit-chip,
+.folder-children,
+.download-detail-panel {
+  grid-column: 1 / -1;
+}
+
+.youtube-stage-strip {
+  grid-row: 3;
+}
+
+@media (max-width: 1320px) {
+  .download-table-header {
+    display: none;
+  }
+
+  .download-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .item-body {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    overflow: hidden;
+  }
+
+  .item-header {
+    display: flex;
+  }
+
+  .table-size-cell,
+  .table-speed-cell,
+  .table-eta-cell,
+  .table-date-cell {
+    display: none;
+  }
+
+  .table-status-cell {
+    display: contents;
+  }
+
+  .table-status-cell .status-badge {
+    display: none;
+  }
+
+  .item-meta {
+    padding: 0;
+  }
+
+  .item-meta > .meta-percent,
+  .item-meta > .meta-size,
+  .item-meta > .meta-speed,
+  .item-meta > .meta-eta,
+  .item-meta > .meta-time {
+    display: inline-flex;
+  }
 }
 
 .folder-children {
