@@ -5150,8 +5150,8 @@ button.meta-path {
   grid-template-columns: 30px 52px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  min-height: 68px;
-  padding: 8px 12px;
+  min-height: 56px;
+  padding: 6px 12px;
 }
 
 .row-select {
@@ -5168,7 +5168,7 @@ button.meta-path {
   grid-column: 3;
   display: grid;
   grid-template-columns: minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) auto;
-  grid-template-rows: minmax(42px, auto) auto;
+  grid-template-rows: minmax(44px, auto);
   align-items: center;
   gap: 4px 0;
   overflow: visible;
@@ -5265,14 +5265,10 @@ button.meta-path {
 }
 
 .item-meta {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  min-height: 18px;
-  gap: 4px;
-  padding: 0 8px;
+  display: none;
 }
 
-/* Os campos já viraram colunas; a faixa extra guarda somente contexto e ações secundárias. */
+/* Os campos já viraram colunas; detalhes continuam no painel expansível/contexto. */
 .item-meta > .meta-percent,
 .item-meta > .meta-size,
 .item-meta > .meta-speed,
@@ -5337,6 +5333,7 @@ button.meta-path {
   }
 
   .item-meta {
+    display: flex;
     padding: 0;
   }
 
