@@ -5142,7 +5142,7 @@ button.meta-path {
 }
 
 .download-table-header > span:nth-child(n + 4) {
-  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  padding-left: 16px;
 }
 
 .download-card {
@@ -5194,8 +5194,7 @@ button.meta-path {
   justify-self: end;
   align-self: stretch;
   min-height: 42px;
-  padding-left: 8px;
-  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  padding-left: 16px;
 }
 
 .table-size-cell,
@@ -5261,7 +5260,7 @@ button.meta-path {
 .table-date-cell {
   align-self: stretch;
   min-height: 42px;
-  border-left: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  padding-left: 16px;
 }
 
 .item-meta {
