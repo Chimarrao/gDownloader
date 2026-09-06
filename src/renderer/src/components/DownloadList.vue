@@ -350,6 +350,35 @@
                 >
                   <i class="pi pi-star-fill"></i>
                 </span>
+                <!-- Mantém a origem ao lado do nome para não desperdiçar uma linha. -->
+                <div class="item-subtitle item-subtitle-inline">
+                  <span v-if="hasColumn('host')" class="meta-host" :title="moduleLabel(item.moduleId)">
+                    <i class="pi pi-globe"></i>
+                    {{ moduleLabel(item.moduleId) }}
+                  </span>
+                  <template v-if="item.channelName">
+                    <span class="meta-sep">·</span>
+                    <span class="item-channel-inline">
+                      <img v-if="item.channelThumbnailUrl" :src="item.channelThumbnailUrl" class="item-channel-avatar" />
+                      {{ item.channelName }}
+                    </span>
+                  </template>
+                  <template v-if="item.durationSecs">
+                    <span class="meta-sep">·</span>
+                    <span class="meta-duration">{{ formatMediaDuration(item.durationSecs) }}</span>
+                  </template>
+                  <template v-if="item.isFolder && (item.children?.length ?? 0) > 0">
+                    <span class="meta-sep">·</span>
+                    <span class="meta-size">{{ item.children?.length }} item(ns)</span>
+                  </template>
+                  <template v-if="networkRouteLabel(item) !== 'Conexão direta'">
+                    <span class="meta-sep">·</span>
+                    <span class="meta-network" :title="networkRouteLabel(item)">
+                      <span v-if="flagClass(item.networkRoute?.exitCountryCode)" :class="flagClass(item.networkRoute?.exitCountryCode)"></span>
+                      {{ networkRouteLabel(item) }}
+                    </span>
+                  </template>
+                </div>
               </div>
               <div class="item-actions">
                 <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
@@ -436,36 +465,6 @@
                   <i class="pi pi-ellipsis-v"></i>
                 </button>
               </div>
-            </div>
-
-            <!-- Subtitle: host · tipo · duração (sempre legível sem abrir detalhes) -->
-            <div class="item-subtitle">
-              <span v-if="hasColumn('host')" class="meta-host" :title="moduleLabel(item.moduleId)">
-                <i class="pi pi-globe"></i>
-                {{ moduleLabel(item.moduleId) }}
-              </span>
-              <template v-if="item.channelName">
-                <span class="meta-sep">·</span>
-                <span class="item-channel-inline">
-                  <img v-if="item.channelThumbnailUrl" :src="item.channelThumbnailUrl" class="item-channel-avatar" />
-                  {{ item.channelName }}
-                </span>
-              </template>
-              <template v-if="item.durationSecs">
-                <span class="meta-sep">·</span>
-                <span class="meta-duration">{{ formatMediaDuration(item.durationSecs) }}</span>
-              </template>
-              <template v-if="item.isFolder && (item.children?.length ?? 0) > 0">
-                <span class="meta-sep">·</span>
-                <span class="meta-size">{{ item.children?.length }} item(ns)</span>
-              </template>
-              <template v-if="networkRouteLabel(item) !== 'Conexão direta'">
-                <span class="meta-sep">·</span>
-                <span class="meta-network" :title="networkRouteLabel(item)">
-                  <span v-if="flagClass(item.networkRoute?.exitCountryCode)" :class="flagClass(item.networkRoute?.exitCountryCode)"></span>
-                  {{ networkRouteLabel(item) }}
-                </span>
-              </template>
             </div>
 
             <div v-if="showYouTubeStages(item)" class="youtube-stage-strip" aria-label="Etapas do YouTube">
@@ -4075,7 +4074,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-self: stretch;
   border: 1px solid var(--border-color);
   border-radius: 14px;
-  background: var(--bg-card);
+  /* Fundo um pouco mais recuado para destacar o respiro entre cartões. */
+  background: color-mix(in srgb, var(--bg-primary) 72%, var(--bg-card));
   /* overflow:hidden + flex default encolhia o bloco (min-size vira 0) e CORTAVA
      os itens do fundo sem o .items-container poder rolar. Não encolher: o pai rola. */
   flex: 0 0 auto;
@@ -4114,6 +4114,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .items-stack-rows {
   display: flex;
   flex-direction: column;
+  gap: 6px;
   width: 100%;
   min-width: 0;
   flex: 0 0 auto;
@@ -4152,9 +4153,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-height: var(--row-height);
   /* Fundo opaco: evita texto “fantasma” da linha de baixo vazando no card. */
   background: var(--bg-card);
-  border: none;
-  border-bottom: 1px solid var(--border-color);
-  border-radius: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
   transition: background 0.15s ease;
   position: relative;
   /* hidden evita overlap entre linhas; a altura cresce com o conteúdo (min-height).
@@ -4164,10 +4164,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   box-sizing: border-box;
   align-self: stretch;
   isolation: isolate;
-}
-
-.items-stack-rows .download-card:last-child {
-  border-bottom: none;
 }
 
 .density-compact .download-card {
@@ -4477,7 +4473,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   overflow: hidden;
 }
 
@@ -4495,15 +4491,30 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   display: flex;
   align-items: center;
   gap: 8px;
+  overflow: hidden;
 }
 
 .item-title {
+  flex: 0 1 auto;
+  max-width: 62%;
   font-size: 13px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
+}
+
+.item-subtitle-inline {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.item-subtitle-inline > * {
+  flex-shrink: 0;
 }
 
 .type-icon {
