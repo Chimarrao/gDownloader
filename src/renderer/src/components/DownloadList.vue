@@ -917,8 +917,8 @@
               </div>
             </div>
           </div>
-        </TransitionGroup>
         </div>
+        </TransitionGroup>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
         <!-- Skeleton dos que estão sendo adicionados: SEMPRE abaixo dos downloads. -->
         <div
