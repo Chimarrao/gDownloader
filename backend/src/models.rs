@@ -341,6 +341,8 @@ pub struct PublicSettings {
     pub youtube_embed_subs: bool,
     #[serde(default)]
     pub youtube_split_chapters: bool,
+    #[serde(default)]
+    pub youtube_download_pack: bool,
     /// Quando true, downloads tentam INDEFINIDAMENTE em caso de falha (com backoff),
     /// ignorando o teto de `max_retries_per_download`.
     #[serde(default)]
@@ -419,6 +421,7 @@ impl Default for PublicSettings {
             youtube_sub_langs: "pt,en".to_string(),
             youtube_embed_subs: false,
             youtube_split_chapters: false,
+            youtube_download_pack: false,
             infinite_retries: false,
         }
     }

@@ -119,6 +119,33 @@
           <option value="en-US">{{ t('langEnUs') }}</option>
         </select>
       </div>
+
+      <div class="setting-row setting-row-stack">
+        <div class="setting-info">
+          <span class="setting-label">Bloco do download</span>
+          <span class="setting-desc">Tamanho e informações exibidas em cada arquivo da fila</span>
+        </div>
+        <div class="display-preferences">
+          <label class="display-size-field">
+            <span>Tamanho do bloco</span>
+            <select v-model="settings.uiDensity" class="setting-select" @change="save">
+              <option value="comfortable">Confortável</option>
+              <option value="compact">Compacto</option>
+              <option value="dense">Denso</option>
+            </select>
+          </label>
+          <div class="display-field-grid">
+            <label v-for="field in downloadBlockFields" :key="field.id" class="setting-check">
+              <input
+                type="checkbox"
+                :checked="isDownloadBlockFieldVisible(field.id)"
+                @change="toggleDownloadBlockField(field.id)"
+              />
+              <span>{{ field.label }}</span>
+            </label>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="settings-section" data-tour="youtube-settings">
@@ -215,6 +242,17 @@
         <label class="setting-toggle">
           <input type="checkbox" v-model="settings.youtubeSplitChapters" @change="save" />
           <span>{{ settings.youtubeSplitChapters ? 'Ativado' : 'Desativado' }}</span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Pack do YouTube</span>
+          <span class="setting-desc">Cria uma pasta com vídeo, thumbnail, legendas, descrição e metadados</span>
+        </div>
+        <label class="setting-toggle">
+          <input type="checkbox" v-model="settings.youtubeDownloadPack" @change="save" />
+          <span>{{ settings.youtubeDownloadPack ? 'Ativado' : 'Desativado' }}</span>
         </label>
       </div>
 
@@ -686,6 +724,21 @@ import { setLocale, useI18n } from '../i18n'
 const { setTheme, themeOptions } = useTheme()
 const { t } = useI18n()
 
+const defaultDownloadBlockFields = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
+const downloadBlockFields = [
+  { id: 'name', label: 'Nome' },
+  { id: 'status', label: 'Status' },
+  { id: 'size', label: 'Tamanho' },
+  { id: 'progress', label: 'Progresso' },
+  { id: 'speed', label: 'Velocidade' },
+  { id: 'eta', label: 'ETA' },
+  { id: 'host', label: 'Host / ícone' },
+  { id: 'package', label: 'Pacote' },
+  { id: 'added', label: 'Adicionado' },
+  { id: 'completed', label: 'Concluído' },
+  { id: 'hash', label: 'Hash' },
+]
+
 const settings = reactive<AppSettingsSnapshot>({
   outputDir: '~/Downloads',
   maxConcurrentDownloads: 3,
@@ -719,6 +772,7 @@ const settings = reactive<AppSettingsSnapshot>({
   postDownloadWebhookUrl: '',
   duplicateAction: 'rename',
   uiDensity: 'comfortable',
+  visibleColumns: [...defaultDownloadBlockFields],
   interceptMode: 'off',
   interceptMinSizeMb: 1,
   interceptMimeAllowlist: [
@@ -741,6 +795,7 @@ const settings = reactive<AppSettingsSnapshot>({
   youtubeSubLangs: 'pt,en',
   youtubeEmbedSubs: false,
   youtubeSplitChapters: false,
+  youtubeDownloadPack: false,
   ytdlpAutoUpdate: true,
   ytdlpBinPath: '',
   ffmpegBinPath: '',
@@ -752,6 +807,18 @@ const settings = reactive<AppSettingsSnapshot>({
     port: 9786,
   },
 })
+
+function isDownloadBlockFieldVisible(field: string): boolean {
+  return (settings.visibleColumns ?? defaultDownloadBlockFields).includes(field)
+}
+
+function toggleDownloadBlockField(field: string): void {
+  const visible = settings.visibleColumns ?? [...defaultDownloadBlockFields]
+  settings.visibleColumns = visible.includes(field)
+    ? visible.filter((item) => item !== field)
+    : defaultDownloadBlockFields.filter((item) => item === field || visible.includes(item))
+  void save()
+}
 interface YtdlpStatus {
   version: string | null
   updateAvailable: boolean
@@ -1167,6 +1234,35 @@ async function clearCache(ids?: string[]): Promise<void> {
 .setting-row-stack {
   grid-template-columns: 1fr;
   align-items: stretch;
+}
+
+.display-preferences {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.display-size-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.display-field-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.setting-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .setting-textarea {

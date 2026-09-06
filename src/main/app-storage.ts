@@ -43,6 +43,7 @@ export const defaultPublicSettings: PersistedSettings = {
   youtubeSubLangs: 'pt,en',
   youtubeEmbedSubs: false,
   youtubeSplitChapters: false,
+  youtubeDownloadPack: false,
   ytdlpAutoUpdate: true,
   ytdlpBinPath: '',
   ffmpegBinPath: '',

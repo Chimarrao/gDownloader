@@ -292,9 +292,15 @@
       </div>
       <div class="items-stack">
         <div v-if="virtualizationEnabled && topSpacerHeight > 0" :style="{ height: `${topSpacerHeight}px` }"></div>
-        <!-- Lista sem TransitionGroup: virtualização + animação FLIP eram incompatíveis
-             (as linhas 'sumiam e apareciam' ao rolar e a animação ficava repetindo). -->
-        <div class="items-stack-rows">
+        <!-- FLIP só na lista pequena: com virtualização, a troca de nós visíveis
+             pode animar fora da viewport e causar saltos na rolagem. -->
+        <TransitionGroup
+          tag="div"
+          name="reorder"
+          class="items-stack-rows"
+          :class="{ 'reorder-animate': reorderAnimations && !virtualizationEnabled }"
+          :css="reorderAnimations && !virtualizationEnabled"
+        >
         <div
           v-for="item in visibleItems"
           :key="`${item.id}:${rowLayoutVersion}`"
@@ -911,7 +917,7 @@
               </div>
             </div>
           </div>
-        </div>
+        </TransitionGroup>
         </div>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
         <!-- Skeleton dos que estão sendo adicionados: SEMPRE abaixo dos downloads. -->
@@ -1640,6 +1646,29 @@ function toggleReorderAnimations(): void {
   void persistDisplaySettings()
 }
 
+function applyDisplaySettings(settings: {
+  visibleColumns?: unknown
+  uiDensity?: unknown
+  reorderAnimations?: unknown
+} | null | undefined): void {
+  if (Array.isArray(settings?.visibleColumns) && settings.visibleColumns.length > 0) {
+    const known = new Set(defaultColumns)
+    visibleColumns.value = settings.visibleColumns.filter(
+      (column): column is string => typeof column === 'string' && known.has(column)
+    )
+  }
+  if (settings?.uiDensity === 'comfortable' || settings?.uiDensity === 'compact' || settings?.uiDensity === 'dense') {
+    uiDensity.value = settings.uiDensity
+  }
+  if (typeof settings?.reorderAnimations === 'boolean') {
+    reorderAnimations.value = settings.reorderAnimations
+  }
+}
+
+function onSettingsUpdated(event: Event): void {
+  applyDisplaySettings((event as CustomEvent).detail)
+}
+
 async function persistDisplaySettings(): Promise<void> {
   const settings = await window.api.settings.load().catch(() => null)
   if (!settings) return
@@ -1994,6 +2023,7 @@ onMounted(async () => {
   window.addEventListener('click', closeContextMenu)
   window.addEventListener('blur', closeContextMenu)
   window.addEventListener('keydown', onQueuePanelHotkey)
+  window.addEventListener('gdownloader-settings-updated', onSettingsUpdated)
   retryTimer = window.setInterval(() => {
     nowTick.value = Date.now()
     if (++sortTickCounter >= 5) {
@@ -2033,15 +2063,10 @@ onMounted(async () => {
 
   packages.value = await window.api.packages.list().catch(() => [])
   const settings = await window.api.settings.load().catch(() => null)
-  if (Array.isArray(settings?.visibleColumns) && settings.visibleColumns.length > 0) {
-    const known = new Set(defaultColumns)
-    visibleColumns.value = settings.visibleColumns.filter((column) => known.has(column))
-  }
+  applyDisplaySettings(settings)
   filterStatuses.value = settings?.lastFilters?.statuses ?? []
   filterHosts.value = settings?.lastFilters?.hosts ?? []
   filterPackages.value = settings?.lastFilters?.packages ?? []
-  uiDensity.value = settings?.uiDensity ?? 'comfortable'
-  reorderAnimations.value = settings?.reorderAnimations ?? true
 
   // Load existing downloads from backend
   await hydrate()
@@ -2370,6 +2395,7 @@ onUnmounted(() => {
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('blur', closeContextMenu)
   window.removeEventListener('keydown', onQueuePanelHotkey)
+  window.removeEventListener('gdownloader-settings-updated', onSettingsUpdated)
   for (const unsub of unsubs) unsub()
 })
 

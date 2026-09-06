@@ -163,8 +163,26 @@ impl YouTubeProvider {
         }
     }
 
-    fn output_template(dest_path: &str) -> String {
-        dest_path.to_string()
+    fn output_template(dest_path: &str, output_is_folder: bool) -> String {
+        if !output_is_folder {
+            return dest_path.to_string();
+        }
+        let root = Path::new(dest_path);
+        let basename = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("YouTube");
+        root.join(format!("{basename}.%(ext)s"))
+            .to_string_lossy()
+            .to_string()
+    }
+
+    fn chapter_output_template(dest_path: &str) -> String {
+        Path::new(dest_path)
+            .join("%(title)s - %(section_number)03d %(section_title)s.%(ext)s")
+            .to_string_lossy()
+            .to_string()
     }
 
     fn format_label(format: &YtdlpFormat) -> String {
@@ -736,6 +754,21 @@ impl YouTubeProvider {
             if metadata.is_file() {
                 return metadata.len();
             }
+            if metadata.is_dir() {
+                let mut total = 0u64;
+                let Ok(mut entries) = tokio::fs::read_dir(dest_path).await else {
+                    return 0;
+                };
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let Ok(entry_metadata) = entry.metadata().await else {
+                        continue;
+                    };
+                    if entry_metadata.is_file() {
+                        total = total.saturating_add(entry_metadata.len());
+                    }
+                }
+                return total;
+            }
         }
 
         let path = PathBuf::from(dest_path);
@@ -769,6 +802,32 @@ impl YouTubeProvider {
             }
         }
         newest_size
+    }
+
+    async fn has_video_output(dest_path: &str) -> bool {
+        const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "m4v"];
+        let is_video = |path: &Path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .map(|extension| VIDEO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+                .unwrap_or(false)
+        };
+
+        let path = Path::new(dest_path);
+        if tokio::fs::metadata(path).await.map(|metadata| metadata.is_file()).unwrap_or(false) {
+            return is_video(path);
+        }
+        let Ok(mut entries) = tokio::fs::read_dir(path).await else {
+            return false;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.metadata().await.map(|metadata| metadata.is_file()).unwrap_or(false)
+                && is_video(&entry.path())
+            {
+                return true;
+            }
+        }
+        false
     }
 
     async fn send_stage(
@@ -880,7 +939,15 @@ impl Provider for YouTubeProvider {
         context: DownloadContext,
     ) -> Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(parent) = Path::new(dest_path).parent() {
+            let download_pack = context.youtube_download_pack
+                || Self::selected_flag(&selected_children, "ytdlp_download_pack")
+                || Self::fragment_value(url, "ytdlp_download_pack")
+                    .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            let output_is_folder = download_pack || context.youtube_split_chapters;
+            if output_is_folder {
+                tokio::fs::create_dir_all(dest_path).await?;
+            } else if let Some(parent) = Path::new(dest_path).parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
             let selected_playlist_urls = Self::selected_playlist_urls(&selected_children);
@@ -947,7 +1014,7 @@ impl Provider for YouTubeProvider {
                     "3".to_string(),
                     "-c".to_string(),
                     "-o".to_string(),
-                    Self::output_template(dest_path),
+                    Self::output_template(dest_path, output_is_folder),
                 ]);
 
                 let limit = speed_limit_bps.load(std::sync::atomic::Ordering::Relaxed);
@@ -956,15 +1023,25 @@ impl Provider for YouTubeProvider {
                     args.push(limit.to_string());
                 }
 
-                if write_thumbnail {
+                if write_thumbnail || download_pack {
                     args.push("--write-thumbnail".to_string());
+                }
+
+                if download_pack {
+                    args.push("--write-description".to_string());
+                    args.push("--write-info-json".to_string());
+                    // Os anexos (legenda, capa e metadados) são úteis, mas não
+                    // devem descartar o vídeo inteiro se o YouTube limitar um
+                    // deles temporariamente. A presença do arquivo de vídeo é
+                    // conferida explicitamente após o yt-dlp terminar.
+                    args.push("--ignore-errors".to_string());
                 }
 
                 if multi_audio {
                     args.push("--audio-multistreams".to_string());
                 }
 
-                if context.youtube_download_subs || write_subs_selected {
+                if download_pack || context.youtube_download_subs || write_subs_selected {
                     args.push("--write-subs".to_string());
                     args.push("--write-auto-sub".to_string());
                     args.push("--sub-lang".to_string());
@@ -980,6 +1057,11 @@ impl Provider for YouTubeProvider {
 
                 if context.youtube_split_chapters {
                     args.push("--split-chapters".to_string());
+                    args.push("-o".to_string());
+                    args.push(format!(
+                        "chapter:{}",
+                        Self::chapter_output_template(dest_path)
+                    ));
                 }
 
                 if let Ok(ffmpeg_bin) = std::env::var("GDOWNLOADER_FFMPEG_BIN") {
@@ -1125,6 +1207,11 @@ impl Provider for YouTubeProvider {
                 grand_downloaded = grand_downloaded.saturating_add(completed_synthetic);
                 grand_total = grand_total.max(grand_downloaded);
                 let final_size = Self::output_size(dest_path, started_at).await;
+                if download_pack && !Self::has_video_output(dest_path).await {
+                    return Err(anyhow!(
+                        "yt-dlp concluiu o Pack sem produzir um arquivo de vídeo"
+                    ));
+                }
                 if final_size > 0 {
                     grand_downloaded = final_size;
                 }

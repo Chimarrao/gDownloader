@@ -468,6 +468,7 @@ pub struct DownloadContext {
     pub youtube_sub_langs: String,
     pub youtube_embed_subs: bool,
     pub youtube_split_chapters: bool,
+    pub youtube_download_pack: bool,
     pub request_headers: std::collections::HashMap<String, String>,
     /// Avatar do canal já em cache: quando presente, evita a chamada extra
     /// (cara) do yt-dlp para buscar o thumbnail do canal novamente.

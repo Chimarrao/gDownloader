@@ -109,3 +109,31 @@ fn extracts_folder_children_with_sizes() {
     assert!(children[0].size > 18_000_000_000 - 2_000_000_000);
     assert!(children[1].size > 7_000_000_000 - 500_000_000);
 }
+
+#[test]
+fn extracts_folder_children_from_current_1fichier_markup() {
+    // Estrutura observada na pasta real t2xYJ9F9 em 2026-09: sem a classe
+    // `normal`, com atributos extras no td e no link.
+    let html = r#"
+        <tr>
+          <td class="file-obj" data-do="0.dbpsc78e1yhn2bl07h5x" style="word-break:break-all">
+            <a href="https://1fichier.com/?dbpsc78e1yhn2bl07h5x" target="_blank" rel="noopener" title="Download City of God">City.of.God.2002.Medio.rar</a>
+          </td>
+          <td style="white-space:nowrap">12.92 GB</td>
+          <td style="white-space:nowrap">2026-06-19 21:06</td>
+        </tr>
+        <tr>
+          <td class="file-obj" data-do="0.ltf2h0nrnufxdslgs917">
+            <a href="https://1fichier.com/?ltf2h0nrnufxdslgs917" target="_blank">City.of.God.2002.Menor.rar</a>
+          </td>
+          <td style="white-space:nowrap">4.89 GB</td>
+        </tr>
+    "#;
+
+    let children = FichierProvider::extract_folder_children(html);
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].filename, "City.of.God.2002.Medio.rar");
+    assert_eq!(children[0].size, FichierProvider::parse_human_size("12.92 GB"));
+    assert_eq!(children[1].filename, "City.of.God.2002.Menor.rar");
+    assert_eq!(children[1].size, FichierProvider::parse_human_size("4.89 GB"));
+}

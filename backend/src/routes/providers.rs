@@ -112,6 +112,7 @@ pub async fn get_file_info(
             youtube_sub_langs: settings.youtube_sub_langs,
             youtube_embed_subs: settings.youtube_embed_subs,
             youtube_split_chapters: settings.youtube_split_chapters,
+            youtube_download_pack: settings.youtube_download_pack,
             request_headers: std::collections::HashMap::new(),
             cached_channel_thumbnail_url,
         }

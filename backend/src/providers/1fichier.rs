@@ -155,8 +155,11 @@ impl FichierProvider {
 
     /// Extrai links de arquivos de uma página de pasta do 1fichier.
     fn extract_folder_children(html: &str) -> Vec<FileChildInfo> {
+        // O 1fichier deixou de usar as antigas classes `normal alg` e agora
+        // adiciona atributos ao link. O parser precisa reconhecer a semântica
+        // `file-obj`, não uma ordem exata de atributos/classes.
         let Some(re) = regex::Regex::new(
-            r#"(?is)<tr>\s*<td[^>]*class="normal alg file-obj"[^>]*>\s*<a href="(https://1fichier\.com/\?[^"]+)"[^>]*>([^<]+)</a>\s*</td>\s*<td[^>]*class="normal"[^>]*>([^<]+)</td>"#,
+            r#"(?is)<td\b[^>]*\bclass\s*=\s*["'][^"']*\bfile-obj\b[^"']*["'][^>]*>\s*<a\b[^>]*\bhref\s*=\s*["'](https://1fichier\.com/\?[^"']+)["'][^>]*>(.*?)</a>\s*</td>\s*<td\b[^>]*>\s*([^<]+)"#,
         )
         .ok() else {
             return Vec::new();

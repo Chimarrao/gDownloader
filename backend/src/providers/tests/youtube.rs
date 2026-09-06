@@ -104,3 +104,19 @@ fn reads_selected_merge_format_from_child_fragment() {
     );
     assert_eq!(YouTubeProvider::normalize_merge_format("avi"), None);
 }
+
+#[test]
+fn pack_and_chapters_write_inside_the_download_folder() {
+    assert_eq!(
+        YouTubeProvider::output_template("/tmp/The Soviet Unix", true),
+        "/tmp/The Soviet Unix/The Soviet Unix.%(ext)s"
+    );
+    assert_eq!(
+        YouTubeProvider::output_template("/tmp/The Soviet Unix.mp4", false),
+        "/tmp/The Soviet Unix.mp4"
+    );
+    assert_eq!(
+        YouTubeProvider::chapter_output_template("/tmp/The Soviet Unix"),
+        "/tmp/The Soviet Unix/%(title)s - %(section_number)03d %(section_title)s.%(ext)s"
+    );
+}

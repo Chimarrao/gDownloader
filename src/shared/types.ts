@@ -217,6 +217,7 @@ export interface PersistedSettings {
   youtubeSubLangs?: string
   youtubeEmbedSubs?: boolean
   youtubeSplitChapters?: boolean
+  youtubeDownloadPack?: boolean
   ytdlpAutoUpdate?: boolean
   ytdlpBinPath?: string
   ffmpegBinPath?: string

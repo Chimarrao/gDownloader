@@ -308,6 +308,12 @@ pub async fn add_download_internal(
         .selected_children
         .clone()
         .filter(|children| !children.is_empty());
+    let settings = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| crate::db::load_public_settings(&db).ok())
+        .unwrap_or_default();
 
     // Busca informações do arquivo (nome, tamanho) antes de criar o item na fila.
     // Quando o capturador já leu o link, usa o cache salvo para evitar uma nova
@@ -325,9 +331,6 @@ pub async fn add_download_internal(
         if let Some(cached) = cached {
             cached_file_info_to_file_info(cached)
         } else {
-            let settings = state.db.lock().ok()
-                .and_then(|db| crate::db::load_public_settings(&db).ok())
-                .unwrap_or_default();
             let context = providers::DownloadContext {
                 db_path: state.db_path.clone(),
                 proxy_mode: settings.proxy_mode,
@@ -343,6 +346,7 @@ pub async fn add_download_internal(
                 youtube_sub_langs: settings.youtube_sub_langs,
                 youtube_embed_subs: settings.youtube_embed_subs,
                 youtube_split_chapters: settings.youtube_split_chapters,
+                youtube_download_pack: settings.youtube_download_pack,
                 request_headers: req.request_headers.clone().unwrap_or_default(),
                 cached_channel_thumbnail_url: None,
             };
@@ -410,6 +414,24 @@ pub async fn add_download_internal(
                     file_info.size = child.size;
                 }
             }
+        }
+
+        // Capítulos e Pack não produzem um único arquivo. Modelamos o destino
+        // como pasta para que remoção, histórico e “abrir pasta” apontem para
+        // todos os artefatos gerados pelo yt-dlp, e não apenas para um .mp4
+        // inexistente ao lado deles.
+        let selected_pack = selected_fragment_value(&selected_children, "ytdlp_download_pack")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if settings.youtube_download_pack || settings.youtube_split_chapters || selected_pack {
+            let folder_name = std::path::Path::new(&file_info.filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(&file_info.filename)
+                .to_string();
+            file_info.filename = folder_name;
+            file_info.is_folder = true;
         }
     }
 
@@ -1635,6 +1657,7 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 youtube_sub_langs: settings.youtube_sub_langs,
                 youtube_embed_subs: settings.youtube_embed_subs,
                 youtube_split_chapters: settings.youtube_split_chapters,
+                youtube_download_pack: settings.youtube_download_pack,
                 request_headers,
                 cached_channel_thumbnail_url: None,
             }
