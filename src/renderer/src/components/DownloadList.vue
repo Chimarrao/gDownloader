@@ -10,7 +10,19 @@
         <strong class="stat-value">{{ statActiveCount }}</strong>
         <span class="stat-sub">de {{ items.length }}</span>
       </div>
-      <div class="stat-card">
+      <div class="stat-card stat-card-speed">
+        <svg class="speed-card-chart" viewBox="0 0 360 150" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="speed-card-fill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stop-color="currentColor" stop-opacity=".18" />
+              <stop offset="100%" stop-color="currentColor" stop-opacity="0" />
+            </linearGradient>
+          </defs>
+          <path class="speed-card-grid" d="M0 36H360M0 75H360M0 114H360M72 0V150M144 0V150M216 0V150M288 0V150" />
+          <path class="speed-card-area" d="M-18 133 C10 120 20 106 43 112 S75 138 97 102 S130 38 157 76 S188 125 211 82 S242 45 265 76 S301 130 326 89 S351 51 380 64 V150 H-18Z" />
+          <path class="speed-card-line speed-card-line-back" d="M-18 133 C10 120 20 106 43 112 S75 138 97 102 S130 38 157 76 S188 125 211 82 S242 45 265 76 S301 130 326 89 S351 51 380 64" />
+          <path class="speed-card-line speed-card-line-front" d="M-18 128 C7 116 24 111 47 116 S76 132 101 98 S130 48 158 79 S187 120 214 78 S244 52 267 80 S302 124 328 85 S355 57 382 67" />
+        </svg>
         <div class="stat-head">
           <span>Velocidade atual</span>
           <span class="stat-icon green"><i class="pi pi-chart-line"></i></span>
@@ -116,7 +128,7 @@
           </label>
           <label class="toolbar-sort">
             <span>Pacote</span>
-            <select v-model="filterPackages" class="toolbar-select" multiple size="1" @change="persistFilters">
+            <select v-model="filterPackages" class="toolbar-select" multiple size="1" @focus="void refreshPackages()" @change="persistFilters">
               <option value="">Sem pacote</option>
               <option v-for="pkg in packages" :key="pkg.id" :value="pkg.id">{{ pkg.name }}</option>
             </select>
@@ -352,7 +364,10 @@
             <div class="item-header">
               <div class="item-title-wrap">
                 <template v-if="hasColumn('name')">
-                <span class="item-title" :title="item.title">{{ item.title || item.url }}</span>
+                <span
+                  v-tooltip.bottom="{ value: item.title || item.url, showDelay: 220, hideDelay: 80 }"
+                  class="item-title"
+                >{{ item.title || item.url }}</span>
                 </template>
                 <span
                   v-if="item.pinned"
@@ -361,7 +376,7 @@
                 >
                   <i class="pi pi-star-fill"></i>
                 </span>
-                <!-- Mantém a origem ao lado do nome para não desperdiçar uma linha. -->
+                <!-- Metadados em uma segunda linha compacta, sob o título. -->
                 <div class="item-subtitle item-subtitle-inline">
                   <span v-if="hasColumn('host')" class="meta-host" :title="moduleLabel(item.moduleId)">
                     <i class="pi pi-globe"></i>
@@ -780,6 +795,14 @@
                     <div class="child-main">
                       <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
                         <span
+                          v-if="childWinrarIcon(node.name)"
+                          class="child-icon child-app-icon"
+                          :aria-label="childWinrarIcon(node.name)?.app"
+                          role="img"
+                          v-html="childWinrarIcon(node.name)?.svg"
+                        ></span>
+                        <span
+                          v-else
                           class="child-icon"
                           :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
                           :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
@@ -854,6 +877,14 @@
                       <div class="child-main">
                         <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
                           <span
+                            v-if="childWinrarIcon(node.name)"
+                            class="child-icon child-app-icon"
+                            :aria-label="childWinrarIcon(node.name)?.app"
+                            role="img"
+                            v-html="childWinrarIcon(node.name)?.svg"
+                          ></span>
+                          <span
+                            v-else
                             class="child-icon"
                             :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
                             :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
@@ -1179,6 +1210,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import { DownloadStatus as DownloadStatusEnum } from '../../../shared/constants'
 import type { DownloadChild, DownloadEvent, DownloadItem, DownloadPackage } from '../../../shared/types'
 import { getFileIcon } from '../assets/file-icons'
@@ -1227,6 +1259,7 @@ const props = withDefaults(defineProps<{ skeletonCount?: number; torActive?: boo
 const skeletonCount = computed(() => props.skeletonCount)
 const torActive = computed(() => props.torActive)
 const { t } = useI18n()
+const vTooltip = Tooltip
 
 // ── Emits ──────────────────────────────────────────────────
 const emit = defineEmits<{
@@ -1325,6 +1358,7 @@ const sortTick = ref(Date.now())
 let sortTickCounter = 0
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
+let packageRefreshTimer: number | null = null
 let scheduledHydrateTimer: number | null = null
 const torCircuitRetryIds = new Set<string>()
 const sortOptions = computed(() =>
@@ -1841,6 +1875,11 @@ function leadingIconSvg(item: DownloadItem): string {
   return getIcon(item.moduleId).svg
 }
 
+function childWinrarIcon(filename: string) {
+  const icon = getFileTypeAppIcon(filename)
+  return icon?.app === 'winrar' ? icon : null
+}
+
 function leadingIconStyle(item: DownloadItem): Record<string, string> {
   // Ícones de app são coloridos por conta própria: não aplicamos o tom do provedor.
   if (!hasProviderIcon(item.moduleId) && getFileTypeAppIcon(item.title || item.url)) {
@@ -1985,6 +2024,18 @@ function clearListFilters(): void {
   void persistFilters()
 }
 
+async function refreshPackages(): Promise<void> {
+  const freshPackages = await window.api.packages.list().catch(() => packages.value)
+  packages.value = freshPackages
+
+  const availableIds = new Set(freshPackages.map((pkg) => pkg.id))
+  const nextFilters = filterPackages.value.filter((id) => id === '' || availableIds.has(id))
+  if (nextFilters.length !== filterPackages.value.length) {
+    filterPackages.value = nextFilters
+    void persistFilters()
+  }
+}
+
 function toggleQueuePanel(): void {
   queuePanelCollapsed.value = !queuePanelCollapsed.value
 }
@@ -2090,12 +2141,16 @@ onMounted(async () => {
     return acc
   }, {})
 
-  packages.value = await window.api.packages.list().catch(() => [])
   const settings = await window.api.settings.load().catch(() => null)
   applyDisplaySettings(settings)
   filterStatuses.value = settings?.lastFilters?.statuses ?? []
   filterHosts.value = settings?.lastFilters?.hosts ?? []
   filterPackages.value = settings?.lastFilters?.packages ?? []
+  await refreshPackages()
+
+  packageRefreshTimer = window.setInterval(() => {
+    void refreshPackages()
+  }, 30_000)
 
   // Load existing downloads from backend
   await hydrate()
@@ -2416,6 +2471,10 @@ onUnmounted(() => {
   if (hydrateTimer !== null) {
     window.clearInterval(hydrateTimer)
     hydrateTimer = null
+  }
+  if (packageRefreshTimer !== null) {
+    window.clearInterval(packageRefreshTimer)
+    packageRefreshTimer = null
   }
   if (scheduledHydrateTimer !== null) {
     window.clearTimeout(scheduledHydrateTimer)
@@ -3473,6 +3532,9 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .stat-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3480,6 +3542,70 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   border: 1px solid var(--border-color);
   border-radius: 14px;
   background: var(--bg-card);
+}
+
+.stat-card-speed > :not(.speed-card-chart) {
+  position: relative;
+  z-index: 1;
+}
+
+.speed-card-chart {
+  position: absolute;
+  z-index: 0;
+  inset: 0 0 0 auto;
+  width: min(72%, 330px);
+  height: 100%;
+  color: #22c55e;
+  opacity: .72;
+  pointer-events: none;
+}
+
+.speed-card-grid {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: .6;
+  opacity: .12;
+}
+
+.speed-card-area {
+  fill: url(#speed-card-fill);
+  animation: speed-card-area-breathe 5.5s ease-in-out infinite alternate;
+}
+
+.speed-card-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.speed-card-line-back {
+  stroke-width: 2.5;
+  opacity: .24;
+}
+
+.speed-card-line-front {
+  stroke-width: 2.1;
+  stroke-dasharray: 520;
+  stroke-dashoffset: 520;
+  animation: speed-card-line-draw 4.8s linear infinite;
+}
+
+@keyframes speed-card-line-draw {
+  0% { stroke-dashoffset: 520; opacity: .25; }
+  20%, 78% { opacity: 1; }
+  100% { stroke-dashoffset: -40; opacity: .25; }
+}
+
+@keyframes speed-card-area-breathe {
+  from { opacity: .5; transform: translateX(-4px) scaleY(.94); transform-origin: bottom right; }
+  to { opacity: 1; transform: translateX(3px) scaleY(1.04); transform-origin: bottom right; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .speed-card-area,
+  .speed-card-line-front { animation: none; }
+  .speed-card-line-front { stroke-dashoffset: 0; }
 }
 
 .stat-head {
@@ -4107,6 +4233,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .items-stack {
+  --download-table-actions-width: 132px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -4114,9 +4241,8 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 0;
   align-self: stretch;
   border: 1px solid var(--border-color);
-  border-radius: 14px;
-  /* Fundo um pouco mais recuado para destacar o respiro entre cartões. */
-  background: color-mix(in srgb, var(--bg-primary) 72%, var(--bg-card));
+  border-radius: 12px;
+  background: var(--bg-card);
   /* overflow:hidden + flex default encolhia o bloco (min-size vira 0) e CORTAVA
      os itens do fundo sem o .items-container poder rolar. Não encolher: o pai rola. */
   flex: 0 0 auto;
@@ -4155,7 +4281,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .items-stack-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   width: 100%;
   min-width: 0;
   flex: 0 0 auto;
@@ -4374,6 +4500,14 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   margin-top: 0;
   background: color-mix(in srgb, var(--text-primary) 3%, transparent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+/* Marcas de provedores já têm identidade visual própria; não as envolvemos em
+   um segundo cartão colorido. Thumbnails do YouTube seguem usando seu contêiner. */
+.provider-icon:not(.provider-icon-thumb) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none;
 }
 
 .provider-icon :deep(svg) {
@@ -5124,7 +5258,8 @@ button.meta-path {
 /* ── Lista tabular ─────────────────────────────────────────── */
 .download-table-header {
   display: grid;
-  grid-template-columns: 30px 52px minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) auto;
+  grid-template-columns: 30px 52px minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) var(--download-table-actions-width);
+  column-gap: 8px;
   align-items: center;
   min-height: 38px;
   padding: 0 12px;
@@ -5167,10 +5302,10 @@ button.meta-path {
 .item-body {
   grid-column: 3;
   display: grid;
-  grid-template-columns: minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) auto;
+  grid-template-columns: minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) var(--download-table-actions-width);
   grid-template-rows: minmax(44px, auto);
   align-items: center;
-  gap: 4px 0;
+  gap: 4px 8px;
   overflow: visible;
 }
 
@@ -5182,10 +5317,22 @@ button.meta-path {
   grid-column: 1;
   grid-row: 1;
   padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
 }
 
 .item-title {
-  max-width: 72%;
+  max-width: 100%;
+}
+
+.item-subtitle-inline {
+  width: 100%;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  overflow: hidden;
 }
 
 .item-actions {
@@ -5195,6 +5342,19 @@ button.meta-path {
   align-self: stretch;
   min-height: 42px;
   padding-left: 16px;
+}
+
+/* Linhas de tabela contínuas: o contêiner delimita a lista e cada download só
+   acrescenta seu divisor horizontal, sem criar uma segunda caixa. */
+.download-card {
+  border: 0;
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 0;
+  background: transparent;
+}
+
+.items-stack-rows > .download-card:last-child {
+  border-bottom: 0;
 }
 
 .table-size-cell,
@@ -5457,6 +5617,12 @@ button.meta-path {
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+.child-app-icon :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .child-size {

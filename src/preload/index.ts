@@ -686,6 +686,8 @@ const api = {
       ipcRenderer.invoke('system:notify', title, body),
     diskSpace: (path: string): Promise<{ path: string; freeBytes: number; totalBytes: number }> =>
       ipcRenderer.invoke('system:disk-space', path),
+    metrics: (): Promise<{ memoryUsed: number; memoryTotal: number; cpuPercent: number }> =>
+      ipcRenderer.invoke('system:metrics'),
   },
   logs: {
     tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> =>

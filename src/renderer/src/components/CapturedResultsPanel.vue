@@ -425,6 +425,14 @@
                     </label>
                     <span v-else class="child-check child-check-placeholder"></span>
                     <span
+                      v-if="childWinrarIcon(node.name)"
+                      class="child-icon child-app-icon"
+                      :aria-label="childWinrarIcon(node.name)?.app"
+                      role="img"
+                      v-html="childWinrarIcon(node.name)?.svg"
+                    ></span>
+                    <span
+                      v-else
                       class="child-icon"
                       :class="getFileIcon(node.name, node.mimeType, node.isFolder).className"
                       :aria-label="getFileIcon(node.name, node.mimeType, node.isFolder).alt"
@@ -456,6 +464,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 
 import { useI18n } from '../i18n'
 import { getFileIcon } from '../assets/file-icons'
+import { getFileTypeAppIcon } from '../assets/file-type-icons'
 import { getProviderIcon } from '../assets/provider-icons'
 import type { DerivedChildNode } from '../utils/child-tree'
 import VirtualRows from './VirtualRows.vue'
@@ -561,6 +570,11 @@ const props = defineProps({
     required: true,
   },
 })
+
+function childWinrarIcon(filename: string) {
+  const icon = getFileTypeAppIcon(filename)
+  return icon?.app === 'winrar' ? icon : null
+}
 
 const emit = defineEmits<{
   (e: 'toggle-all', checked: boolean): void
@@ -1470,6 +1484,12 @@ function suffixFps(source: string, label: string): string {
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+}
+
+.child-app-icon :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .child-folder-badge {

@@ -153,10 +153,6 @@
         <button class="quick-icon-btn" :title="t('toggleTheme')" @click="toggleQuickTheme">
           <i :class="effectiveTheme === 'light' ? 'pi pi-moon' : 'pi pi-sun'"></i>
         </button>
-        <div class="top-speed" :title="t('aggregateSpeed')">
-          <canvas ref="topSpeedCanvasRef" class="top-speed-chart" width="128" height="28" aria-hidden="true"></canvas>
-          <span>{{ formatSpeed(currentSpeed) }}</span>
-        </div>
         <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
           <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
             <span
@@ -275,12 +271,16 @@
     </main>
     <footer class="status-bar">
       <span class="status-item">
-        <i class="status-dot" :class="{ on: currentSpeed > 0 }"></i>
-        {{ t('aggregateSpeed') }}: ↓ {{ formatSpeed(currentSpeed) }}
+        <i class="pi pi-server"></i>
+        RAM: {{ formatBytes(systemMetrics.memoryUsed) }} / {{ formatBytes(systemMetrics.memoryTotal) }}
       </span>
       <span class="status-item">
-        <i class="status-dot" :class="{ on: torState.state === 'connected' }"></i>
-        Proxy/Tor: {{ torState.state === 'connected' ? 'Ativo' : 'Inativo' }}
+        <i class="pi pi-microchip"></i>
+        CPU: {{ systemMetrics.cpuPercent.toFixed(0) }}%
+      </span>
+      <span class="status-item">
+        <i class="pi pi-database"></i>
+        I/O: ↓ {{ formatSpeed(systemMetrics.ioReadBps) }} · ↑ {{ formatSpeed(systemMetrics.ioWriteBps) }}
       </span>
     </footer>
     </div>
@@ -307,7 +307,6 @@ import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
 import { setLocale, useI18n } from './i18n'
 import { applyUiPreferences, useTheme, type ThemeId } from './themes'
-import { pushRingBuffer } from './utils/ring-buffer'
 import { flagClass } from './utils/flag'
 import torIconSvg from './assets/tor.svg?raw'
 
@@ -335,9 +334,8 @@ const skeletonCount = ref(0)
 const skeletonBaseCount = ref(0)
 const skeletonTargetCount = ref(0)
 let skeletonSafetyTimer: ReturnType<typeof setTimeout> | null = null
-const speedHistory = ref<number[]>(new Array(600).fill(0))
 const currentSpeed = ref(0)
-const topSpeedCanvasRef = ref<HTMLCanvasElement | null>(null)
+const systemMetrics = ref({ memoryUsed: 0, memoryTotal: 0, cpuPercent: 0, ioReadBps: 0, ioWriteBps: 0 })
 const clipboardIncomingUrl = ref('')
 const showOnboarding = ref(false)
 const helpMenuOpen = ref(false)
@@ -363,9 +361,9 @@ const torState = ref<{
   route: [],
 })
 let currentSettings: Awaited<ReturnType<typeof window.api.settings.load>> | null = null
-let speedTicker: ReturnType<typeof setInterval> | null = null
 let torPulseTimer: ReturnType<typeof setInterval> | null = null
 let diskTicker: ReturnType<typeof setInterval> | null = null
+let systemMetricsTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
 let disposeToastComplete: (() => void) | null = null
 let disposeToastStatus: (() => void) | null = null
@@ -435,9 +433,9 @@ function updateTrayStats(): void {
 
 onUnmounted(() => {
   appMounted = false
-  if (speedTicker) clearInterval(speedTicker)
   if (torPulseTimer) clearInterval(torPulseTimer)
   if (diskTicker) clearInterval(diskTicker)
+  if (systemMetricsTicker) clearInterval(systemMetricsTicker)
   if (disksPollTimer) clearInterval(disksPollTimer)
   disposeClipboardDetected?.()
   disposeToastComplete?.()
@@ -483,12 +481,6 @@ const { initTheme, disposeTheme, setTheme, themeOptions, effectiveTheme } = useT
 
 onMounted(async () => {
   initTheme()
-  // Start speed ticker regardless of settings availability
-  speedTicker = setInterval(() => {
-    if (!appMounted) return
-    speedHistory.value = pushRingBuffer(speedHistory.value, currentSpeed.value, 600)
-    drawTopSpeedChart()
-  }, 120)
   torPulseTimer = setInterval(() => {
     if (!appMounted) return
     torPulseIndex.value = (torPulseIndex.value + 1) % 3
@@ -525,19 +517,19 @@ onMounted(async () => {
   }
   applyUiPreferences(settings)
   void refreshDiskUsage()
+  void refreshSystemMetrics()
   // Atualiza com frequência (statvfs é um único syscall, não pesa) para refletir
   // rápido o espaço consumido durante os downloads.
   diskTicker = setInterval(() => {
     if (appMounted) void refreshDiskUsage()
   }, 5_000)
+  systemMetricsTicker = setInterval(() => {
+    if (appMounted) void refreshSystemMetrics()
+  }, 3_000)
   if (!settings.onboardingCompleted) {
     showOnboarding.value = true
   }
   await refreshTorStatus()
-})
-
-watch(speedHistory, () => {
-  void nextTick(drawTopSpeedChart)
 })
 
 function formatSpeed(bps: number): string {
@@ -635,26 +627,17 @@ async function refreshDiskUsage(): Promise<void> {
   if (usage) diskUsage.value = usage
 }
 
-function drawTopSpeedChart(): void {
-  const canvas = topSpeedCanvasRef.value
-  if (!canvas) return
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-  const width = canvas.width
-  const height = canvas.height
-  const values = speedHistory.value
-  const max = Math.max(...values, 1)
-  ctx.clearRect(0, 0, width, height)
-  ctx.strokeStyle = '#5b6cff'
-  ctx.lineWidth = 2
-  ctx.beginPath()
-  values.forEach((value, index) => {
-    const x = values.length <= 1 ? 0 : (index / (values.length - 1)) * width
-    const y = height - (value / max) * (height - 4) - 2
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
-  ctx.stroke()
+async function refreshSystemMetrics(): Promise<void> {
+  const [metrics, disks] = await Promise.all([
+    window.api.system.metrics().catch(() => null),
+    window.api.getAllDisks().catch(() => []),
+  ])
+  if (!metrics) return
+  systemMetrics.value = {
+    ...metrics,
+    ioReadBps: disks.reduce((sum, disk) => sum + (disk.readBps ?? 0), 0),
+    ioWriteBps: disks.reduce((sum, disk) => sum + (disk.writeBps ?? 0), 0),
+  }
 }
 
 async function toggleQuickTheme(): Promise<void> {
@@ -996,27 +979,6 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card));
   color: var(--accent-color);
-}
-
-.top-speed {
-  height: 34px;
-  min-width: 204px;
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.top-speed-chart {
-  width: 128px;
-  height: 28px;
-  flex: 0 0 128px;
 }
 
 .top-disk {

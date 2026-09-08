@@ -16,6 +16,7 @@ import { basename, dirname, extname, join, resolve } from 'path'
 import { spawn } from 'child_process'
 import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, statfsSync, watch } from 'fs'
 import { Socket } from 'net'
+import { cpus, freemem, totalmem } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { AppSettingsSnapshot } from '../shared/types'
 import {
@@ -44,6 +45,24 @@ const legacyHistoryPaths = [
   join(app.getPath('userData'), 'history.json'),
   join(app.getPath('userData'), 'download-history.json'),
 ]
+
+let previousCpuSample: { idle: number; total: number } | null = null
+
+function systemMetricsSnapshot(): { memoryUsed: number; memoryTotal: number; cpuPercent: number } {
+  let idle = 0
+  let total = 0
+  for (const cpu of cpus()) {
+    idle += cpu.times.idle
+    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq
+  }
+  const previous = previousCpuSample
+  previousCpuSample = { idle, total }
+  const totalDelta = total - (previous?.total ?? total)
+  const idleDelta = idle - (previous?.idle ?? idle)
+  const cpuPercent = totalDelta > 0 ? Math.max(0, Math.min(100, ((totalDelta - idleDelta) / totalDelta) * 100)) : 0
+  const memoryTotal = totalmem()
+  return { memoryUsed: Math.max(0, memoryTotal - freemem()), memoryTotal, cpuPercent }
+}
 
 function getAppIconPath(): string {
   if (is.dev) {
@@ -1208,7 +1227,7 @@ function configureClipboardMonitor(enabled: boolean): void {
   lastClipboardSignature = ''
   clipboardMonitorTimer = setInterval(() => {
     void inspectClipboardForLinks()
-  }, 1000)
+  }, 350)
   void inspectClipboardForLinks()
   logMain('clipboard', 'Monitor de clipboard ativado')
 }
@@ -1585,6 +1604,8 @@ app.whenReady().then(async () => {
       totalBytes: Number(stats.blocks) * Number(stats.bsize),
     }
   })
+
+  ipcMain.handle('system:metrics', () => systemMetricsSnapshot())
 
   ipcMain.handle('cache:stats', async () => localCacheStats())
   ipcMain.handle('cache:clear', async (_event, ids: string[]) => clearLocalCache(ids))

@@ -207,6 +207,7 @@ interface RendererApi {
   system: {
     notify: (title: string, body?: string) => Promise<boolean>
     diskSpace: (path: string) => Promise<{ path: string; freeBytes: number; totalBytes: number }>
+    metrics: () => Promise<{ memoryUsed: number; memoryTotal: number; cpuPercent: number }>
   }
   logs: {
     tail: (maxLines?: number) => Promise<{ path: string; lines: string[] }>

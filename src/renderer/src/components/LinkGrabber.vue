@@ -114,7 +114,6 @@ import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes, formatDuration } from '../utils/format'
 import { packageGroupName, parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
-import { pruneCapturedRows } from '../utils/capture-selection'
 import CapturedResultsPanel from './CapturedResultsPanel.vue'
 import LinkInputPanel from './LinkInputPanel.vue'
 import LinkGrabberActionsBar from './LinkGrabberActionsBar.vue'
@@ -912,26 +911,38 @@ function sanitizeFolderName(name: string): string {
   )
 }
 
-// Mapeia cada entrada para a SUBPASTA comum quando 2+ arquivos compartilham o
-// mesmo nome-base. Entradas sem grupo (ou grupo de 1) mantêm o destino original.
-function computeGroupDestinations(entries: QueueEntry[]): Map<QueueEntry, string> {
-  const keyByEntry = new Map<QueueEntry, string>()
-  const count = new Map<string, number>()
-  const folderByKey = new Map<string, string>()
+interface AutoPackageGroup {
+  name: string
+  entries: QueueEntry[]
+}
+
+// Agrupa por nome-base de modo case-insensitive. Isso também cobre pastas Mega
+// cujo nome é igual (por exemplo "fugindo", "Fugindo") e que não têm sufixo
+// multipart no título.
+function computeAutoPackageGroups(entries: QueueEntry[]): Map<string, AutoPackageGroup> {
+  const groups = new Map<string, AutoPackageGroup>()
   for (const entry of entries) {
     const base = packageGroupName(entry.title)
     if (base.length < 4) continue
     const key = base.toLowerCase()
-    keyByEntry.set(entry, key)
-    count.set(key, (count.get(key) ?? 0) + 1)
-    if (!folderByKey.has(key)) folderByKey.set(key, sanitizeFolderName(base))
+    const group = groups.get(key)
+    if (group) group.entries.push(entry)
+    else groups.set(key, { name: sanitizeFolderName(base), entries: [entry] })
   }
+  for (const [key, group] of groups) {
+    if (group.entries.length < 2) groups.delete(key)
+  }
+  return groups
+}
+
+// Mapeia cada entrada para a SUBPASTA comum quando 2+ arquivos compartilham o
+// mesmo nome-base. Entradas sem grupo (ou grupo de 1) mantêm o destino original.
+function computeGroupDestinations(entries: QueueEntry[]): Map<QueueEntry, string> {
+  const groups = computeAutoPackageGroups(entries)
   const dest = new Map<QueueEntry, string>()
-  for (const entry of entries) {
-    const key = keyByEntry.get(entry)
-    if (key && (count.get(key) ?? 0) >= 2) {
-      const folder = folderByKey.get(key) as string
-      dest.set(entry, `${entry.destDir.replace(/[/\\]+$/, '')}/${folder}`)
+  for (const group of groups.values()) {
+    for (const entry of group.entries) {
+      dest.set(entry, `${entry.destDir.replace(/[/\\]+$/, '')}/${group.name}`)
     }
   }
   return dest
@@ -950,14 +961,28 @@ async function addAll(): Promise<void> {
   const current = await window.api.settings.load().catch(() => null)
   currentSettings.value = current
 
-  // Agrupamento automático (item 9): arquivos que compartilham o mesmo nome-base
-  // (ex.: ...part01.rar .. part14.rar) vão para uma SUBPASTA comum — funcionam como
-  // uma "pasta de downloads" no disco, sem pacote formal nem seleção em tela.
+  // Agrupamento automático: além da subpasta, criamos um pacote real, visível
+  // no filtro da fila. Assim conjuntos vindos de vários links Mega não parecem
+  // downloads independentes.
   const destByEntry = computeGroupDestinations(entries)
+  const packageByEntry = new Map<QueueEntry, string>()
+  for (const group of computeAutoPackageGroups(entries).values()) {
+    try {
+      const pkg = await window.api.packages.create({
+        name: group.name,
+        destDirOverride: destByEntry.get(group.entries[0]) ?? group.entries[0].destDir,
+        comment: 'Agrupado automaticamente por nome do arquivo',
+      })
+      for (const entry of group.entries) packageByEntry.set(entry, pkg.id)
+    } catch (err) {
+      // Falha de pacote não deve impedir que os downloads sejam colocados na fila.
+      console.warn('Não foi possível criar pacote automático', group.name, err)
+    }
+  }
 
   for (const entry of entries) {
     try {
-      await window.api.downloads.add(
+      const download = await window.api.downloads.add(
         entry.url,
         entry.module.id,
         entry.title,
@@ -968,6 +993,8 @@ async function addAll(): Promise<void> {
         undefined,
         entry.filename
       )
+      const packageId = packageByEntry.get(entry)
+      if (packageId) await window.api.packages.assign(packageId, download.id)
       addedCount += 1
       addQueueDone.value = addedCount
       await nextFrame()
@@ -984,10 +1011,7 @@ async function addAll(): Promise<void> {
   // antigo ficava preso pra sempre).
   emit('adding-urls', 0)
   if (addedCount > 0) {
-    rows.value = pruneCapturedRows<CapturedRow>(rows.value)
-    if (rows.value.length === 0) {
-      urlsInput.value = ''
-    }
+    clear()
   }
 }
 
