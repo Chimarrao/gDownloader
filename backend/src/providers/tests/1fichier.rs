@@ -137,3 +137,29 @@ fn extracts_folder_children_from_current_1fichier_markup() {
     assert_eq!(children[1].filename, "City.of.God.2002.Menor.rar");
     assert_eq!(children[1].size, FichierProvider::parse_human_size("4.89 GB"));
 }
+
+#[test]
+fn extracts_current_folder_name_without_leaking_html_markup() {
+    // Resposta real de /dir/vY1nRdmI em 2026-09. O nome fica dentro de um
+    // span, enquanto "Shared folder" é somente texto de interface.
+    let html = r#"
+        <div class="bh3 alc">Shared folder
+          <span style="font-variant:normal;word-break:break-all">soldado</span>
+        </div>
+    "#;
+
+    assert_eq!(FichierProvider::extract_folder_name(html).as_deref(), Some("soldado"));
+}
+
+#[test]
+fn folder_child_name_strips_nested_markup() {
+    let html = r#"
+        <tr>
+          <td class="file-obj"><a href="https://1fichier.com/?abc123"><span>Filme</span>.rar</a></td>
+          <td>1.00 GB</td>
+        </tr>
+    "#;
+
+    let children = FichierProvider::extract_folder_children(html);
+    assert_eq!(children[0].filename, "Filme.rar");
+}

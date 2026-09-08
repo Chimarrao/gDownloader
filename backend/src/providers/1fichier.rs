@@ -51,6 +51,41 @@ impl FichierProvider {
             .replace("&nbsp;", " ")
     }
 
+    /// Converte um pequeno fragmento HTML do 1fichier em texto seguro para
+    /// nomes de pasta/arquivo. A página de diretório passou a envolver o nome
+    /// da pasta em um `span`; deixar essa marcação chegar ao `safe_filename`
+    /// transforma `<span style=...>` em texto visível.
+    fn html_to_text(value: &str) -> String {
+        let without_tags = regex::Regex::new(r"(?is)<[^>]*>")
+            .map(|re| re.replace_all(value, "").into_owned())
+            .unwrap_or_else(|_| value.to_string());
+        Self::decode_basic_html_entities(&without_tags)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn extract_folder_name(html: &str) -> Option<String> {
+        // Exemplo atual:
+        // <div class="bh3 alc">Shared folder <span ...>soldado</span></div>
+        // O conteúdo do span é o nome dado pelo autor da pasta; o prefixo
+        // "Shared folder" é apenas texto de interface do 1fichier.
+        let span_name = regex::Regex::new(
+            r#"(?is)<div\b[^>]*\bclass\s*=\s*["'][^"']*\bbh3\b[^"']*["'][^>]*>.*?<span\b[^>]*>(.*?)</span>"#,
+        )
+        .ok()
+        .and_then(|re| re.captures(html))
+        .and_then(|captures| captures.get(1))
+        .map(|capture| Self::html_to_text(capture.as_str()))
+        .filter(|name| !name.is_empty());
+
+        span_name.or_else(|| {
+            Self::extract_between(html, "<div class=\"bh3 alc\">", "</div>")
+                .map(|value| Self::html_to_text(&value))
+                .filter(|name| !name.is_empty())
+        })
+    }
+
     fn extract_filename_and_size(html: &str, fallback_name: &str) -> (String, u64) {
         let filename = Self::extract_between(
             html,
@@ -169,7 +204,7 @@ impl FichierProvider {
             .filter_map(|captures| {
                 let url = captures[1].trim().to_string();
                 let filename = <Self as ProviderDefaults>::safe_filename(
-                    &Self::decode_basic_html_entities(captures[2].trim()),
+                    &Self::html_to_text(captures[2].trim()),
                     "arquivo_1fichier",
                 );
                 let size = Self::parse_human_size(&Self::decode_basic_html_entities(captures[3].trim()));
@@ -459,7 +494,7 @@ impl Provider for FichierProvider {
                     page_url,
                     children.len()
                 );
-                let folder_name = Self::extract_between(&html, "<div class=\"bh3 alc\">", "</div>")
+                let folder_name = Self::extract_folder_name(&html)
                     .or_else(|| Self::extract_between(&html, "<title>", "</title>"))
                     .unwrap_or_else(|| "pasta_1fichier".to_string());
                 let total_size = children.iter().map(|child| child.size).sum();
