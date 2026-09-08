@@ -19,9 +19,9 @@
             </linearGradient>
           </defs>
           <path class="speed-card-grid" d="M0 36H360M0 75H360M0 114H360M72 0V150M144 0V150M216 0V150M288 0V150" />
-          <path class="speed-card-area" d="M-18 133 C10 120 20 106 43 112 S75 138 97 102 S130 38 157 76 S188 125 211 82 S242 45 265 76 S301 130 326 89 S351 51 380 64 V150 H-18Z" />
-          <path class="speed-card-line speed-card-line-back" d="M-18 133 C10 120 20 106 43 112 S75 138 97 102 S130 38 157 76 S188 125 211 82 S242 45 265 76 S301 130 326 89 S351 51 380 64" />
-          <path class="speed-card-line speed-card-line-front" d="M-18 128 C7 116 24 111 47 116 S76 132 101 98 S130 48 158 79 S187 120 214 78 S244 52 267 80 S302 124 328 85 S355 57 382 67" />
+          <path class="speed-card-area" :d="statSpeedChartArea" />
+          <path class="speed-card-line speed-card-line-back" :d="statSpeedChartPath" />
+          <path class="speed-card-line speed-card-line-front" :d="statSpeedChartPath" />
         </svg>
         <div class="stat-head">
           <span>Velocidade atual</span>
@@ -1448,6 +1448,25 @@ const statSpeedBps = computed(() =>
   ),
 )
 const statMaxSpeedBps = ref(0)
+const statSpeedHistory = ref<number[]>(Array.from({ length: 32 }, () => 0))
+const statSpeedChartPath = computed(() => {
+  const samples = statSpeedHistory.value
+  const max = Math.max(...samples, statSpeedBps.value, 1)
+  const top = 14
+  const bottom = 138
+  const width = 360
+  return samples.map((speed, index) => {
+    const x = (index / Math.max(samples.length - 1, 1)) * width
+    const y = bottom - (Math.min(speed, max) / max) * (bottom - top)
+    return `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`
+  }).join(' ')
+})
+const statSpeedChartArea = computed(() => `${statSpeedChartPath.value} L360 150 L0 150 Z`)
+
+function recordStatSpeedSample(speed: number): void {
+  statSpeedHistory.value = [...statSpeedHistory.value.slice(1), Math.max(0, speed)]
+}
+
 watch(statSpeedBps, (value) => {
   if (value > statMaxSpeedBps.value) statMaxSpeedBps.value = value
 })
@@ -2118,6 +2137,7 @@ onMounted(async () => {
     const totalSpeed = items.value
       .filter((item) => item.status === DownloadStatusEnum.Downloading)
       .reduce((sum, item) => sum + effectiveSpeedValue(item), 0)
+    recordStatSpeedSample(totalSpeed)
     emit('global-speed', totalSpeed)
     // Espaço que ainda será ocupado no disco pela fila (segmento amarelo do disco).
     const queuedBytes = items.value
