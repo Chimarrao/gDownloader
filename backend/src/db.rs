@@ -188,8 +188,8 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
               completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, duration_secs,
-              thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?34,?35,?36,?37,?33)
+              thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url, updated_at, error_kind)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?34,?35,?36,?37,?33,?38)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -207,6 +207,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              selected_children_json = excluded.selected_children_json,
              expected_hash_json     = excluded.expected_hash_json,
              error                  = excluded.error,
+             error_kind             = excluded.error_kind,
              retry_count            = excluded.retry_count,
              retry_at               = excluded.retry_at,
              captcha_type           = excluded.captcha_type,
@@ -264,6 +265,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.thumbnail_data,
             d.channel_name,
             d.channel_thumbnail_url,
+            d.error_kind,
         ],
     )?;
     Ok(())
@@ -395,7 +397,8 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 error, priority, created_at, started_at, completed_at, last_progress_at,
                 COALESCE(pinned, 0) as pinned, package_id, network_route_json,
                 COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit, duration_secs,
-                thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url
+                thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url,
+                error_kind
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -440,7 +443,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 captcha_page_url: row.get(20)?,
                 captcha_token: row.get(21)?,
                 error: row.get(22)?,
-                error_kind: None,
+                error_kind: row.get(37).ok().flatten(),
                 priority: row.get::<_, i64>(23)? as i32,
                 created_at: row.get::<_, i64>(24)? as u64,
                 started_at: row.get::<_, Option<i64>>(25)?.map(|value| value as u64),
@@ -1136,6 +1139,91 @@ pub fn clear_file_info_cache(conn: &Connection) -> Result<u64> {
     Ok(removed as u64)
 }
 
+/// Devolve o URL final ainda válido de um host, se ele já foi resolvido nesta
+/// instalação. O cache é deliberadamente separado do cache de metadados: o
+/// valor é um token de download temporário e nunca deve ser exposto à UI.
+pub fn load_resolved_download_link(
+    conn: &Connection,
+    provider_id: &str,
+    source_url: &str,
+) -> Result<Option<String>> {
+    let now = now_secs();
+    // Higiene best-effort: links vencidos não têm mais utilidade e podem conter
+    // tokens assinados que não devem permanecer no banco.
+    let _ = conn.execute(
+        "DELETE FROM resolved_download_link_cache WHERE expires_at <= ?1",
+        params![now],
+    );
+
+    conn.query_row(
+        "SELECT direct_url
+         FROM resolved_download_link_cache
+         WHERE provider_id = ?1 AND source_url = ?2 AND expires_at > ?3",
+        params![provider_id, source_url, now],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn save_resolved_download_link(
+    conn: &Connection,
+    provider_id: &str,
+    source_url: &str,
+    direct_url: &str,
+    referer_url: Option<&str>,
+    expires_at: u64,
+) -> Result<()> {
+    let now = now_secs();
+    conn.execute(
+        "INSERT INTO resolved_download_link_cache
+             (provider_id, source_url, direct_url, referer_url, created_at, expires_at, last_used_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5)
+         ON CONFLICT(provider_id, source_url) DO UPDATE SET
+             direct_url = excluded.direct_url,
+             referer_url = excluded.referer_url,
+             created_at = excluded.created_at,
+             expires_at = excluded.expires_at,
+             last_used_at = excluded.last_used_at",
+        params![
+            provider_id,
+            source_url,
+            direct_url,
+            referer_url,
+            now,
+            expires_at as i64,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn touch_resolved_download_link(
+    conn: &Connection,
+    provider_id: &str,
+    source_url: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE resolved_download_link_cache
+         SET last_used_at = ?3
+         WHERE provider_id = ?1 AND source_url = ?2",
+        params![provider_id, source_url, now_secs()],
+    )?;
+    Ok(())
+}
+
+pub fn delete_resolved_download_link(
+    conn: &Connection,
+    provider_id: &str,
+    source_url: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM resolved_download_link_cache
+         WHERE provider_id = ?1 AND source_url = ?2",
+        params![provider_id, source_url],
+    )?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn save_cached_file_info(
     conn: &Connection,
@@ -1263,6 +1351,7 @@ mod tests {
         assert!(column_exists(&conn, "downloads", "started_at").unwrap());
         assert!(column_exists(&conn, "downloads", "completed_at").unwrap());
         assert!(column_exists(&conn, "downloads", "last_progress_at").unwrap());
+        assert!(column_exists(&conn, "downloads", "error_kind").unwrap());
 
         let index_count: i64 = conn
             .query_row(
@@ -1272,6 +1361,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index_count, 1);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn persists_resolved_download_link_until_expiry_or_invalidation() {
+        let path = temp_db_path("resolved-link");
+        let conn = init(path.to_string_lossy().as_ref()).unwrap();
+        let source = "https://1fichier.com/?example";
+        let direct = "https://download.1fichier.com/token";
+
+        save_resolved_download_link(
+            &conn,
+            "1fichier",
+            source,
+            direct,
+            Some(source),
+            (now_secs() as u64).saturating_add(3_600),
+        )
+        .unwrap();
+        assert_eq!(
+            load_resolved_download_link(&conn, "1fichier", source).unwrap().as_deref(),
+            Some(direct),
+        );
+
+        touch_resolved_download_link(&conn, "1fichier", source).unwrap();
+        delete_resolved_download_link(&conn, "1fichier", source).unwrap();
+        assert!(load_resolved_download_link(&conn, "1fichier", source).unwrap().is_none());
 
         std::fs::remove_file(path).ok();
     }
@@ -1318,6 +1435,7 @@ mod tests {
         rate_limited.id = "download-2".to_string();
         rate_limited.identity_key = "example::https://example.com/file-2".to_string();
         rate_limited.retry_at = Some(4444);
+        rate_limited.error_kind = Some("rate_limit_server".to_string());
         upsert(&conn, &rate_limited).unwrap();
 
         let mut complete = sample_download(DownloadStatus::Complete);
@@ -1329,7 +1447,11 @@ mod tests {
         let loaded = load_all_downloads(&conn).unwrap();
         assert_eq!(loaded.len(), 3);
         assert!(loaded.iter().any(|item| item.status == DownloadStatus::WaitingCaptcha && item.children.as_ref().is_some_and(|children| !children.is_empty())));
-        assert!(loaded.iter().any(|item| item.status == DownloadStatus::RateLimited && item.retry_at == Some(4444)));
+        assert!(loaded.iter().any(|item| {
+            item.status == DownloadStatus::RateLimited
+                && item.retry_at == Some(4444)
+                && item.error_kind.as_deref() == Some("rate_limit_server")
+        }));
         assert!(loaded.iter().any(|item| item.status == DownloadStatus::Complete && item.completed_at == Some(5555)));
 
         delete_finished(&conn).unwrap();

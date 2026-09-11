@@ -12,14 +12,51 @@ import { splitSseMessages } from './mirror-sse'
 // Porta do backend Rust (obtida via IPC e cacheada)
 let cachedPort: number | null = null
 
+let cachedGoPort: number | null = null
 async function getPort(): Promise<number> {
   if (!cachedPort) {
     cachedPort = (await ipcRenderer.invoke('backend:getPort')) as number
   }
   return cachedPort!
 }
-
+async function getGoPort(): Promise<number | null> {
+  if (cachedGoPort) return cachedGoPort
+  try {
+    cachedGoPort = (await ipcRenderer.invoke('backend:getGoPort')) as number
+    if (cachedGoPort && cachedGoPort > 0) return cachedGoPort
+  } catch {}
+  return null
+}
 async function fetchBackend(path: string, options?: RequestInit): Promise<Response> {
+  // Rotas migradas para Go — tenta Go primeiro, fallback para Rust
+  const goRoutes = [
+    '/health',
+    '/config',
+    '/captcha',
+    '/history',
+    '/mirrors',
+    '/stats',
+    '/system',
+    '/hash',
+    '/integrity',
+    '/links',
+    '/packages',
+    '/providers',
+    '/detect',
+    '/file-info',
+    '/intercept',
+  ]
+  const isGoRoute = goRoutes.some((prefix) => path === prefix || path.startsWith(prefix + '/') || path.startsWith(prefix + '?'))
+  if (isGoRoute) {
+    const goPort = await getGoPort()
+    if (goPort) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${goPort}${path}`, options)
+        // Se Go respondeu 404 (rota não migrada), cai para Rust
+        if (res.status !== 404) return res
+      } catch {}
+    }
+  }
   const port = await getPort()
   return fetch(`http://127.0.0.1:${port}${path}`, options)
 }
@@ -164,42 +201,69 @@ async function ensureDownloadsSocket(): Promise<void> {
   }
 
   downloadsSocketPromise = (async () => {
-    const port = await getPort()
-
-    await new Promise<void>((resolve) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-      downloadsSocket = ws
-
-      ws.onopen = () => {
-        resolve()
-      }
-
-      ws.onmessage = (msg) => {
-        try {
-          routeDownloadEvent(JSON.parse(msg.data as string) as Record<string, unknown>)
-        } catch {
-          // ignora mensagens malformadas
+    const goPort = await getGoPort()
+    const rustPort = await getPort()
+    const tryPorts = goPort ? [goPort, rustPort] : [rustPort]
+    let connected = false
+    for (const port of tryPorts) {
+      if (connected) break
+      // Tenta conectar; se falhar, tenta próximo
+      await new Promise<void>((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
+        let settled = false
+        const done = (): void => {
+          if (!settled) {
+            settled = true
+            resolve()
+          }
         }
-      }
+        downloadsSocket = ws
 
-      ws.onerror = () => {
-        resolve()
-      }
+        ws.onopen = () => {
+          connected = true
+          done()
+        }
 
-      ws.onclose = () => {
-        downloadsSocket = null
-        if (!hasDownloadListeners()) {
-          return
+        ws.onmessage = (msg) => {
+          try {
+            routeDownloadEvent(JSON.parse(msg.data as string) as Record<string, unknown>)
+          } catch {
+            // ignora mensagens malformadas
+          }
         }
-        if (downloadsReconnectTimer !== null) {
-          clearTimeout(downloadsReconnectTimer)
+
+        ws.onerror = () => {
+          // Se falhou e ainda não conectou, tenta próximo
+          if (!connected) {
+            try { ws.close() } catch {}
+            downloadsSocket = null
+          }
+          done()
         }
-        downloadsReconnectTimer = setTimeout(() => {
-          downloadsReconnectTimer = null
-          void ensureDownloadsSocket()
-        }, 800)
-      }
-    })
+
+        ws.onclose = () => {
+          downloadsSocket = null
+          if (!connected) {
+            done()
+            return
+          }
+          if (!hasDownloadListeners()) {
+            return
+          }
+          if (downloadsReconnectTimer !== null) {
+            clearTimeout(downloadsReconnectTimer)
+          }
+          downloadsReconnectTimer = setTimeout(() => {
+            downloadsReconnectTimer = null
+            void ensureDownloadsSocket()
+          }, 800)
+        }
+      })
+      if (connected) break
+    }
+    if (!connected && !hasDownloadListeners()) {
+      // sem conexão e sem listeners, não agenda reconnect
+    }
   })()
 
   try {
@@ -832,8 +896,11 @@ const api = {
       const controller = new AbortController()
       const searchSeq = activeMirrorSearchSeq
       activeMirrorController = controller
-      const port = await getPort()
-      const url = `http://127.0.0.1:${port}/mirrors/search?filename=${encodeURIComponent(filename)}`
+      const goPort = await getGoPort()
+      const rustPort = await getPort()
+      const primaryPort = goPort ?? rustPort
+      const url = `http://127.0.0.1:${primaryPort}/mirrors/search?filename=${encodeURIComponent(filename)}`
+      const fallbackUrl = goPort ? `http://127.0.0.1:${rustPort}/mirrors/search?filename=${encodeURIComponent(filename)}` : null
       const emit = (ev: MirrorRendererEvent): void => {
         if (searchSeq !== activeMirrorSearchSeq) {
           return
@@ -904,14 +971,31 @@ const api = {
         return false
       }
 
-      try {
-        const response = await fetch(url, {
+      const fetchSse = async (targetUrl: string): Promise<Response> =>
+        fetch(targetUrl, {
           headers: { Accept: 'text/event-stream' },
           cache: 'no-store',
           signal: controller.signal,
         })
-
-        if (!response.ok || !response.body) {
+      let response: Response | null = null
+      try {
+        const primary = await fetchSse(url)
+        if (primary.ok && primary.body) {
+          response = primary
+        } else if (primary.status === 404 && fallbackUrl) {
+          response = await fetchSse(fallbackUrl)
+        } else {
+          response = primary
+        }
+      } catch (e) {
+        if (fallbackUrl && !controller.signal.aborted) {
+          try {
+            response = await fetchSse(fallbackUrl)
+          } catch {}
+        }
+      }
+      try {
+        if (!response || !response.ok || !response.body) {
           emit({
             type: 'error',
             payload: 'Falha ao iniciar stream de mirrors',
@@ -1075,6 +1159,29 @@ const api = {
       ipcRenderer.on('ffmpeg:progress', handler)
       return () => ipcRenderer.removeListener('ffmpeg:progress', handler)
     },
+  },
+
+  // Solver universal (1,2,3,4) — atualizável como yt-dlp, auto-pull via manifest
+  turnstile: {
+    statusAll: (): Promise<Array<{ id: string; name: string; version: string | null; state: string }>> =>
+      ipcRenderer.invoke('turnstile:statusAll'),
+    status: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:status', id),
+    checkUpdate: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:checkUpdate', id),
+    update: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:update', id),
+    ensureReady: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:ensureReady', id),
+    solve: (params: { sitekey: string; pageurl: string; proxy?: string; timeoutMs?: number }): Promise<{ token: string }> =>
+      ipcRenderer.invoke('turnstile:solve', params),
+    onProgress: (cb: (e: { solverId: string; bytesDownloaded: number; totalBytes: number; stage: string }) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: { solverId: string; bytesDownloaded: number; totalBytes: number; stage: string }): void => cb(payload)
+      ipcRenderer.on('turnstile:progress', handler)
+      return () => ipcRenderer.removeListener('turnstile:progress', handler)
+    },
+  },
+  // Alias genérico para qualquer hoster (universal)
+  solver: {
+    statusAll: (): Promise<unknown> => ipcRenderer.invoke('turnstile:statusAll'),
+    solve: (params: { sitekey: string; pageurl: string; type?: string; provider?: string; proxy?: string }): Promise<{ token: string }> =>
+      ipcRenderer.invoke('turnstile:solve', params),
   },
 
   // Compatibilidade com código antigo

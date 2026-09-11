@@ -119,7 +119,10 @@ pub async fn get_file_info(
     };
 
     let info: FileInfo = provider.get_file_info_with_context(&params.url, context).await.map_err(|e| {
-        (StatusCode::BAD_REQUEST, Json(ApiError::new(e.to_string())))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(crate::routes::downloads::prettify_download_error(&e.to_string()))),
+        )
     })?;
 
     if let Ok(db) = state.db.lock() {

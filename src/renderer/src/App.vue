@@ -295,7 +295,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type { DownloadHistoryItem } from '../../shared/types'
 import DownloadList from './components/DownloadList.vue'
 import LinkGrabber from './components/LinkGrabber.vue'
@@ -367,6 +367,7 @@ let systemMetricsTicker: ReturnType<typeof setInterval> | null = null
 let disposeClipboardDetected: (() => void) | null = null
 let disposeToastComplete: (() => void) | null = null
 let disposeToastStatus: (() => void) | null = null
+const captchaToastShownIds = new Set<string>()
 let appMounted = true
 
 const torRouteNodes = computed(() => torState.value.route)
@@ -464,16 +465,26 @@ function registerEventToasts(): void {
     })
   })
   disposeToastStatus = window.api.downloads.on('download:status', (data: unknown) => {
-    const ev = data as { status?: string; error?: string }
+    const ev = data as { id?: string; status?: string; error?: string }
     if (ev.status === 'waiting_captcha') {
-      toast.add({ severity: 'warn', summary: t('toastCaptchaNeeded'), life: 6000 })
-    } else if (ev.status === 'error' || ev.status === 'corrupted' || ev.status === 'disk_full') {
-      toast.add({
-        severity: 'error',
-        summary: t('toastDownloadFailed'),
-        detail: ev.error ?? undefined,
-        life: 6000,
-      })
+      // O Rust manda um StatusChanged a cada tick de progresso enquanto o
+      // solver ainda está resolvendo (pra atualizar o texto do chip ao vivo),
+      // não só na entrada nesse estado — sem essa deduplicação por id, cada
+      // tick empilhava um toast novo "Captcha necessário".
+      if (!captchaToastShownIds.has(ev.id ?? '')) {
+        captchaToastShownIds.add(ev.id ?? '')
+        toast.add({ severity: 'warn', summary: t('toastCaptchaNeeded'), life: 6000 })
+      }
+    } else {
+      if (ev.id) captchaToastShownIds.delete(ev.id)
+      if (ev.status === 'error' || ev.status === 'corrupted' || ev.status === 'disk_full') {
+        toast.add({
+          severity: 'error',
+          summary: t('toastDownloadFailed'),
+          detail: ev.error ?? undefined,
+          life: 6000,
+        })
+      }
     }
   })
 }
@@ -1821,6 +1832,129 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Layout desktop fluido: em telas estreitas a navegação encolhe primeiro;
+   depois disso a lista recebe a largura necessária para seus controles. */
+@media (max-width: 1320px) {
+  .sidebar {
+    width: 208px;
+    flex-basis: 208px;
+  }
+
+  .app-main {
+    padding: 14px;
+  }
+
+  .topbar {
+    padding-inline: 14px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .sidebar {
+    width: 72px;
+    flex-basis: 72px;
+    align-items: center;
+    padding-inline: 9px;
+  }
+
+  .brand {
+    padding-inline: 0;
+  }
+
+  .brand-text,
+  .nav-item > span:not(.nav-badge),
+  .sidebar-disk-wrap {
+    display: none;
+  }
+
+  .sidebar-nav,
+  .nav-item {
+    width: 100%;
+  }
+
+  .nav-item {
+    position: relative;
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .nav-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 9px;
+  }
+
+  .topbar-actions {
+    max-width: 100%;
+    gap: 7px;
+  }
+
+  .top-disk {
+    display: none;
+  }
+
+  .app-main {
+    padding: 10px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-root {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    min-height: 56px;
+    flex: 0 0 56px;
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 7px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-color);
+    overflow: visible;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 3px;
+  }
+
+  .nav-item {
+    width: 42px;
+    flex: 0 0 42px;
+  }
+
+  .topbar {
+    min-height: 48px;
+    padding: 7px 10px;
+  }
+
+  .quick-toggle-btn,
+  .help-btn {
+    padding-inline: 8px;
+  }
+
+  .status-bar {
+    gap: 10px;
+    padding: 6px 10px;
+    overflow-x: auto;
+  }
+
+  .app-main {
+    padding: 8px;
+  }
 }
 
 </style>

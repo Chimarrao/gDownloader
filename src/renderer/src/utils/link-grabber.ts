@@ -54,11 +54,27 @@ export function truncateUrl(url: string): string {
   }
 }
 
-// Nome-base de um arquivo para agrupar partes relacionadas em um pacote: remove a
-// extensão e sufixos de multipart (partNN, .rNN, .NNN, cd/disc/vol NN). Ex.:
-// "...-part14.rar" e "...-part12.rar" produzem a mesma base "...-hiro360".
+// Nome-base de um arquivo para agrupar itens relacionados em um pacote.
+//
+// Além de multipart (partNN, .rNN, .NNN, cd/disc/vol NN), reconhece episódios
+// no formato S01E01. Assim arquivos como "Donos.do.Oeste.S01E01...mkv" e
+// "Donos.do.Oeste.S01E08...mkv" entram no mesmo pacote de temporada, sem
+// misturar episódios de outra temporada.
 export function packageGroupName(filename: string): string {
   let name = filename.replace(/\.[a-z0-9]{1,5}$/i, '')
+
+  const seasonEpisode = name.match(/^(.+?)[._\-\s]+s(\d{1,2})[._\-\s]*e\d{1,3}(?:[._\-\s]|$)/i)
+  if (seasonEpisode) {
+    const title = seasonEpisode[1]
+      .replace(/[._]+/g, ' ')
+      .replace(/[\-\s]+/g, ' ')
+      .trim()
+    const season = Number.parseInt(seasonEpisode[2], 10)
+    if (title && Number.isFinite(season)) {
+      return `${title} — Temporada ${season}`
+    }
+  }
+
   name = name
     .replace(/[._\-\s]*part\s*\d+$/i, '')
     .replace(/[._\-\s]*(?:cd|disc|disco|vol|volume)\s*\d+$/i, '')

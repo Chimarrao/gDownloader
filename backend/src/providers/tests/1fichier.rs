@@ -163,3 +163,16 @@ fn folder_child_name_strips_nested_markup() {
     let children = FichierProvider::extract_folder_children(html);
     assert_eq!(children[0].filename, "Filme.rar");
 }
+
+#[test]
+fn expired_cached_link_is_discarded_but_network_errors_are_preserved() {
+    assert!(FichierProvider::cached_link_is_invalid(&anyhow::anyhow!(
+        "HTTP status client error (403 Forbidden)"
+    )));
+    assert!(FichierProvider::cached_link_is_invalid(&anyhow::anyhow!(
+        "Link temporário não retornou arquivo binário"
+    )));
+    assert!(!FichierProvider::cached_link_is_invalid(&anyhow::anyhow!(
+        "error sending request for url"
+    )));
+}

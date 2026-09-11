@@ -42,22 +42,27 @@ O `settings.json` legado só é lido para migração. O app atual usa SQLite com
 
 ### Suportados diretamente
 
-- `Mega`
-- `MediaFire`
-- `Google Drive`
-- `PixelDrain`
-- `1Fichier`
-- `Drime`
-- `OneDrive / SharePoint`
-- `Rapidgator`
+| Ícone | Provider |
+| --- | --- |
+| <img src="src/renderer/src/assets/provider-icons/mega.svg" width="22" height="22" alt="Mega"> | Mega |
+| <img src="src/renderer/src/assets/provider-icons/mediafire.svg" width="22" height="22" alt="MediaFire"> | MediaFire |
+| <img src="src/renderer/src/assets/provider-icons/googledrive.svg" width="22" height="22" alt="Google Drive"> | Google Drive |
+| <img src="src/renderer/src/assets/provider-icons/pixeldrain.svg" width="22" height="22" alt="PixelDrain"> | PixelDrain |
+| <img src="src/renderer/src/assets/provider-icons/1fichier.svg" width="22" height="22" alt="1Fichier"> | 1Fichier |
+| <img src="src/renderer/src/assets/provider-icons/drime.svg" width="22" height="22" alt="Drime"> | Drime |
+| <img src="src/renderer/src/assets/provider-icons/onedrive.svg" width="22" height="22" alt="OneDrive"> | OneDrive / SharePoint |
+| <img src="src/renderer/src/assets/provider-icons/rapidgator.svg" width="22" height="22" alt="Rapidgator"> | Rapidgator |
+| <img src="src/renderer/src/assets/provider-icons/internetarchive.svg" width="22" height="22" alt="Internet Archive"> | Internet Archive — arquivo e item/pasta |
 
 ### Suportados com fluxo assistido por navegador
 
-- `TeraBox`
-- `BRupload`
-- `BRFiles`
-- `AkiraBox`
-- `Katfile`
+| Ícone | Provider |
+| --- | --- |
+| <img src="src/renderer/src/assets/provider-icons/terabox.svg" width="22" height="22" alt="TeraBox"> | TeraBox |
+| <img src="src/renderer/src/assets/provider-icons/brfiles.svg" width="22" height="22" alt="BRFiles"> | BRupload / BRFiles |
+| <img src="src/renderer/src/assets/provider-icons/akirabox.svg" width="22" height="22" alt="AkiraBox"> | AkiraBox |
+| <img src="src/renderer/src/assets/provider-icons/katfile.svg" width="22" height="22" alt="Katfile"> | Katfile |
+| <img src="src/renderer/src/assets/provider-icons/sendnow.png" width="22" height="22" alt="Send.now"> | Send.now — links unitários e pastas |
 
 ### Planejados ou dependentes de ajuste do host
 
@@ -69,16 +74,22 @@ O `settings.json` legado só é lido para migração. O app atual usa SQLite com
 - `TeraBox`: suporta arquivo e pasta. Usa navegador integrado quando o host exige sessão real. Se o host criar uma cópia temporária na conta para liberar o download, o app tenta limpar depois.
 - `BRupload`: usa navegador integrado para contornar fluxo real do host. Conta free pode ser conectada dentro do app e a sessão fica só no SQLite local.
 - `BRFiles`: suporta arquivo e pasta. Para pasta, o app retoma de onde parou quando o host impõe espera por IP.
-- `Rapidgator`: mostra mensagens claras para arquivo removido, captcha, rate limit e premium obrigatório.
-- `AkiraBox`: usa helper de navegador por causa de Cloudflare/challenge.
-- `Katfile`: usa helper de navegador; links removidos retornam erro explícito.
+- `Rapidgator`: mostra mensagens claras para arquivo removido, captcha, rate limit e premium obrigatório. Quando aparecer `Turnstile`/`reCAPTCHA`, usa o solver universal (mesmo de Katfile).
+- `AkiraBox`: usa helper de navegador por causa de Cloudflare/challenge. Agora pode chamar `turnstileService.solve` universal se o challenge virar `Turnstile`.
+- `Katfile`: usa helper de navegador + **solver universal 1-4** (`EzSolver`/`Icemellow`/`Surafel`/`FlareSolverr`) com fallback manual. `Tor` opcional bypassa `120min` via `IsolateSOCKSAuth`. Links removidos retornam erro explícito.
+- `Send.now`: suporta pasta e link unitário. A sessão de navegador é persistida apenas para resolver o URL temporário quando o host aplica Cloudflare; o arquivo é baixado diretamente pelo backend.
+- `Internet Archive`: URLs de item (`/download/<identificador>`) mostram os arquivos originais como grupo; URLs de arquivo continuam disponíveis individualmente.
+- **Novos hosters:** basta adicionar o host em `providers/mod.rs` e, se tiver captcha, chamar `turnstileService.solve({sitekey, pageurl, type, provider})` — o manifesto `resources/solver-manifest.json` permite adicionar novo solver sem release do app.
 
-## Captcha, conta e rate-limit
+## Captcha, solver universal e rate-limit
 
-- Se houver `NoPecha` configurado, o app tenta resolver automaticamente primeiro.
-- Se não resolver, o captcha abre em uma janela modal da própria página do host, não em `localhost`.
+- **Solver universal (1,2,3,4) — atualizável como `yt-dlp`:** `EzSolver` (107★), `Icemellow V2` (dual `nodriver`+`camoufox`), `Surafel` (`patchright`) e `FlareSolverr` (15k★) ficam em `userData/turnstile/<id>/` com `venv` isolado. Cada solver é baixado como zip do GitHub (`main`/`master`) e instalado via `pip` exatamente como `yt-dlp` (`ytdlp-service.ts:121` `fetchLatestVersion`/`downloadBin`). `resources/solver-manifest.json` permite **auto-pull** de novos solvers sem atualizar o app — basta adicionar o repo ao manifesto e o próximo `ensureReady` baixa (mesmo `6h` cache do `yt-dlp`).
+- **Uso universal:** qualquer hoster (`Katfile`, `Rapidgator`, futuros) chama `turnstileService.solve({sitekey, pageurl, type, provider, proxy})` que tenta em ordem `icemellow → ezsolver → surafelabeje → flaresolverr` com fallback. `type` padrão `turnstile`, mas filtra por `supportedTypes` do solver (`recaptcha2`/`hcaptcha` quando expandirmos). `proxy` `socks5://user:pass@127.0.0.1:9150` via Tor `IsolateSOCKSAuth` faz o solver ver o mesmo IP do download (evita token inválido).
+- **Status visível:** enquanto resolve, o `Katfile` reporta `solving_captcha` (`katfile-service.ts:302` `solvingSolver`/`solvingStage`) que o backend (`katfile.rs:42` `solving_solver`) espelha como progresso `child_path: "solver:Resolvendo captcha com Icemellow..."`. A lista mostra chip roxo `Resolvendo captcha com <solver>` (mesma cor de `waiting_captcha` `download-display.ts:79` `#8b5cf6`). Se **nenhum** dos pacotes resolver, cai para **manual como último caso** — a janela `Katfile - conclua a etapa manual` abre após `6s` (`katfile-service.ts:483` `showTimeout`) exatamente como antes.
+- **Se houver `NoPecha` configurado**, ainda tenta primeiro (legado), depois os solvers locais.
 - Quando o host limita por IP ou por plano gratuito, o backend tenta extrair o tempo real de espera e a UI mostra contagem regressiva.
 - Bloqueios de rate-limit não devem consumir as tentativas normais de erro do download.
+- **Katfile + Tor:** `Delay between downloads must be not less than 120 minutes` é bypassado com Tor `IsolateSOCKSAuth` (`gdl-katfile-<id>:pass@127.0.0.1:9150` `src/main/index.ts:442` `per_file_socks_user` `mod.rs:492`). Cada arquivo usa circuito/IP distinto — `4/5` limpos em ≤3 tentativas no bench `docs/bench-turnstile-10-katfile-tor.md`.
 
 ## Cache local de metadados
 
@@ -140,14 +151,20 @@ Fluxos especiais:
 - Node.js 20+
 - npm 10+
 - Rust stable
+- Go 1.22+ (para os 6 módulos migrados: `migrations`, `models`, `config`, `captcha`, `health`, `history`)
 
 ## Desenvolvimento
 
 ```bash
 npm install
-cd backend && cargo build --release && cd ..
-npm run dev
+# Rust + Go são buildados juntos (Go compartilha o mesmo SQLite em WAL)
+npm run dev              # concurrently: cargo watch (Rust) + go run (Go sidecar) + electron-vite
+# ou separado:
+# npm run dev:backend:rust  # só Rust
+# npm run dev:backend:go    # só Go (go run . ../backend/database/gdownloader.db)
 ```
+
+Go sidecar (`backend-go/`) porta `migrations.go:1` (22 migrações idempotentes), `models.go`, `config`, `captcha`, `health`, `history` — mesmo `app_kv` e `download_history` do Rust. `src/preload/index.ts:15` tenta Go primeiro para `/health /config/* /captcha* /history*` e cai para Rust se Go não estiver pronto.
 
 ## Verificações úteis
 

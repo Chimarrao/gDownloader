@@ -221,6 +221,10 @@ export interface PersistedSettings {
   ytdlpAutoUpdate?: boolean
   ytdlpBinPath?: string
   ffmpegBinPath?: string
+  turnstileAutoUpdate?: boolean
+  turnstileSolverOrder?: string[]
+  turnstilePreferredSolver?: string
+  turnstileEnabled?: boolean
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {

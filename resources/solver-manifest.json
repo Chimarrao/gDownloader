@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "updatedAt": "2026-09-10",
+  "solvers": [
+    {
+      "id": "ezsolver",
+      "name": "EzSolver",
+      "repo": "ismoiloffS/EzSolver",
+      "branch": "main",
+      "entryPoint": "solver.py",
+      "serviceEntry": "service.py",
+      "port": 8191,
+      "apiType": "ezsolver",
+      "requirements": ["nodriver"],
+      "healthPath": "/health",
+      "supportedTypes": ["turnstile"]
+    },
+    {
+      "id": "icemellow",
+      "name": "Icemellow V2",
+      "repo": "icemellow-me/turnstile-solver",
+      "branch": "main",
+      "entryPoint": "solver-server.py",
+      "serviceEntry": "solver-server-v2.py",
+      "port": 8878,
+      "apiType": "icemellow",
+      "requirements": ["aiohttp>=3.14", "nodriver>=0.50", "camoufox>=0.4", "playwright>=1.60"],
+      "healthPath": "/health",
+      "supportedTypes": ["turnstile"]
+    },
+    {
+      "id": "surafelabeje",
+      "name": "Surafel Turnstile",
+      "repo": "surafelabeje/Turnstilesolver",
+      "branch": "main",
+      "entryPoint": "api_solver.py",
+      "serviceEntry": "api_solver.py",
+      "port": 5000,
+      "apiType": "surafelabeje",
+      "requirements": ["patchright"],
+      "healthPath": "/turnstile",
+      "supportedTypes": ["turnstile"]
+    },
+    {
+      "id": "flaresolverr",
+      "name": "FlareSolverr",
+      "repo": "FlareSolverr/FlareSolverr",
+      "branch": "master",
+      "entryPoint": "src/flaresolverr.py",
+      "port": 8191,
+      "apiType": "flaresolverr",
+      "requirements": [],
+      "healthPath": "/healthcheck",
+      "supportedTypes": ["turnstile", "unknown"]
+    }
+  ]
+}

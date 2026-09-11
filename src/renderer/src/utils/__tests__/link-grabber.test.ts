@@ -20,6 +20,12 @@ describe('packageGroupName', () => {
   it('preserva o nome quando nao ha sufixo de parte', () => {
     expect(packageGroupName('documento-final.pdf')).toBe('documento-final')
   })
+
+  it('agrupa episódios Katfile pela série e temporada', () => {
+    expect(packageGroupName('Donos.do.Oeste.S01E01.Os.Conflitos.1080p.mkv')).toBe('Donos do Oeste — Temporada 1')
+    expect(packageGroupName('Donos.do.Oeste.S01E08.O.Adeus.Irlandes.1080p.mkv')).toBe('Donos do Oeste — Temporada 1')
+    expect(packageGroupName('Donos.do.Oeste.S02E01.Nova.Temporada.1080p.mkv')).toBe('Donos do Oeste — Temporada 2')
+  })
 })
 
 describe('link-grabber utils', () => {

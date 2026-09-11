@@ -13,6 +13,8 @@ import pixeldrainSvg from './provider-icons/pixeldrain.svg?raw'
 import transferitSvg from './provider-icons/transferit.svg?raw'
 import youtubeSvg from './provider-icons/youtube.svg?raw'
 import fichierSvg from './provider-icons/1fichier.svg?raw'
+import sendnowLogo from './provider-icons/sendnow.png'
+import internetArchiveSvg from './provider-icons/internetarchive.svg?raw'
 
 export interface ProviderIcon {
   svg: string
@@ -31,6 +33,14 @@ const ICONS: Record<string, ProviderIcon> = {
   fichier: {
     color: '#ef7c14',
     svg: fichierSvg,
+  },
+  sendnow: {
+    color: '#d9ecff',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 167 167" fill="none"><image href="${sendnowLogo}" width="167" height="167" preserveAspectRatio="xMidYMid meet" /></svg>`,
+  },
+  internetarchive: {
+    color: '#5d6472',
+    svg: internetArchiveSvg,
   },
   drime: {
     color: '#2ec4b6',
@@ -139,6 +149,9 @@ function normalizeProviderKey(moduleId: string): string {
     youtubemusic: 'youtube',
     drime: 'drime',
     fichier: 'fichier',
+    sendnow: 'sendnow',
+    internetarchive: 'internetarchive',
+    archiveorg: 'internetarchive',
   }
   return aliases[raw] ?? raw
 }

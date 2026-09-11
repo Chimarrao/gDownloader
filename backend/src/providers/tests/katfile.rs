@@ -50,3 +50,13 @@ fn detects_removed_page_from_fixture_like_html() {
 
     assert!(KatfileProvider::is_removed_page(html));
 }
+
+#[test]
+fn prefers_exact_browser_size_over_rounded_catalog_size() {
+    // Página: “1.30 GB” (estimativa); Chromium/Content-Length: tamanho real.
+    assert_eq!(
+        KatfileProvider::authoritative_total_bytes(1_370_827_378, 1_395_864_371),
+        1_370_827_378,
+    );
+    assert_eq!(KatfileProvider::authoritative_total_bytes(0, 1_395_864_371), 1_395_864_371);
+}

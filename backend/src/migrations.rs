@@ -112,6 +112,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "add_download_thumbnail_columns",
         apply: migration_add_download_thumbnail_columns,
     },
+    Migration {
+        version: 21,
+        name: "create_resolved_download_link_cache",
+        apply: migration_create_resolved_download_link_cache,
+    },
+    Migration {
+        version: 22,
+        name: "add_download_error_kind",
+        apply: migration_add_download_error_kind,
+    },
 ];
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -150,6 +160,7 @@ fn migration_create_core_tables(conn: &Connection) -> Result<()> {
              parallel_parts         INTEGER NOT NULL DEFAULT 1,
              selected_children_json TEXT,
              error                  TEXT,
+             error_kind             TEXT,
              retry_count            INTEGER NOT NULL DEFAULT 0,
              retry_at               INTEGER,
              captcha_type           TEXT,
@@ -256,6 +267,15 @@ fn migration_ensure_download_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migration_add_download_error_kind(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "error_kind",
+        "ALTER TABLE downloads ADD COLUMN error_kind TEXT",
+    )
+}
+
 fn migration_add_download_network_route(conn: &Connection) -> Result<()> {
     add_column_if_missing(
         conn,
@@ -321,6 +341,27 @@ fn migration_create_file_cache_table(conn: &Connection) -> Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_file_info_cache_cached_at
              ON file_info_cache(cached_at DESC);",
+    )?;
+    Ok(())
+}
+
+/// Links finais de hosts como o 1Fichier são temporários, mas normalmente
+/// continuam válidos por algum tempo. Persisti-los evita consumir um novo slot
+/// gratuito só porque o aplicativo precisou ser reiniciado.
+fn migration_create_resolved_download_link_cache(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS resolved_download_link_cache (
+             provider_id TEXT NOT NULL,
+             source_url  TEXT NOT NULL,
+             direct_url  TEXT NOT NULL,
+             referer_url TEXT,
+             created_at  INTEGER NOT NULL,
+             expires_at  INTEGER NOT NULL,
+             last_used_at INTEGER NOT NULL,
+             PRIMARY KEY (provider_id, source_url)
+         );
+         CREATE INDEX IF NOT EXISTS idx_resolved_download_link_cache_expiry
+             ON resolved_download_link_cache(expires_at);",
     )?;
     Ok(())
 }

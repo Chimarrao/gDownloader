@@ -152,6 +152,13 @@
             aria-hidden="true"
           ></span>
           <span
+            v-else-if="videoAppIcon(effectiveName(row))"
+            class="row-icon row-app-icon"
+            :aria-label="videoAppIcon(effectiveName(row))?.app"
+            role="img"
+            v-html="videoAppIcon(effectiveName(row))?.svg"
+          ></span>
+          <span
             v-else
             class="row-icon"
             :class="getFileIcon(effectiveName(row), row.info?.mimeType, row.info?.isFolder).className"
@@ -425,11 +432,11 @@
                     </label>
                     <span v-else class="child-check child-check-placeholder"></span>
                     <span
-                      v-if="childWinrarIcon(node.name)"
-                      class="child-icon child-app-icon"
-                      :aria-label="childWinrarIcon(node.name)?.app"
-                      role="img"
-                      v-html="childWinrarIcon(node.name)?.svg"
+                    v-if="childAppIcon(node.name)"
+                    class="child-icon child-app-icon"
+                    :aria-label="childAppIcon(node.name)?.app"
+                    role="img"
+                    v-html="childAppIcon(node.name)?.svg"
                     ></span>
                     <span
                       v-else
@@ -571,9 +578,14 @@ const props = defineProps({
   },
 })
 
-function childWinrarIcon(filename: string) {
+function videoAppIcon(filename: string) {
   const icon = getFileTypeAppIcon(filename)
-  return icon?.app === 'winrar' ? icon : null
+  return icon?.app === 'video' ? icon : null
+}
+
+function childAppIcon(filename: string) {
+  const icon = getFileTypeAppIcon(filename)
+  return icon?.app === 'winrar' || icon?.app === 'video' ? icon : null
 }
 
 const emit = defineEmits<{
@@ -1018,6 +1030,12 @@ function suffixFps(source: string, label: string): string {
 .provider-row-icon :deep(svg) {
   width: 24px;
   height: 24px;
+  display: block;
+}
+
+.row-app-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
   display: block;
 }
 

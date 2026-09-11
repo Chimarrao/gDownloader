@@ -32,7 +32,10 @@ struct QueueCandidate {
 }
 
 async fn cancel_provider_sidecar_download(provider: &str, url: &str, dest_path: &str) {
-    let _ = (provider, url, dest_path);
+    let _ = url;
+    if provider == "Katfile" {
+        let _ = crate::providers::katfile::KatfileProvider::cancel(dest_path).await;
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -353,7 +356,10 @@ pub async fn add_download_internal(
             let info = provider.get_file_info_with_context(&req.url, context).await.map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    Json(ApiError::new(format!("Falha ao obter informações do arquivo: {e}"))),
+                    Json(ApiError::new(format!(
+                        "Falha ao obter informações do arquivo: {}",
+                        prettify_download_error(&e.to_string())
+                    ))),
                 )
             })?;
             if let Ok(db) = state.db.lock() {
@@ -1509,6 +1515,11 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
     const NETWORK_MAX_RETRIES: u32 = 60;
 
     let mut attempt = 0u32;
+    // Limites de tráfego não consomem as tentativas normais do arquivo: o
+    // arquivo e sua parte já baixada continuam válidos. Ainda assim precisamos
+    // contar as revalidações para não consultar o host em um ciclo fixo e
+    // agressivo para sempre (o caso do Mega/HTTP 509).
+    let mut rate_limit_attempt = 0u32;
     let mut stall_retries = 0u32;
     let mut network_retries = 0u32;
     let mut tor_limit_retries: u32 = 0;
@@ -1779,6 +1790,36 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 continue;
             }
 
+            // Sinal "solver:<estagio>" (Katfile e qualquer outro provider com
+            // solver universal de captcha): igual ao "merge" acima, atualiza o
+            // status em memória + faz o broadcast na hora, senão a UI só saberia
+            // dessa mudança na próxima leitura do banco — o app.rs do Katfile já
+            // grava isso direto no SQLite, mas quem a UI escuta é o WebSocket a
+            // partir do estado em memória, não o banco. Sem isso a UI ficava
+            // presa em "Conectando" o tempo todo em que o captcha era resolvido.
+            if let Some(child_path) = update.child_path.as_deref() {
+                if let Some(stage) = child_path.strip_prefix("solver:") {
+                    {
+                        let mut map = state.downloads.lock().await;
+                        if let Some(d) = map.get_mut(&id) {
+                            d.status = DownloadStatus::WaitingCaptcha;
+                            d.error = Some(stage.to_string());
+                            d.error_kind = Some("captcha".to_string());
+                        }
+                    }
+                    state.broadcast(WsEvent::StatusChanged {
+                        id: id.clone(),
+                        status: DownloadStatus::WaitingCaptcha,
+                        error: Some(stage.to_string()),
+                        retry_at: None,
+                        captcha_type: None,
+                        captcha_sitekey: None,
+                        captcha_page_url: None,
+                    });
+                    continue;
+                }
+            }
+
             let should_persist_snapshot = last_db_write.elapsed().as_secs() >= 5;
             max_bytes_seen = max_bytes_seen.max(update.bytes_downloaded);
             let reported_bytes = max_bytes_seen;
@@ -1821,6 +1862,34 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             };
             let display_speed = if finalizing { 0 } else { speed };
             let display_eta = if finalizing { 0 } else { eta };
+
+            // Se chegou uma atualização normal (sem prefixo "solver:"), o captcha
+            // já foi resolvido — volta o status de WaitingCaptcha pra Downloading
+            // e avisa a UI. Sem isso o chip roxo "Resolvendo captcha" ficava preso
+            // pra sempre depois que o captcha era resolvido de verdade.
+            let was_waiting_captcha = {
+                let map = state.downloads.lock().await;
+                map.get(&id).map(|d| d.status == DownloadStatus::WaitingCaptcha).unwrap_or(false)
+            };
+            if was_waiting_captcha {
+                {
+                    let mut map = state.downloads.lock().await;
+                    if let Some(d) = map.get_mut(&id) {
+                        d.status = DownloadStatus::Downloading;
+                        d.error = None;
+                        d.error_kind = None;
+                    }
+                }
+                state.broadcast(WsEvent::StatusChanged {
+                    id: id.clone(),
+                    status: DownloadStatus::Downloading,
+                    error: None,
+                    retry_at: None,
+                    captcha_type: None,
+                    captcha_sitekey: None,
+                    captcha_page_url: None,
+                });
+            }
 
             {
                 let mut map = state.downloads.lock().await;
@@ -1949,16 +2018,24 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     }
                 }
 
-                // Verificação leve de integridade (tamanho, HTML de erro, assinatura do
-                // formato). Só para arquivo único — pega o caso "página de erro salva
-                // como .mkv" e formatos claramente corrompidos.
-                let is_folder = {
+                // Verificação leve de integridade (HTML de erro, assinatura do
+                // formato). Pastas também precisam ser verificadas filho a filho:
+                // sem isso um único arquivo do Send.now podia salvar o JavaScript do
+                // Cloudflare como `.rar` e ainda assim marcar a pasta como concluída.
+                let (is_folder, children) = {
                     let map = state.downloads.lock().await;
-                    map.get(&id).map(|d| d.is_folder).unwrap_or(false)
+                    map.get(&id)
+                        .map(|d| (d.is_folder, d.children.clone()))
+                        .unwrap_or((false, None))
                 };
-                if !is_folder {
-                    let integrity = crate::integrity::check_file(&dest_path, bytes).await;
-                    if let Some(reason) = integrity.reason() {
+                if let Some(reason) = check_completed_download_integrity(
+                    &dest_path,
+                    bytes,
+                    is_folder,
+                    children.as_deref(),
+                )
+                .await
+                {
                         warn!(
                             target: "gdownloader_backend::downloads",
                             "integridade suspeita id={} provider={} bytes={} motivo={}",
@@ -1991,11 +2068,10 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                         reschedule_pending_downloads(state.clone());
                         return;
                     }
-                    info!(
-                        target: "gdownloader_backend::downloads",
-                        "integridade ok id={} bytes={}", id, bytes
-                    );
-                }
+                info!(
+                    target: "gdownloader_backend::downloads",
+                    "integridade ok id={} bytes={}", id, bytes
+                );
 
                 {
                     let mut map = state.downloads.lock().await;
@@ -2074,6 +2150,49 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             Ok(Err(e)) => {
                 state.active_tasks.lock().await.remove(&id);
                 let err_str = e.to_string();
+
+                // O Send.now retornou 403 ao emitir a URL temporária. Isso
+                // exige uma confirmação na janela persistente do próprio host;
+                // reexecutar automaticamente só gera novos 403/429. Não há
+                // token nem solver envolvido aqui: após concluir a página, a
+                // pessoa pede uma nova tentativa pela interface.
+                if let Some(page_url) = parse_sendnow_manual_verification(&err_str) {
+                    let message = "Send.now requer confirmação na página do host antes de liberar este download. Conclua a verificação na janela aberta e tente novamente.".to_string();
+                    warn!(
+                        target: "gdownloader_backend::downloads",
+                        "download aguardando confirmação manual id={} provider={} page={}",
+                        id,
+                        provider_name,
+                        page_url
+                    );
+                    {
+                        let mut map = state.downloads.lock().await;
+                        if let Some(d) = map.get_mut(&id) {
+                            d.status = DownloadStatus::WaitingCaptcha;
+                            d.captcha_type = Some("manual".to_string());
+                            d.captcha_sitekey = None;
+                            d.captcha_page_url = Some(page_url.clone());
+                            d.error = Some(message.clone());
+                            d.error_kind = Some("captcha".to_string());
+                            d.speed_bps = 0;
+                            d.eta_secs = 0;
+                            d.retry_at = None;
+                            d.completed_at = None;
+                        }
+                    }
+                    state.broadcast(WsEvent::StatusChanged {
+                        id: id.clone(),
+                        status: DownloadStatus::WaitingCaptcha,
+                        error: Some(message),
+                        retry_at: None,
+                        captcha_type: Some("manual".to_string()),
+                        captcha_sitekey: None,
+                        captcha_page_url: Some(page_url),
+                    });
+                    persist_download_snapshot(&state, &id).await;
+                    reschedule_pending_downloads(state.clone());
+                    return;
+                }
 
                 // Captcha required — set WaitingCaptcha and halt
                 if let Some((captcha_type, sitekey, page_url)) = parse_captcha_error(&err_str) {
@@ -2196,8 +2315,16 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     // Esgotou o orçamento de rede: segue para o tratamento normal abaixo.
                 }
 
-                let retry_policy = classify_retry_policy(&provider_name, &err_str, attempt);
-                let is_rate_limit = err_str.starts_with("RATE_LIMIT:");
+                // Alguns endpoints do Mega devolvem o limite como HTTP 509 (ou pela
+                // URL userstorage), sem o prefixo interno `RATE_LIMIT:`. Trate os
+                // dois formatos como o mesmo estado para preservar o cooldown e
+                // deixar claro na interface que não é uma fila comum.
+                let is_rate_limit = is_rate_limit_error(&provider_name, &err_str);
+                let retry_policy = classify_retry_policy(
+                    &provider_name,
+                    &err_str,
+                    if is_rate_limit { rate_limit_attempt } else { attempt },
+                );
                 let is_premium_required = err_str.starts_with("PREMIUM_REQUIRED:");
                 // Erros permanentes (arquivo removido, premium obrigatório, link morto)
                 // NÃO entram no loop de retry — falham na hora com mensagem clara.
@@ -2248,7 +2375,17 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     let retry_delay_secs = if isolated_tor_retry { 3 } else { retry_policy.retry_delay_secs };
                     let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
                     let wait_status = if is_rate_limit && !isolated_tor_retry { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
-                    let wait_kind = classify_error_kind(&wait_status, Some(&retry_policy.wait_message));
+                    // `retry_at` sempre agenda o próximo teste interno, mas não é
+                    // necessariamente um prazo informado pelo host. Só marcamos
+                    // como `rate_limit_server` quando o provedor forneceu uma
+                    // espera explícita (RATE_LIMIT ou texto com duração). A UI usa
+                    // essa distinção para nunca apresentar uma estimativa local
+                    // como se fosse um relógio real do servidor.
+                    let wait_kind = if is_rate_limit && has_server_reported_wait(&err_str) {
+                        Some("rate_limit_server".to_string())
+                    } else {
+                        classify_error_kind(&wait_status, Some(&retry_policy.wait_message))
+                    };
                     {
                         let mut map = state.downloads.lock().await;
                         if let Some(d) = map.get_mut(&id) {
@@ -2273,21 +2410,22 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     persist_download_snapshot(&state, &id).await;
                     warn!(
                         target: "gdownloader_backend::downloads",
-                        "download reagendado id={} provider={} attempt={}/{} delay={}s status={} reason={}",
+                        "download reagendado id={} provider={} attempt={}/{} delay={}s status={} reason={} cause={}",
                         id,
                         provider_name,
                         attempt,
                         max_retries,
                         retry_delay_secs,
                         if is_rate_limit { "rate_limited" } else { "pending" },
-                        retry_policy.wait_message
+                        retry_policy.wait_message,
+                        err_str
                     );
                     record_download_event(
                         &state,
                         &id,
                         if is_rate_limit { "rate_limited" } else { "retry" },
                         &format!(
-                            "Reagendado (tentativa {attempt}/{max_retries}) em {delay}s: {}",
+                            "Reagendado (tentativa {attempt}/{max_retries}; revalidação de limite #{rate_limit_attempt}) em {delay}s: {}",
                             retry_policy.wait_message,
                             delay = retry_delay_secs
                         ),
@@ -2334,24 +2472,26 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
 
                     for _ in 0..retry_delay_secs {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        let status = {
+                        let retry_is_current = {
                             let map = state.downloads.lock().await;
-                            map.get(&id).map(|download| download.status.clone())
+                            map.get(&id).map(|download| {
+                                retry_wait_is_current(&download.status, download.retry_at, retry_at)
+                            })
                         };
-                        match status {
-                            None | Some(DownloadStatus::Paused | DownloadStatus::Cancelled) => {
+                        match retry_is_current {
+                            None | Some(false) => {
                                 reschedule_pending_downloads(state.clone());
-                                return;
+                                break;
                             }
-                            // WaitingCaptcha breaks the sleep loop: captcha was submitted, re-attempt
-                            Some(DownloadStatus::Pending) => break,
-                            _ => {}
+                            Some(true) => {}
                         }
                     }
-                    // Conta a tentativa normal (não durante a fase Tor). Rate-limits
-                    // só contam quando o Tor está ligado p/ o download, para esgotar
-                    // as tentativas normais antes de trocar pro Tor.
-                    if !isolated_tor_retry && (!is_rate_limit || download_auto_tor) {
+                    // A contagem separada preserva o orçamento normal de tentativas
+                    // e aplica backoff aos limites sem jamais apresentar a espera
+                    // local como um prazo informado pelo servidor.
+                    if is_rate_limit && !isolated_tor_retry {
+                        rate_limit_attempt = rate_limit_attempt.saturating_add(1);
+                    } else if !isolated_tor_retry {
                         attempt = attempt.saturating_add(1);
                     }
                     continue;
@@ -3406,6 +3546,27 @@ pub async fn recover_downloads_from_db(state: AppState) {
         download.speed_bps = 0;
         download.eta_secs = 0;
 
+        // Repara o estado legado criado quando a pasta Send.now aceitava o
+        // JavaScript do desafio Cloudflare como se fosse o arquivo filho.
+        // Mantém o arquivo para auditoria, mas torna o erro explícito e impede
+        // que a interface continue mostrando um falso "Concluído".
+        restore_sendnow_challenge_false_complete(&mut download).await;
+
+        // Versões anteriores classificavam a página temporária sem botão do
+        // 1Fichier como "não suportada" e, por isso, a retomada morria após
+        // reiniciar o aplicativo. É um estado recuperável: mantém o parcial e
+        // aguarda o cooldown do host antes de tentar obter/reusar o link.
+        restore_legacy_fichier_temporary_link_failure(&mut download, current_unix_secs());
+        // A versão que ignorava retry_at chegou a gerar centenas de tentativas
+        // do Mega em segundos. O último retry_at dessas filas ficou vários dias
+        // no futuro; convertemos apenas esse padrão legado em RateLimited normal.
+        restore_legacy_mega_retry_overflow(&mut download, current_unix_secs());
+        // O Katfile exibe alguns tamanhos em GB arredondados. Uma versão anterior
+        // tratava essa estimativa visual como se fosse o Content-Length exato e
+        // marcava vídeos válidos como corrompidos. Revalida somente esse caso
+        // específico usando assinatura/magic bytes, sem apagar nem baixar de novo.
+        restore_katfile_rounded_size_false_positive(&mut download).await;
+
         if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             download.status = DownloadStatus::Pending;
             download.error = None;
@@ -3471,7 +3632,7 @@ pub async fn recover_downloads_from_db(state: AppState) {
     schedule_pending_downloads(state).await;
 }
 
-fn prettify_download_error(message: &str) -> String {
+pub(crate) fn prettify_download_error(message: &str) -> String {
     if let Some(premium_message) = parse_premium_required_error(message) {
         return premium_message;
     }
@@ -3483,6 +3644,15 @@ fn prettify_download_error(message: &str) -> String {
     }
 
     let lower = message.to_lowercase();
+
+    // O YouTube passou a invalidar cookies que continuam sendo usados pelo
+    // navegador e responde apenas com a mensagem genérica de "not a bot".
+    // Não é uma falha transitória: repetir o mesmo comando consome slots e
+    // nunca a recupera. Devolvemos uma ação concreta, sem expor o stderr do
+    // yt-dlp nem qualquer cookie na interface.
+    if is_youtube_auth_required_error(message) {
+        return "O YouTube pediu uma sessão válida. Em Configurações > YouTube, informe um arquivo de cookies Netscape exportado de uma sessão privada recém-autenticada; depois use Repetir. Cookies lidos do navegador aberto podem ser rotacionadas pelo YouTube e deixar de funcionar.".to_string();
+    }
 
     if lower.contains("416") || lower.contains("range not satisfiable") {
         return "O servidor rejeitou a retomada do arquivo parcial. Use Reiniciar para baixar do zero.".to_string();
@@ -3527,6 +3697,44 @@ fn current_unix_secs() -> u64 {
         .as_secs()
 }
 
+/// Valida o artefato final de um download. Para pastas, os tamanhos exibidos
+/// pelo host podem ser arredondados; por isso validamos a assinatura/conteúdo
+/// de cada filho com tamanho esperado zero, mas nunca aceitamos HTML ou uma
+/// assinatura incompatível disfarçada de arquivo.
+async fn check_completed_download_integrity(
+    dest_path: &str,
+    expected_bytes: u64,
+    is_folder: bool,
+    children: Option<&[FileChildInfo]>,
+) -> Option<String> {
+    if !is_folder {
+        return crate::integrity::check_file(dest_path, expected_bytes)
+            .await
+            .reason()
+            .map(str::to_string);
+    }
+
+    for child in children.unwrap_or_default() {
+        if child.is_folder {
+            continue;
+        }
+        let child_path = child.path.clone().unwrap_or_else(|| {
+            FsPath::new(dest_path)
+                .join(&child.filename)
+                .to_string_lossy()
+                .into_owned()
+        });
+        if let Some(reason) = crate::integrity::check_file(&child_path, 0)
+            .await
+            .reason()
+        {
+            return Some(format!("{}: {reason}", child.filename));
+        }
+    }
+
+    None
+}
+
 fn schedule_retry_wakeup(state: AppState, retry_at: u64) {
     let delay = retry_at.saturating_sub(current_unix_secs());
     tokio::spawn(async move {
@@ -3552,6 +3760,174 @@ fn schedule_next_retry_wakeup(
     if let Some(next_retry_at) = next_retry_at {
         schedule_retry_wakeup(state, next_retry_at);
     }
+}
+
+/// A espera continua válida somente enquanto este download ainda estiver no
+/// estado de cooldown que esta tentativa criou. Isso evita que `Pending`, que
+/// também é usado para erros recuperáveis, transforme uma espera de minutos em
+/// uma nova tentativa a cada segundo.
+fn retry_wait_is_current(
+    status: &DownloadStatus,
+    retry_at: Option<u64>,
+    scheduled_retry_at: u64,
+) -> bool {
+    matches!(status, DownloadStatus::Pending | DownloadStatus::RateLimited)
+        && retry_at == Some(scheduled_retry_at)
+}
+
+fn restore_legacy_fichier_temporary_link_failure(download: &mut Download, now: u64) -> bool {
+    let is_legacy_failure = download.provider.eq_ignore_ascii_case("1fichier")
+        && matches!(download.status, DownloadStatus::Error)
+        && download.bytes_downloaded > 0
+        && download
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Link não suportado pelo fluxo atual do 1Fichier"));
+    if !is_legacy_failure {
+        return false;
+    }
+
+    let cooldown = providers::capabilities_for_provider_name("1Fichier")
+        .free_cooldown_secs
+        .unwrap_or(300);
+    download.status = DownloadStatus::RateLimited;
+    download.retry_at = Some(now.saturating_add(cooldown));
+    download.speed_bps = 0;
+    download.eta_secs = cooldown;
+    download.error = Some(
+        "Retomada preservada: o link temporário anterior do 1Fichier não pôde ser reutilizado. Aguardando o cooldown do host antes de tentar novamente."
+            .to_string(),
+    );
+    download.error_kind = Some("rate_limit".to_string());
+    true
+}
+
+/// Recupera o falso positivo criado quando uma página do Katfile informa o
+/// tamanho arredondado (por exemplo, “1.30 GB”), mas o navegador gravou o
+/// arquivo completo com um número de bytes diferente. Esta rotina é restrita a
+/// erros de divergência de tamanho desse provider; qualquer outra suspeita de
+/// integridade continua exigindo uma nova tentativa explícita do usuário.
+async fn restore_katfile_rounded_size_false_positive(download: &mut Download) -> bool {
+    let is_rounded_size_false_positive = download.provider.eq_ignore_ascii_case("katfile")
+        && matches!(download.status, DownloadStatus::Corrupted)
+        && download
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("Arquivo possivelmente corrompido: tamanho difere do esperado:"));
+    if !is_rounded_size_false_positive {
+        return false;
+    }
+
+    if !crate::integrity::check_file(&download.dest_path, 0).await.is_ok() {
+        return false;
+    }
+    let Ok(metadata) = tokio::fs::metadata(&download.dest_path).await else {
+        return false;
+    };
+
+    let actual_size = metadata.len();
+    download.status = DownloadStatus::Complete;
+    download.size = actual_size;
+    download.bytes_downloaded = actual_size;
+    download.speed_bps = 0;
+    download.eta_secs = 0;
+    download.retry_at = None;
+    download.error = None;
+    download.error_kind = None;
+    download.completed_at = Some(current_unix_secs());
+    true
+}
+
+async fn restore_sendnow_challenge_false_complete(download: &mut Download) -> bool {
+    let is_sendnow_folder_complete = download.provider.eq_ignore_ascii_case("send.now")
+        && matches!(download.status, DownloadStatus::Complete)
+        && download.is_folder;
+    if !is_sendnow_folder_complete {
+        return false;
+    }
+
+    let Some(reason) = check_completed_download_integrity(
+        &download.dest_path,
+        download.bytes_downloaded,
+        true,
+        download.children.as_deref(),
+    )
+    .await else {
+        return false;
+    };
+
+    download.status = DownloadStatus::Corrupted;
+    download.speed_bps = 0;
+    download.eta_secs = 0;
+    download.retry_at = None;
+    download.error = Some(format!(
+        "O Send.now devolveu uma página de verificação no lugar do arquivo: {reason}"
+    ));
+    download.error_kind = Some("integrity".to_string());
+    true
+}
+
+fn restore_legacy_mega_retry_overflow(download: &mut Download, now: u64) -> bool {
+    const LEGACY_RETRY_COUNT: u32 = 50;
+    const MAX_NORMAL_COOLDOWN_SECS: u64 = 60 * 60;
+
+    let is_legacy_overflow = download.provider.eq_ignore_ascii_case("mega")
+        && matches!(download.status, DownloadStatus::Pending)
+        && download.retry_count >= LEGACY_RETRY_COUNT
+        && download.retry_at.is_some_and(|retry_at| retry_at > now.saturating_add(MAX_NORMAL_COOLDOWN_SECS))
+        && download
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Limite temporário do Mega detectado"));
+    if !is_legacy_overflow {
+        return false;
+    }
+
+    const MEGA_RETRY_SECS: u64 = 5 * 60;
+    download.status = DownloadStatus::RateLimited;
+    download.retry_count = 0;
+    download.retry_at = Some(now.saturating_add(MEGA_RETRY_SECS));
+    download.speed_bps = 0;
+    download.eta_secs = MEGA_RETRY_SECS;
+    download.error = Some(
+        "Recuperamos um agendamento antigo do Mega. Aguardando o próximo teste de disponibilidade do host."
+            .to_string(),
+    );
+    download.error_kind = Some("rate_limit".to_string());
+    true
+}
+
+fn is_rate_limit_error(provider: &str, message: &str) -> bool {
+    if message.starts_with("RATE_LIMIT:") {
+        return true;
+    }
+
+    // Além do Mega, hosts como Send.now respondem o bloqueio de IP/sessão com
+    // HTTP 429. Mantê-lo em `RateLimited` evita que a interface pareça travada
+    // e preserva um cooldown explícito, em vez de uma fila pendente genérica.
+    let lower = message.to_lowercase();
+    if lower.contains("too many requests")
+        || lower.contains("http 429")
+        || lower.contains("http status client error (429")
+        || (provider.eq_ignore_ascii_case("send.now")
+            && lower.contains("send.now não retornou o link temporário"))
+    {
+        return true;
+    }
+
+    if !provider.eq_ignore_ascii_case("mega") {
+        return false;
+    }
+
+    lower.contains("509")
+        || lower.contains("bandwidth limit exceeded")
+        || lower.contains("userstorage.mega.co.nz")
+        || lower.contains("userstorage.mega.nz")
+}
+
+fn has_server_reported_wait(message: &str) -> bool {
+    message.starts_with("RATE_LIMIT:")
+        || providers::extract_wait_seconds_from_text(message).is_some()
 }
 
 fn provider_parallel_limit(provider: &str) -> Option<usize> {
@@ -3641,6 +4017,9 @@ fn classify_error_kind(status: &DownloadStatus, message: Option<&str>) -> Option
     if message.starts_with("UNSUPPORTED:") {
         return Some("permanent".to_string());
     }
+    if is_youtube_auth_required_error(message) {
+        return Some("authentication".to_string());
+    }
     if is_connection_error(message) {
         return Some("network".to_string());
     }
@@ -3686,7 +4065,8 @@ fn is_permanent_error(message: &str) -> bool {
         return true;
     }
     let lower = message.to_lowercase();
-    lower.contains("arquivo não localizado")
+    is_youtube_auth_required_error(message)
+        || lower.contains("arquivo não localizado")
         || lower.contains("arquivo nao localizado")
         || lower.contains("file not found")
         || lower.contains("file was deleted")
@@ -3694,6 +4074,16 @@ fn is_permanent_error(message: &str) -> bool {
         || lower.contains("arquivo removido")
         || lower.contains("link não suportado")
         || lower.contains("link nao suportado")
+}
+
+/// O yt-dlp usa esta mensagem quando o endpoint de player do YouTube exige
+/// uma sessão/cookie válido. Trata-se de uma ação do usuário (ou de um
+/// provedor de PO Token), não de uma falha que melhora com retry.
+fn is_youtube_auth_required_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("sign in to confirm you're not a bot")
+        || lower.contains("sign in to confirm you’re not a bot")
+        || lower.contains("youtube account cookies are no longer valid")
 }
 
 /// Quantos slots de concorrência um download ocupa. Cada download ATIVO ocupa
@@ -3719,6 +4109,19 @@ fn parse_captcha_error(message: &str) -> Option<(String, String, String)> {
         return Some((captcha_type.to_string(), sitekey.to_string(), pageurl.to_string()));
     }
     None
+}
+
+/// Marca a confirmação interativa do Send.now sem fingir que há um token de
+/// captcha disponível. O helper Electron mantém a sessão do host e abre a
+/// página para a pessoa; a fila fica parada até uma nova tentativa explícita.
+fn parse_sendnow_manual_verification(message: &str) -> Option<String> {
+    const PREFIX: &str = "SENDNOW_MANUAL_VERIFICATION_REQUIRED:";
+    message
+        .find(PREFIX)
+        .map(|start| &message[start + PREFIX.len()..])
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://send.now/"))
+        .map(str::to_string)
 }
 
 /// Detecta erros de transporte/rede (queda de conexão) — distintos de erros do host
@@ -3788,14 +4191,34 @@ fn classify_retry_policy(provider: &str, message: &str, attempt: u32) -> RetryPo
     let parsed_wait = providers::extract_wait_seconds_from_text(message);
     let provider_cooldown = providers::capabilities_for_provider_name(provider).free_cooldown_secs;
 
+    // Quando Send.now não libera a URL efêmera, a página pode responder 200
+    // sem redirect antes de finalmente responder 429. Ambos representam o
+    // mesmo cooldown do host; nunca faça backoff de segundos nessa situação.
+    if provider.eq_ignore_ascii_case("send.now")
+        && lower.contains("send.now não retornou o link temporário")
+    {
+        return RetryPolicy {
+            retry_delay_secs: 5 * 60,
+            wait_message: "Send.now está limitando a geração do link temporário. Vamos aguardar 5 minutos antes de revalidar.".to_string(),
+            final_message: pretty,
+        };
+    }
+
     if lower.contains("509")
         || lower.contains("bandwidth limit exceeded")
         || lower.contains("userstorage.mega.co.nz")
         || lower.contains("userstorage.mega.nz")
     {
+        // O Mega não envia, neste caso, um Retry-After nem um horário de
+        // liberação. O delay abaixo é somente a cadência de revalidação local;
+        // a interface o distingue explicitamente de uma espera confirmada pelo
+        // provedor. Limitamos a 30 minutos para evitar consultas incessantes.
+        let retry_delay_secs = (5u64 * 60)
+            .saturating_mul(attempt.saturating_add(1) as u64)
+            .min(30 * 60);
         return RetryPolicy {
-            retry_delay_secs: 5 * 60 * (attempt as u64 + 1),
-            wait_message: "Limite temporário do Mega detectado. Vamos tentar novamente automaticamente e retomar do ponto onde parou.".to_string(),
+            retry_delay_secs,
+            wait_message: "Mega respondeu HTTP 509 (cota de tráfego deste IP). O servidor não informou quando libera a cota; o arquivo parcial será preservado e revalidado automaticamente.".to_string(),
             final_message: "O Mega aplicou um limite temporário de tráfego. Tente novamente mais tarde ou use uma conta para continuar.".to_string(),
         };
     }
@@ -4027,7 +4450,12 @@ mod tests {
         );
 
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
+        assert_eq!(ids, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn mega_free_queue_uses_one_stream_per_ip() {
+        assert_eq!(provider_parallel_limit("Mega"), Some(1));
     }
 
     #[test]
@@ -4058,6 +4486,178 @@ mod tests {
     }
 
     #[test]
+    fn retry_wait_keeps_pending_cooldown_until_its_timestamp_changes() {
+        // `Pending` também é usado para erros recuperáveis. Enquanto o mesmo
+        // retry_at estiver marcado, ele representa uma espera ativa — não uma
+        // ordem para tentar novamente imediatamente.
+        assert!(retry_wait_is_current(
+            &DownloadStatus::Pending,
+            Some(1_800),
+            1_800,
+        ));
+        assert!(retry_wait_is_current(
+            &DownloadStatus::RateLimited,
+            Some(1_800),
+            1_800,
+        ));
+        assert!(!retry_wait_is_current(
+            &DownloadStatus::Pending,
+            None,
+            1_800,
+        ));
+        assert!(!retry_wait_is_current(
+            &DownloadStatus::Paused,
+            Some(1_800),
+            1_800,
+        ));
+    }
+
+    #[test]
+    fn mega_storage_limit_is_exposed_as_rate_limited() {
+        assert!(is_rate_limit_error(
+            "Mega",
+            "HTTP 509 from userstorage.mega.co.nz",
+        ));
+        assert!(is_rate_limit_error("Mega", "RATE_LIMIT:600:aguarde"));
+        assert!(!is_rate_limit_error("1Fichier", "HTTP 509"));
+
+        assert!(has_server_reported_wait("RATE_LIMIT:600:aguarde 10 minutos"));
+        assert!(has_server_reported_wait("Aguarde 2 minutos e 5 segundos"));
+        assert!(!has_server_reported_wait("HTTP 509 Bandwidth Limit Exceeded"));
+        assert!(!has_server_reported_wait("HTTP 429 Too Many Requests"));
+    }
+
+    #[test]
+    fn mega_509_uses_bounded_revalidation_without_claiming_a_server_deadline() {
+        let first = classify_retry_policy("Mega", "HTTP 509 Bandwidth Limit Exceeded", 0);
+        let later = classify_retry_policy("Mega", "HTTP 509 Bandwidth Limit Exceeded", 99);
+
+        assert_eq!(first.retry_delay_secs, 5 * 60);
+        assert_eq!(later.retry_delay_secs, 30 * 60);
+        assert!(first.wait_message.contains("não informou quando libera"));
+        assert!(!has_server_reported_wait("HTTP 509 Bandwidth Limit Exceeded"));
+    }
+
+    #[tokio::test]
+    async fn legacy_fichier_temporary_link_failure_becomes_resumable() {
+        let mut download = Download {
+            id: "fichier".to_string(),
+            url: "https://1fichier.com/?file".to_string(),
+            provider: "1Fichier".to_string(),
+            identity_key: "1fichier:file".to_string(),
+            filename: "arquivo.rar".to_string(),
+            size: 1_000,
+            dest_path: "/tmp/arquivo.rar".to_string(),
+            status: DownloadStatus::Error,
+            bytes_downloaded: 250,
+            speed_bps: 0,
+            eta_secs: 0,
+            duration_secs: None,
+            is_folder: false,
+            children: None,
+            retry_count: 0,
+            max_retries: 0,
+            speed_limit_kib: 0,
+            parallel_parts: 1,
+            selected_children: None,
+            expected_hash: None,
+            retry_at: None,
+            captcha_type: None,
+            captcha_sitekey: None,
+            captcha_page_url: None,
+            captcha_token: None,
+            error: Some("Link não suportado pelo fluxo atual do 1Fichier".to_string()),
+            error_kind: None,
+            priority: 0,
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+            last_progress_at: None,
+            pinned: false,
+            package_id: None,
+            request_headers: None,
+            network_route: None,
+            thumbnail_url: None,
+            thumbnail_data: None,
+            channel_name: None,
+            channel_thumbnail_url: None,
+            auto_tor_on_limit: false,
+        };
+
+        assert!(restore_legacy_fichier_temporary_link_failure(&mut download, 1_000));
+        assert_eq!(download.status, DownloadStatus::RateLimited);
+        assert_eq!(download.retry_at, Some(1_300));
+        assert_eq!(download.bytes_downloaded, 250);
+
+        download.provider = "Mega".to_string();
+        download.status = DownloadStatus::Pending;
+        download.retry_count = 1_169;
+        download.retry_at = Some(400_000);
+        download.error = Some("Limite temporário do Mega detectado".to_string());
+        assert!(restore_legacy_mega_retry_overflow(&mut download, 1_000));
+        assert_eq!(download.status, DownloadStatus::RateLimited);
+        assert_eq!(download.retry_count, 0);
+        assert_eq!(download.retry_at, Some(1_300));
+
+        let recovered_path = std::env::temp_dir().join(format!(
+            "gdownloader-katfile-rounded-{}.mkv",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&recovered_path, [0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        download.provider = "Katfile".to_string();
+        download.status = DownloadStatus::Corrupted;
+        download.dest_path = recovered_path.to_string_lossy().to_string();
+        download.size = 1_395_864_371; // tamanho arredondado anunciado na página
+        download.bytes_downloaded = 1_370_827_378;
+        download.error = Some(
+            "Arquivo possivelmente corrompido: tamanho difere do esperado: 1370827378 bytes (esperado 1395864371)"
+                .to_string(),
+        );
+        download.error_kind = Some("integrity".to_string());
+
+        assert!(restore_katfile_rounded_size_false_positive(&mut download).await);
+        assert_eq!(download.status, DownloadStatus::Complete);
+        assert_eq!(download.size, 8);
+        assert_eq!(download.bytes_downloaded, 8);
+        assert_eq!(download.error, None);
+        let _ = tokio::fs::remove_file(recovered_path).await;
+
+        let sendnow_dir = std::env::temp_dir().join(format!(
+            "gdownloader-sendnow-challenge-{}",
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::create_dir_all(&sendnow_dir).await.unwrap();
+        let fake_archive = sendnow_dir.join("filme.rar");
+        tokio::fs::write(&fake_archive, b"window._cf_chl_opt = {challenge: true}")
+            .await
+            .unwrap();
+        download.provider = "Send.now".to_string();
+        download.status = DownloadStatus::Complete;
+        download.is_folder = true;
+        download.dest_path = sendnow_dir.to_string_lossy().to_string();
+        download.children = Some(vec![FileChildInfo {
+            filename: "filme.rar".to_string(),
+            size: 20,
+            mime_type: None,
+            is_folder: false,
+            path: None,
+            source_url: None,
+            bytes_downloaded: Some(20),
+            speed_bps: Some(0),
+            eta_secs: Some(0),
+            status: Some(DownloadStatus::Complete),
+        }]);
+        download.error = None;
+
+        assert!(restore_sendnow_challenge_false_complete(&mut download).await);
+        assert_eq!(download.status, DownloadStatus::Corrupted);
+        assert!(download.error.as_deref().is_some_and(|error| error.contains("página de verificação")));
+        let _ = tokio::fs::remove_dir_all(sendnow_dir).await;
+    }
+
+    #[test]
     fn retry_policy_prefers_host_reported_wait_time() {
         let policy = classify_retry_policy(
             "BRFiles",
@@ -4073,6 +4673,9 @@ mod tests {
         assert!(is_permanent_error("REMOVED:Rapidgator:Arquivo não localizado no Rapidgator"));
         assert!(is_permanent_error("PREMIUM_REQUIRED:Rapidgator:precisa premium"));
         assert!(is_permanent_error("UNSUPPORTED:Foo:Link não suportado"));
+        assert!(is_permanent_error(
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot"
+        ));
         assert!(!is_permanent_error("RATE_LIMIT:60:aguarde"));
         assert!(!is_permanent_error("error sending request"));
 
@@ -4083,6 +4686,14 @@ mod tests {
         assert_eq!(
             classify_error_kind(&DownloadStatus::RateLimited, Some("wait")).as_deref(),
             Some("rate_limit")
+        );
+        assert_eq!(
+            classify_error_kind(
+                &DownloadStatus::Error,
+                Some("ERROR: [youtube] abc: Sign in to confirm you're not a bot"),
+            )
+            .as_deref(),
+            Some("authentication")
         );
         assert_eq!(
             classify_error_kind(&DownloadStatus::Corrupted, Some("bad")).as_deref(),
@@ -4171,5 +4782,15 @@ mod tests {
         assert!(!is_connection_error("RATE_LIMIT:3600:aguarde"));
         assert!(!is_connection_error("Arquivo não encontrado (404)"));
         assert!(!is_connection_error("CAPTCHA_REQUIRED:recaptcha2:sitekey:url"));
+    }
+
+    #[test]
+    fn sendnow_manual_verification_uses_the_original_host_page() {
+        let message = "Helper local: SENDNOW_MANUAL_VERIFICATION_REQUIRED:https://send.now/abc123";
+        assert_eq!(
+            parse_sendnow_manual_verification(message).as_deref(),
+            Some("https://send.now/abc123")
+        );
+        assert!(parse_sendnow_manual_verification("403 Forbidden").is_none());
     }
 }

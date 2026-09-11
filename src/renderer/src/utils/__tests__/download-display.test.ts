@@ -85,6 +85,7 @@ describe('download-display helpers', () => {
   it('classifica errorKind e marca countdown só quando necessário', () => {
     const now = 10_000
     expect(resolveErrorKind(makeItem({ errorKind: 'premium' }))).toBe('premium')
+    expect(resolveErrorKind(makeItem({ errorKind: 'authentication' }))).toBe('authentication')
     expect(resolveErrorKind(makeItem({ status: DownloadStatus.Corrupted }))).toBe('integrity')
     expect(resolveErrorKind(makeItem({ status: DownloadStatus.Error, error: 'Arquivo não localizado' }))).toBe(
       'removed',

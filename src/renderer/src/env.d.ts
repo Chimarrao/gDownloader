@@ -253,6 +253,17 @@ interface RendererApi {
     }) => Promise<string | null>
     submit: (id: string, token: string) => Promise<void>
   }
+  turnstile: {
+    statusAll: () => Promise<Array<{ id: string; name: string; version: string | null; state: string }>>
+    status: (id: string) => Promise<unknown>
+    checkUpdate: (id: string) => Promise<unknown>
+    update: (id: string) => Promise<unknown>
+    ensureReady: (id: string) => Promise<unknown>
+    solve: (params: { sitekey: string; pageurl: string; proxy?: string; timeoutMs?: number }) => Promise<{ token: string }>
+    onProgress: (
+      cb: (e: { solverId: string; bytesDownloaded: number; totalBytes: number; stage: string }) => void,
+    ) => () => void
+  }
   mirrors: {
     search: (filename: string) => Promise<void>
     abort: () => void

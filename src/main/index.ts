@@ -25,8 +25,9 @@ import {
   type PersistedHistoryItem,
 } from './app-storage'
 import { createAkiraboxService } from './akirabox-service'
-import { createBackendRuntime } from './backend-runtime'
+import { createBackendRuntime, createGoRuntime } from './backend-runtime'
 import { HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
+import { createSendNowService } from './sendnow-service'
 import { createCaptchaWindowService } from './captcha-window-service'
 import { logMain } from './debug-log'
 import { createKatfileService } from './katfile-service'
@@ -35,6 +36,7 @@ import { assertSafeFilesystemPath, assertSafeHttpUrl } from './path-safety'
 import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
 import { createYtdlpService } from './ytdlp-service'
 import { createFfmpegService } from './ffmpeg-service'
+import { createTurnstileService } from './turnstile-service'
 import { randomBytes } from 'crypto'
 
 const legacySettingsPaths = [
@@ -427,8 +429,10 @@ async function solveCaptchaWithNopecha(params: {
 }
 
 let rustPort: number | null = null
+let goPort: number | null = null
 let ytdlpService: ReturnType<typeof createYtdlpService> | null = null
 let ffmpegService: ReturnType<typeof createFfmpegService> | null = null
+let turnstileService: ReturnType<typeof createTurnstileService> | null = null
 let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
 let lastClipboardText = ''
 let lastClipboardSignature = ''
@@ -448,6 +452,7 @@ const backendRuntime = createBackendRuntime({
       TERABOX_PROXY_PORT: String(teraboxProxyPort),
       AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
       KATFILE_PROXY_PORT: String(teraboxProxyPort),
+      SENDNOW_PROXY_PORT: String(teraboxProxyPort),
       GDOWNLOADER_HELPER_TOKEN: helperProxyToken,
       GDOWNLOADER_DB_PATH: dbPath,
       GDOWNLOADER_YTDLP_BIN: ytdlpBin,
@@ -457,9 +462,6 @@ const backendRuntime = createBackendRuntime({
     }
   },
   onStdErr: (message) => {
-    // O backend já grava seu próprio arquivo de logs. Não duplicamos cada linha
-    // em electron.log nem no terminal; erros de inicialização continuam visíveis
-    // pela rejeição de start() e pelos logs do backend.
     void message
   },
   onRestarted: async (port) => {
@@ -473,6 +475,33 @@ const backendRuntime = createBackendRuntime({
   },
 })
 
+const goRuntime = createGoRuntime({
+  dbPath: getDatabasePath(),
+  createEnv: (dbPath) => {
+    const settings = storage.getPublicSettings()
+    const ytdlpBin = ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? '') ?? 'yt-dlp'
+    const ffmpegBin = ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? '') ?? ''
+    return {
+      ...process.env,
+      GDOWNLOADER_DB_PATH: dbPath,
+      GDOWNLOADER_YTDLP_BIN: ytdlpBin,
+      GDOWNLOADER_FFMPEG_BIN: ffmpegBin,
+      TERABOX_PROXY_PORT: String(teraboxProxyPort),
+      AKIRABOX_PROXY_PORT: String(teraboxProxyPort),
+      KATFILE_PROXY_PORT: String(teraboxProxyPort),
+      SENDNOW_PROXY_PORT: String(teraboxProxyPort),
+      GDOWNLOADER_HELPER_TOKEN: helperProxyToken,
+    }
+  },
+  onStdErr: (message) => {
+    void message
+  },
+  onRestarted: async (port) => {
+    goPort = port
+    logMain('go', 'Go sidecar reiniciado', { port })
+  },
+})
+
 const teraboxService = createTeraboxService({
   readAccount: () => storage.getTeraboxAccount(),
   saveAccount: persistTeraboxAccount,
@@ -481,7 +510,9 @@ const akiraboxService = createAkiraboxService({
   solveCaptcha: solveCaptchaWithNopecha,
 })
 const captchaWindowService = createCaptchaWindowService()
-const katfileService = createKatfileService()
+// Katfile will be re-wired after turnstileService is ready (needs circular dep avoidance)
+let katfileService: ReturnType<typeof createKatfileService> = createKatfileService() as never
+const sendnowService = createSendNowService()
 
 function runCommand(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -1364,6 +1395,26 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // A janela principal é um aplicativo, não uma aba de navegador. Mantemos
+  // F12 livre para depuração, mas anulamos apenas os atalhos de navegador
+  // (zoom, reload e histórico), sem interferir em copiar/colar ou atalhos do
+  // sistema usados pelos campos de texto.
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') return
+
+    const key = input.key.toLowerCase()
+    const commandOrControl = input.control || input.meta
+    const browserShortcut = commandOrControl && ['+', '=', '-', '_', '0', 'r', 'l', '[', ']'].includes(key)
+    const historyShortcut = input.alt && ['left', 'right'].includes(key)
+    const devToolsShortcut = commandOrControl && input.alt && key === 'i'
+
+    if (browserShortcut || historyShortcut || devToolsShortcut) {
+      event.preventDefault()
+    }
+  })
+  void win.webContents.setVisualZoomLevelLimits(1, 1)
+  win.webContents.setZoomFactor(1)
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -1406,6 +1457,52 @@ async function ensureTorRunningForIsolation(): Promise<{ running: boolean; port:
 app.whenReady().then(async () => {
   ytdlpService = createYtdlpService(app.getPath('userData'))
   ffmpegService = createFfmpegService(app.getPath('userData'))
+  turnstileService = createTurnstileService(app.getPath('userData'))
+  // Rewire Katfile to use Turnstile solvers (1,2,3,4) com Tor isolado — como yt-dlp auto-update
+  katfileService = createKatfileService({
+    turnstile: turnstileService
+      ? {
+          solve: async (req) => {
+            const settings = storage.getPublicSettings()
+            if (settings.turnstileEnabled === false) throw new Error('Turnstile desativado')
+            // Proxy isolado por solve (IsolateSOCKSAuth) — mesmo padrão do Tor per_file
+            let proxy = req.proxy
+            if (!proxy) {
+              if (settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
+                const user = `gdl-katfile-${Date.now() % 10000}`
+                proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
+              } else {
+                const endpoint = await detectTorEndpoint().catch(() => null)
+                if (endpoint) {
+                  const user = `gdl-katfile-${Date.now() % 10000}`
+                  proxy = `socks5://${user}:pass@127.0.0.1:${endpoint.port}`
+                }
+              }
+            }
+            const order = (settings.turnstileSolverOrder as import('./turnstile-service').TurnstileSolverId[]) || undefined
+            return turnstileService!.solve({ sitekey: req.sitekey, pageurl: req.pageurl, proxy, timeoutMs: req.timeoutMs, solverOrder: order })
+          },
+        }
+      : undefined,
+    getProxy: async () => {
+      const settings = storage.getPublicSettings()
+      if (settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
+        const user = `gdl-katfile-${Date.now() % 10000}`
+        return `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
+      }
+      // O Katfile bloqueia downloads gratuitos por IP ("Delay between free
+      // downloads must be not less than 120 minutes"). Sem Tor, só o 1º item
+      // da fila baixa de verdade por sessão de 2h — mas o Tor só é usado se o
+      // usuário já ligou ele manualmente (botão "Tor" na barra); não ligamos
+      // sozinhos, é uma decisão do usuário.
+      const endpoint = await detectTorEndpoint().catch(() => null)
+      if (endpoint) {
+        const user = `gdl-katfile-${Date.now() % 10000}`
+        return `socks5://${user}:pass@127.0.0.1:${endpoint.port}`
+      }
+      return undefined
+    },
+  })
   app.setName('gDownloader')
   electronApp.setAppUserModelId('com.gdownloader')
 
@@ -1415,6 +1512,7 @@ app.whenReady().then(async () => {
 
   // IPC: porta do backend Rust
   ipcMain.handle('backend:getPort', () => rustPort)
+  ipcMain.handle('backend:getGoPort', () => goPort)
   ipcMain.handle('terabox:getProxyPort', () => teraboxProxyPort)
 
   // IPC: shell (paths validados — evita open/show arbitrário via XSS no renderer)
@@ -1855,6 +1953,45 @@ app.whenReady().then(async () => {
     return result
   })
 
+  // IPC: turnstile solvers (ezsolver/icemellow/surafelabeje/flaresolverr) — atualizável como yt-dlp
+  ipcMain.handle('turnstile:statusAll', () => turnstileService?.getAllStatuses() ?? [])
+  ipcMain.handle('turnstile:status', (_e, id: string) => turnstileService?.getStatus(id as never) ?? null)
+  ipcMain.handle('turnstile:checkUpdate', async (_e, id: string) => {
+    if (!turnstileService) return null
+    return turnstileService.checkUpdate(id as never)
+  })
+  ipcMain.handle('turnstile:update', async (_e, id: string) => {
+    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
+    const result = await turnstileService.updateSolver(id as never)
+    logMain('turnstile', `Solver ${id} atualizado`, result)
+    return result
+  })
+  ipcMain.handle('turnstile:ensureReady', async (_e, id: string) => {
+    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
+    await turnstileService.ensureReady(id as never, true)
+    return turnstileService.getStatus(id as never)
+  })
+  ipcMain.handle('turnstile:solve', async (_e, params: { sitekey: string; pageurl: string; proxy?: string; timeoutMs?: number }) => {
+    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
+    const settings = storage.getPublicSettings()
+    if (settings.turnstileEnabled === false) throw new Error('Solver Turnstile desativado nas configurações')
+    // Monta proxy Tor se estiver em modo Tor isolado ou global
+    let proxy = params.proxy
+    if (!proxy && settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
+      const user = `gdl-turnstile-${Date.now() % 10000}`
+      proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
+    } else if (!proxy) {
+      // Tenta usar porta Tor isolada do backendRuntime (sem alterar proxy global)
+      const torPort = await detectTorEndpoint().then((e) => e?.port).catch(() => null)
+      if (torPort) {
+        const user = `gdl-turnstile-${Date.now() % 10000}`
+        proxy = `socks5://${user}:pass@127.0.0.1:${torPort}`
+      }
+    }
+    const order = (settings.turnstileSolverOrder as never) || undefined
+    return turnstileService.solve({ sitekey: params.sitekey, pageurl: params.pageurl, proxy, timeoutMs: params.timeoutMs ?? 45000, solverOrder: order })
+  })
+
   // IPC: tray stats update
   ipcMain.on(
     'tray:update-stats',
@@ -1917,8 +2054,10 @@ app.whenReady().then(async () => {
             ? await teraboxService.handleAction(body)
             : body.action?.startsWith('akirabox_')
               ? await akiraboxService.handleAction(body)
-              : body.action?.startsWith('katfile_')
+            : body.action?.startsWith('katfile_')
                 ? await katfileService.handleAction(body)
+                : body.action?.startsWith('sendnow_')
+                  ? await sendnowService.handleAction(body)
                 : await teraboxNetRequest({
                     url: body.url ?? '',
                     method: body.method,
@@ -1927,6 +2066,9 @@ app.whenReady().then(async () => {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(result))
         } catch (e) {
+          logMain('helper-proxy', 'Falha ao processar ação local', {
+            error: String(e),
+          })
           res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: String(e) }))
         }
@@ -1943,6 +2085,15 @@ app.whenReady().then(async () => {
   // Inicia o backend Rust antes de abrir a janela
   try {
     rustPort = await backendRuntime.start()
+    // Inicia Go sidecar para os 6 módulos migrados (migrations, models, config, captcha, health, history)
+    // Go compartilha o mesmo SQLite em WAL, então Rust+Go coexistem no mesmo arquivo
+    try {
+      goPort = await goRuntime.start()
+      logMain('go', 'Go sidecar pronto', { goPort })
+    } catch (err) {
+      logMain('go', 'Go sidecar falhou, Rust continua como fallback', err)
+      // Não falha o app se Go não subir — Rust ainda serve as rotas legadas
+    }
     // Inicia download/atualização do yt-dlp em background (não bloqueia)
     if (ytdlpService) {
       const settingsForYtdlp = storage.getPublicSettings()
@@ -1967,6 +2118,18 @@ app.whenReady().then(async () => {
       })
       void ffmpegService.ensureReady(settingsForFfmpeg.ffmpegBinPath ?? '').catch((err) => {
         logMain('ffmpeg', 'Falha ao detectar ffmpeg', err)
+      })
+    }
+    // Solver universal 1,2,3,4 — atualizável como yt-dlp, auto-pull de novos via manifest
+    if (turnstileService) {
+      const settingsForSolver = storage.getPublicSettings()
+      turnstileService.onProgress((e) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          win.webContents.send('turnstile:progress', e)
+        }
+      })
+      void turnstileService.ensureAllReady(settingsForSolver.turnstileAutoUpdate ?? true).catch((err) => {
+        logMain('turnstile', 'Falha ao garantir solvers prontos', err)
       })
     }
     await loadPublicSettings()

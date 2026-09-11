@@ -17,12 +17,38 @@ function getRustBinaryName(): string {
   return process.platform === 'win32' ? 'gdownloader-backend.exe' : 'gdownloader-backend'
 }
 
+function getGoBinaryName(): string {
+  return process.platform === 'win32' ? 'gdownloader-go.exe' : 'gdownloader-go'
+}
+
 export function getRustBinaryPath(): string {
   const binaryName = getRustBinaryName()
   if (!app.isPackaged) {
     const localCandidates = [
       join(__dirname, '../../backend/target/debug', binaryName),
       join(__dirname, '../../backend/target/release', binaryName),
+    ]
+      .filter((candidate) => existsSync(candidate))
+      .sort((left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs)
+
+    if (localCandidates.length > 0) {
+      return localCandidates[0]
+    }
+  }
+
+  return join(process.resourcesPath, binaryName)
+}
+
+export function getGoBinaryPath(): string {
+  const binaryName = getGoBinaryName()
+  if (!app.isPackaged) {
+    const localCandidates = [
+      join(__dirname, '../../backend-go/bin', binaryName),
+      join(__dirname, '../../backend-go', binaryName),
+      join(__dirname, '../backend-go/bin', binaryName),
+      join(__dirname, '../../out', binaryName),
+      join(__dirname, '../out', binaryName),
+      '/tmp/gdownloader-go',
     ]
       .filter((candidate) => existsSync(candidate))
       .sort((left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs)
@@ -203,6 +229,157 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
 
   // Reinício forçado (a pedido, ex.: após instalar ffmpeg para reinjetar a env):
   // encerra o processo atual e sobe outro com o ambiente novo.
+  async function forceRestart(): Promise<number> {
+    stop()
+    return start()
+  }
+
+  return {
+    getPort,
+    markQuitting,
+    start,
+    stop,
+    forceRestart,
+  }
+}
+
+// Go sidecar para os 6 módulos migrados (migrations, models, config, captcha, health, history)
+// Build: cd backend-go && go build -o ../out/gdownloader-go .  (ou ../backend/target/debug/gdownloader-go)
+// O Go compartilha o mesmo SQLite em WAL, então Rust+Go podem coexistir no mesmo arquivo.
+export function createGoRuntime(options: BackendRuntimeOptions) {
+  let backend: ChildProcess | null = null
+  let port: number | null = null
+  let startPromise: Promise<number> | null = null
+  let appIsQuitting = false
+
+  function getPort(): number | null {
+    return port
+  }
+  function markQuitting(): void {
+    appIsQuitting = true
+  }
+  function stop(): void {
+    startPromise = null
+    if (backend) {
+      logMain('go-runtime', 'Encerrando Go sidecar')
+      backend.kill()
+      backend = null
+    }
+    port = null
+  }
+
+  async function start(): Promise<number> {
+    if (port && backend) return port
+    if (startPromise) return startPromise
+    startPromise = new Promise((resolve, reject) => {
+      const binaryPath = getGoBinaryPath()
+      if (!existsSync(binaryPath)) {
+        logMain('go-runtime', 'Binário Go não encontrado, tentando go run', { binaryPath })
+        // Fallback: tenta go run direto (dev sem build)
+        const goBinary = spawn('go', ['run', '.', options.dbPath], {
+          cwd: join(__dirname, '../../backend-go'),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: options.createEnv(options.dbPath),
+        })
+        backend = goBinary
+        let settled = false
+        let stdoutBuffer = ''
+        const startupTimeout = setTimeout(() => {
+          if (!settled) {
+            settled = true
+            reject(new Error(`Timeout Go sidecar`))
+          }
+        }, options.startupTimeoutMs ?? 15000)
+        goBinary.stdout?.on('data', (data: Buffer) => {
+          stdoutBuffer += data.toString()
+          const readyPort = parseRustReadyPort(stdoutBuffer)
+          if (readyPort && !settled) {
+            settled = true
+            port = readyPort
+            clearTimeout(startupTimeout)
+            logMain('go-runtime', 'Go sidecar pronto (go run)', { port: readyPort })
+            resolve(readyPort)
+          }
+        })
+        goBinary.stderr?.on('data', (data: Buffer) => {
+          logMain('go-runtime', 'stderr Go', data.toString().trim())
+        })
+        goBinary.on('error', (error) => {
+          clearTimeout(startupTimeout)
+          startPromise = null
+          if (!settled) {
+            settled = true
+            reject(error)
+          }
+        })
+        goBinary.on('exit', (code) => {
+          clearTimeout(startupTimeout)
+          backend = null
+          port = null
+          startPromise = null
+          if (!settled) {
+            settled = true
+            reject(new Error(`Go sidecar saiu antes de pronto (código ${code})`))
+          }
+        })
+        return
+      }
+      logMain('go-runtime', 'Iniciando Go sidecar', { binaryPath, dbPath: options.dbPath })
+      backend = spawn(binaryPath, [options.dbPath], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: options.createEnv(options.dbPath),
+      })
+      let settled = false
+      let stdoutBuffer = ''
+      const startupTimeout = setTimeout(() => {
+        if (!settled) {
+          settled = true
+          reject(new Error(`Timeout Go sidecar`))
+        }
+      }, options.startupTimeoutMs ?? 15000)
+      backend.stdout?.on('data', (data: Buffer) => {
+        stdoutBuffer += data.toString()
+        const readyPort = parseRustReadyPort(stdoutBuffer)
+        if (readyPort && !settled) {
+          settled = true
+          port = readyPort
+          clearTimeout(startupTimeout)
+          logMain('go-runtime', 'Go sidecar pronto', { port: readyPort })
+          resolve(readyPort)
+        }
+      })
+      backend.stderr?.on('data', (data: Buffer) => {
+        logMain('go-runtime', 'stderr Go', data.toString().trim())
+        options.onStdErr?.(data.toString().trim())
+      })
+      backend.on('error', (error) => {
+        clearTimeout(startupTimeout)
+        startPromise = null
+        if (!settled) {
+          settled = true
+          reject(error)
+        }
+      })
+      backend.on('exit', (code) => {
+        clearTimeout(startupTimeout)
+        backend = null
+        port = null
+        startPromise = null
+        if (!settled) {
+          settled = true
+          reject(new Error(`Go sidecar encerrou antes de pronto (código ${code})`))
+          return
+        }
+        if (!appIsQuitting) {
+          logMain('go-runtime', 'Go sidecar encerrou, não reinicia automático (Rust é primário)')
+        }
+      })
+    })
+    return startPromise.finally(() => {
+      startPromise = null
+    })
+  }
+
   async function forceRestart(): Promise<number> {
     stop()
     return start()

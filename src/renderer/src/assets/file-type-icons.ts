@@ -46,6 +46,10 @@ const APP_ICONS: Record<string, string> = {
   subtitle: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="5" y="11" width="38" height="26" rx="5" fill="#455a64"/><rect x="10" y="26" width="13" height="4" rx="2" fill="#fff176"/><rect x="26" y="26" width="12" height="4" rx="2" fill="#fff176"/><rect x="10" y="19" width="8" height="3.5" rx="1.75" fill="#b0bec5"/><rect x="21" y="19" width="17" height="3.5" rx="1.75" fill="#b0bec5"/></svg>`,
 }
 
+// Cone do VLC, usado como referência visual para todos os formatos de vídeo.
+// Mantemos o SVG leve para ele continuar nítido também nas linhas compactas.
+APP_ICONS.video = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="VLC"><path fill="#f57c00" d="M14 39h20l-2.4-8H16.4z"/><path fill="#ff8f00" d="M18.2 28h11.6l-2.3-8h-7z"/><path fill="#fb8c00" d="M21 20h6l-2.1-8h-1.8z"/><path fill="#fff" d="M19.6 20h8.8l1.15 4H18.45zM17.2 29h13.6l1.2 4H16z"/><path fill="#e65100" d="M12 39h24a2 2 0 0 1 2 2v2H10v-2a2 2 0 0 1 2-2z"/><path fill="#424242" d="M15 43h18v2H15z"/><path fill="#ffe0b2" d="M23.1 7h1.8l1.25 5h-4.3z"/></svg>`
+
 // Extensão → chave de ícone.
 const EXT_TO_APP: Record<string, string> = {
   // Vídeo

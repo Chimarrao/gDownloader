@@ -8,10 +8,15 @@ use tracing::{debug, info, warn};
 use crate::models::{FileChildInfo, FileInfo};
 use super::{
     apply_speed_limit, capabilities_for_provider_name, extract_wait_seconds_from_text,
-    rate_limit_error, unsupported_error, ProgressUpdate, Provider, ProviderDefaults,
+    rate_limit_error, ProgressUpdate, Provider, ProviderDefaults,
 };
 
 pub struct FichierProvider;
+
+/// Janela máxima local para um URL final. O servidor continua sendo a fonte de
+/// verdade: antes de escrever qualquer byte, o link salvo precisa responder como
+/// arquivo binário; caso contrário é descartado e o fluxo normal é retomado.
+const RESOLVED_LINK_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
 impl FichierProvider {
     pub fn matches(url: &str) -> bool {
@@ -229,13 +234,154 @@ impl FichierProvider {
             .collect()
     }
 
+    fn load_cached_direct_link(db_path: Option<&str>, page_url: &str) -> Option<String> {
+        let db_path = db_path?;
+        let conn = rusqlite::Connection::open(db_path).ok()?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+        crate::db::load_resolved_download_link(&conn, "fichier", page_url)
+            .ok()
+            .flatten()
+    }
+
+    fn save_cached_direct_link(db_path: Option<&str>, page_url: &str, direct_url: &str) {
+        let Some(db_path) = db_path else { return; };
+        let Ok(conn) = rusqlite::Connection::open(db_path) else { return; };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let _ = crate::db::save_resolved_download_link(
+            &conn,
+            "fichier",
+            page_url,
+            direct_url,
+            Some(page_url),
+            now.saturating_add(RESOLVED_LINK_CACHE_TTL_SECS),
+        );
+    }
+
+    fn touch_cached_direct_link(db_path: Option<&str>, page_url: &str) {
+        let Some(db_path) = db_path else { return; };
+        let Ok(conn) = rusqlite::Connection::open(db_path) else { return; };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+        let _ = crate::db::touch_resolved_download_link(&conn, "fichier", page_url);
+    }
+
+    fn remove_cached_direct_link(db_path: Option<&str>, page_url: &str) {
+        let Some(db_path) = db_path else { return; };
+        let Ok(conn) = rusqlite::Connection::open(db_path) else { return; };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+        let _ = crate::db::delete_resolved_download_link(&conn, "fichier", page_url);
+    }
+
+    fn cached_link_is_invalid(error: &anyhow::Error) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("link temporário não retornou arquivo binário")
+            || message.contains("401 unauthorized")
+            || message.contains("403 forbidden")
+            || message.contains("404 not found")
+            || message.contains("410 gone")
+    }
+
+    async fn stream_direct_link(
+        client: &reqwest::Client,
+        direct_url: &str,
+        page_url: &str,
+        dest_path: &str,
+        speed_limit_bps: super::SpeedLimitBps,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+    ) -> Result<u64> {
+        // Resume: se já existe um arquivo parcial no disco (retomada após pausa ou
+        // queda de conexão), pede só o que falta via Range e continua de onde parou.
+        let existing = tokio::fs::metadata(dest_path)
+            .await
+            .ok()
+            .filter(|meta| meta.is_file())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        let mut request = client.get(direct_url).header("Referer", page_url);
+        if existing > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        }
+        let resp = request.send().await?;
+        // Arquivo já estava completo (o servidor rejeita o Range além do fim): pronto.
+        if existing > 0 && resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok(existing);
+        }
+        let resp = resp.error_for_status()?;
+        // Um token vencido pode responder uma página HTML com HTTP 200. Não a
+        // gravamos como arquivo: o chamador descarta esse token e gera outro.
+        if !Self::is_binary_response(&resp) {
+            return Err(anyhow!("Link temporário não retornou arquivo binário"));
+        }
+        // Só retoma se o servidor confirmou o Range (206). Senão, começa do zero.
+        let resume_from = if existing > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            existing
+        } else {
+            0
+        };
+        Self::stream_response_to_file(resp, dest_path, resume_from, speed_limit_bps, progress_tx).await
+    }
+
+    async fn try_cached_direct_link(
+        client: &reqwest::Client,
+        page_url: &str,
+        dest_path: &str,
+        speed_limit_bps: super::SpeedLimitBps,
+        progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+        db_path: Option<&str>,
+    ) -> Result<Option<u64>> {
+        let Some(direct_url) = Self::load_cached_direct_link(db_path, page_url) else {
+            return Ok(None);
+        };
+
+        info!(target: "gdownloader_backend::providers::1fichier", "1Fichier reutilizando link temporário salvo: {}", page_url);
+        match Self::stream_direct_link(
+            client,
+            &direct_url,
+            page_url,
+            dest_path,
+            speed_limit_bps,
+            progress_tx,
+        )
+        .await
+        {
+            Ok(bytes) => {
+                Self::touch_cached_direct_link(db_path, page_url);
+                Ok(Some(bytes))
+            }
+            Err(error) if Self::cached_link_is_invalid(&error) => {
+                warn!(target: "gdownloader_backend::providers::1fichier", "1Fichier link temporário expirado/inválido; voltando ao fluxo do host: {}", page_url);
+                Self::remove_cached_direct_link(db_path, page_url);
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn download_single_file(
         client: &reqwest::Client,
         page_url: &str,
         dest_path: &str,
         speed_limit_bps: super::SpeedLimitBps,
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
+        db_path: Option<&str>,
     ) -> Result<u64> {
+        if let Some(bytes) = Self::try_cached_direct_link(
+            client,
+            page_url,
+            dest_path,
+            speed_limit_bps.clone(),
+            progress_tx.clone(),
+            db_path,
+        )
+        .await?
+        {
+            return Ok(bytes);
+        }
+
         info!(target: "gdownloader_backend::providers::1fichier", "1Fichier abrindo landing page: {}", page_url);
         let landing = client.get(page_url).send().await?.error_for_status()?.text().await?;
 
@@ -282,36 +428,29 @@ impl FichierProvider {
             return Err(Self::free_slot_error());
         }
 
-        let direct_url = Self::extract_direct_link(&html)
-            .ok_or_else(|| unsupported_error("1Fichier"))?;
+        if let Some(secs) = Self::extract_wait_seconds(&html).filter(|secs| *secs > 0) {
+            return Err(rate_limit_error(
+                secs.max(60),
+                format!("1Fichier: o host pediu aguardar {} segundos antes de liberar o link", secs),
+            ));
+        }
+
+        let direct_url = Self::extract_direct_link(&html).ok_or_else(|| {
+            // O 1Fichier pode devolver uma página HTTP 200 sem botão quando o
+            // slot recém-criado ainda está em cooldown. Isso não é um link
+            // incompatível: preservar o parcial e tentar depois é mais seguro
+            // do que encerrar o download e forçar a geração de outro token.
+            let cooldown = capabilities_for_provider_name("1Fichier")
+                .free_cooldown_secs
+                .unwrap_or(300);
+            rate_limit_error(
+                cooldown,
+                "1Fichier ainda não disponibilizou o link temporário. O parcial foi preservado e a fila vai tentar novamente após o cooldown.",
+            )
+        })?;
         info!(target: "gdownloader_backend::providers::1fichier", "1Fichier link final extraído para {}", page_url);
-
-        // Resume: se já existe um arquivo parcial no disco (retomada após pausa ou
-        // queda de conexão), pede só o que falta via Range e continua de onde parou.
-        let existing = tokio::fs::metadata(dest_path)
-            .await
-            .ok()
-            .filter(|meta| meta.is_file())
-            .map(|meta| meta.len())
-            .unwrap_or(0);
-
-        let mut request = client.get(&direct_url).header("Referer", page_url);
-        if existing > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
-        }
-        let resp = request.send().await?;
-        // Arquivo já estava completo (o servidor rejeita o Range além do fim): pronto.
-        if existing > 0 && resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            return Ok(existing);
-        }
-        let resp = resp.error_for_status()?;
-        // Só retoma se o servidor confirmou o Range (206). Senão, começa do zero.
-        let resume_from = if existing > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            existing
-        } else {
-            0
-        };
-        Self::stream_response_to_file(resp, dest_path, resume_from, speed_limit_bps, progress_tx).await
+        Self::save_cached_direct_link(db_path, page_url, &direct_url);
+        Self::stream_direct_link(client, &direct_url, page_url, dest_path, speed_limit_bps, progress_tx).await
     }
 
     async fn stream_response_to_file(
@@ -536,6 +675,10 @@ impl Provider for FichierProvider {
             let page_url = Self::extract_download_page(url)
                 .ok_or_else(|| anyhow!("URL do 1fichier inválida: {url}"))?;
             let client = <Self as ProviderDefaults>::http_client()?;
+            let cache_db_path = super::TASK_DB_PATH
+                .try_with(Clone::clone)
+                .ok()
+                .flatten();
             info!(target: "gdownloader_backend::providers::1fichier", "1Fichier iniciando download: {}", page_url);
             let landing = client.get(&page_url).send().await?.error_for_status()?.text().await?;
 
@@ -603,9 +746,18 @@ impl Provider for FichierProvider {
                         .unwrap_or_else(|_| client.clone());
                     let child_speed_limit = speed_limit_bps.clone();
                     let child_dest = output_path.clone();
+                    let child_cache_db_path = cache_db_path.clone();
 
                     let child_task = tokio::spawn(async move {
-                        Self::download_single_file(&child_client, &child_url, &child_dest, child_speed_limit, child_tx).await
+                        Self::download_single_file(
+                            &child_client,
+                            &child_url,
+                            &child_dest,
+                            child_speed_limit,
+                            child_tx,
+                            child_cache_db_path.as_deref(),
+                        )
+                        .await
                     });
 
                     while let Some(update) = child_rx.recv().await {
@@ -644,7 +796,15 @@ impl Provider for FichierProvider {
                 return Ok(downloaded_total);
             }
 
-            Self::download_single_file(&client, &page_url, dest_path, speed_limit_bps, progress_tx).await
+            Self::download_single_file(
+                &client,
+                &page_url,
+                dest_path,
+                speed_limit_bps,
+                progress_tx,
+                cache_db_path.as_deref(),
+            )
+            .await
         })
     }
 }

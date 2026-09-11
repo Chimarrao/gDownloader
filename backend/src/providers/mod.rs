@@ -32,6 +32,13 @@ tokio::task_local! {
     static TASK_PROXY: ProxyConfig;
 }
 
+// Caminho do SQLite associado à execução atual. Providers que recebem URLs
+// finais temporários podem guardar esse estado sem transformá-lo em variável
+// global e sem misturar bancos de testes/instâncias diferentes.
+tokio::task_local! {
+    static TASK_DB_PATH: Option<String>;
+}
+
 pub fn update_global_proxy(mode: String, host: String, port: u16, username: Option<String>, password: Option<String>) {
     let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
     if let Ok(mut proxy) = lock.write() {
@@ -50,6 +57,7 @@ pub mod brupload;
 pub mod brfiles;
 pub mod moondl;
 pub mod akirabox;
+pub mod archive;
 pub mod katfile;
 pub mod direct_http;
 pub mod mediafire;
@@ -59,6 +67,7 @@ pub mod pixeldrain;
 pub mod sharepoint;
 pub mod terabox;
 pub mod transferit;
+pub mod sendnow;
 pub mod youtube;
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -259,6 +268,8 @@ pub fn all_provider_descriptors() -> Vec<ProviderDescriptor> {
         ("Katfile", "#2563eb"),
         ("Terabox", "#2a6df5"),
         ("Transfer.it", "#1D81FF"),
+        ("Send.now", "#d9ecff"),
+        ("Internet Archive", "#5d6472"),
         ("YouTube", "#FF0000"),
         ("OneDrive", "#0a66d9"),
         ("Direct HTTP", "#0f766e"),
@@ -818,6 +829,7 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         progress_tx: tokio::sync::mpsc::Sender<ProgressUpdate>,
         context: DownloadContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>> {
+        let db_path = context.db_path;
         let proxy = ProxyConfig {
             mode: context.proxy_mode,
             host: context.proxy_host,
@@ -828,13 +840,16 @@ pub trait Provider: Send + Sync + ProviderDefaults {
         Box::pin(async move {
             TASK_PROXY.scope(
                 proxy,
-                self.download(
-                    url,
-                    dest_path,
-                    speed_limit_bps,
-                    parallel_parts,
-                    selected_children,
-                    progress_tx,
+                TASK_DB_PATH.scope(
+                    db_path,
+                    self.download(
+                        url,
+                        dest_path,
+                        speed_limit_bps,
+                        parallel_parts,
+                        selected_children,
+                        progress_tx,
+                    ),
                 ),
             ).await
         })
@@ -879,9 +894,18 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
             max_parallel_downloads_free: Some(1),
             ..ProviderCapabilities::default()
         },
-        "MediaFire" | "Mega" => ProviderCapabilities {
+        "MediaFire" => ProviderCapabilities {
             supports_folder: true,
-            free_cooldown_secs: if name == "Mega" { Some(30 * 60) } else { None },
+            ..ProviderCapabilities::default()
+        },
+        // A cota gratuita do Mega é compartilhada pela rota/IP. Abrir dois
+        // streams em paralelo faz um deles receber 509 enquanto o outro pode
+        // ter passado na corrida inicial do servidor. Mantemos um único stream
+        // por vez; a fila continua usando os outros hosts normalmente.
+        "Mega" => ProviderCapabilities {
+            supports_folder: true,
+            max_parallel_downloads_free: Some(1),
+            free_cooldown_secs: Some(30 * 60),
             ..ProviderCapabilities::default()
         },
         "Google Drive" => ProviderCapabilities {
@@ -891,6 +915,15 @@ pub fn capabilities_for_provider_name(name: &str) -> ProviderCapabilities {
         "YouTube" => ProviderCapabilities {
             supports_folder: true,
             supports_parallel_parts: false,
+            ..ProviderCapabilities::default()
+        },
+        "Send.now" => ProviderCapabilities {
+            supports_folder: true,
+            supports_parallel_parts: false,
+            ..ProviderCapabilities::default()
+        },
+        "Internet Archive" => ProviderCapabilities {
+            supports_folder: true,
             ..ProviderCapabilities::default()
         },
         "Rapidgator" => ProviderCapabilities {
@@ -926,6 +959,8 @@ pub fn provider_id_from_name(name: &str) -> &'static str {
         "Katfile" => "katfile",
         "Terabox" => "terabox",
         "Transfer.it" => "transferit",
+        "Send.now" => "sendnow",
+        "Internet Archive" => "internetarchive",
         "YouTube" => "youtube",
         "OneDrive" => "onedrive",
         "Direct HTTP" => "direct_http",
@@ -957,6 +992,12 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     }
     if transferit::TransferItProvider::matches(url) {
         return Some(Box::new(transferit::TransferItProvider));
+    }
+    if sendnow::SendNowProvider::matches(url) {
+        return Some(Box::new(sendnow::SendNowProvider));
+    }
+    if archive::InternetArchiveProvider::matches(url) {
+        return Some(Box::new(archive::InternetArchiveProvider));
     }
     if youtube::YouTubeProvider::matches(url) {
         return Some(Box::new(youtube::YouTubeProvider));

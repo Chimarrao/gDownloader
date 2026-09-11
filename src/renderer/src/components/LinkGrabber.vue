@@ -905,7 +905,7 @@ function sanitizeFolderName(name: string): string {
   return (
     name
       // eslint-disable-next-line no-control-regex
-      .replace(/[<>:"/\\|?* -]/g, '')
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
       .replace(/\s+/g, ' ')
       .trim() || 'pacote'
   )

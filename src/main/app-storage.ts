@@ -47,6 +47,10 @@ export const defaultPublicSettings: PersistedSettings = {
   ytdlpAutoUpdate: true,
   ytdlpBinPath: '',
   ffmpegBinPath: '',
+  turnstileAutoUpdate: true,
+  turnstileSolverOrder: ['icemellow', 'ezsolver', 'surafelabeje', 'flaresolverr'],
+  turnstilePreferredSolver: 'icemellow',
+  turnstileEnabled: true,
   remoteAccess: {
     enabled: false,
     allowLan: false,

@@ -61,6 +61,7 @@ export const ERROR_KIND_I18N_KEYS: Record<string, string> = {
   removed: 'errorKindRemoved',
   integrity: 'errorKindIntegrity',
   disk_full: 'errorKindDiskFull',
+  authentication: 'errorKindAuthentication',
   temporary: 'errorKindTemporary',
   permanent: 'errorKindPermanent',
 }
@@ -161,7 +162,7 @@ export function isWaitingRetry(item: DownloadItem, nowTick: number): boolean {
 
 /** True when the row needs a live clock (countdown / connecting stale speed). */
 export function itemNeedsCountdown(item: DownloadItem, nowTick: number): boolean {
-  if (item.status === DownloadStatus.RateLimited) return true
+  if (item.status === DownloadStatus.RateLimited) return item.errorKind === 'rate_limit_server'
   if (item.status === DownloadStatus.WaitingCaptcha) return true
   if (isWaitingRetry(item, nowTick)) return true
   if (item.status === DownloadStatus.Downloading) {
@@ -241,12 +242,15 @@ export function getDownloadActions(item: DownloadItem): Record<string, boolean> 
     || item.status === DownloadStatus.Corrupted
     || item.status === DownloadStatus.Cancelled
     || item.status === DownloadStatus.RateLimited
+    || item.status === DownloadStatus.WaitingCaptcha
     || item.status === DownloadStatus.DiskFull
 
   return {
     canPause: item.status === DownloadStatus.Pending || item.status === DownloadStatus.Downloading || item.status === DownloadStatus.Verifying,
     canResume: item.status === DownloadStatus.Paused,
-    canOpenCaptcha: item.status === DownloadStatus.WaitingCaptcha && Boolean(item.captchaSitekey),
+    canOpenCaptcha:
+      item.status === DownloadStatus.WaitingCaptcha
+      && (Boolean(item.captchaSitekey) || item.captchaType === 'manual'),
     canCancel:
       item.status === DownloadStatus.Pending
       || item.status === DownloadStatus.Downloading

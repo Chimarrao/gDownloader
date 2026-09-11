@@ -154,7 +154,7 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Usar cookies</span>
-          <span class="setting-desc">Usa cookies do navegador ou de um arquivo Netscape para videos restritos</span>
+          <span class="setting-desc">Tenta ler cookies do navegador. Para bloqueio anti-bot, prefira um arquivo Netscape exportado de uma sessão privada recém-autenticada.</span>
         </div>
         <label class="toggle">
           <input type="checkbox" v-model="settings.youtubeUseCookies" @change="save" />
@@ -182,7 +182,7 @@
       <div class="setting-row">
         <div class="setting-info">
           <span class="setting-label">Arquivo de cookies</span>
-          <span class="setting-desc">Opcional. Se preenchido, tem prioridade sobre cookies do navegador</span>
+          <span class="setting-desc">Recomendado para o YouTube: arquivo Netscape estável. Tem prioridade sobre cookies do navegador.</span>
         </div>
         <input
           v-model="settings.youtubeCookiesFile"

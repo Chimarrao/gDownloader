@@ -47,6 +47,10 @@ struct HelperJobStatus {
     total_bytes: u64,
     filename: Option<String>,
     error: Option<String>,
+    #[serde(default, rename = "solvingSolver")]
+    solving_solver: Option<String>,
+    #[serde(default, rename = "solvingStage")]
+    solving_stage: Option<String>,
 }
 
 pub struct KatfileProvider;
@@ -144,6 +148,25 @@ impl KatfileProvider {
 
         Ok(serde_json::from_value::<HelperJobStatus>(json)?)
     }
+
+    /// Chamado quando o usuário pausa/cancela um download do Katfile. Sem isso, o
+    /// helper Electron nunca fica sabendo que a task Rust foi abortada e continua
+    /// clicando/aguardando em segundo plano segurando a janela compartilhada —
+    /// travando todos os outros itens da fila do Katfile indefinidamente.
+    pub async fn cancel(dest_path: &str) -> Result<()> {
+        let _ = proxy_action(json!({
+            "action": "katfile_cancel",
+            "destPath": dest_path,
+        })).await;
+        Ok(())
+    }
+
+    /// A página pública do Katfile costuma exibir tamanho arredondado. Depois
+    /// de iniciar o download, o Chromium conhece o Content-Length exato; essa
+    /// é a referência autoritativa para progresso e validação.
+    fn authoritative_total_bytes(helper_total: u64, catalog_total: u64) -> u64 {
+        if helper_total > 0 { helper_total } else { catalog_total }
+    }
 }
 
 impl ProviderDefaults for KatfileProvider {}
@@ -201,29 +224,56 @@ impl Provider for KatfileProvider {
                 sleep(Duration::from_millis(500)).await;
                 let status = Self::helper_job_status(&job_id).await?;
 
-                let total_bytes = if expected_size > 0 {
-                    expected_size.max(status.total_bytes)
-                } else {
-                    status.total_bytes
-                };
-
-                let _ = progress_tx
-                    .send(ProgressUpdate {
-                        bytes_downloaded: status.bytes_downloaded,
-                        total_bytes,
-                        child_path: None,
-                        child_filename: status.filename.clone(),
-                        child_bytes_downloaded: None,
-                        child_total_bytes: None,
-                        child_speed_bps: None,
-                        child_eta_secs: None,
-                    })
-                    .await;
+                let total_bytes = Self::authoritative_total_bytes(status.total_bytes, expected_size);
 
                 match status.status.as_str() {
-                    "pending" | "downloading" => continue,
+                    // Universal solver: mostra "Resolvendo captcha com X..." e cai para manual se falhar (último caso).
+                    // Manda SÓ esta mensagem no tick (nunca junto com a "normal" abaixo) — mandar as duas no
+                    // mesmo tick fazia o consumidor em downloads.rs reverter WaitingCaptcha->Downloading e então
+                    // reaplicar WaitingCaptcha a cada 500ms, piscando o status e empilhando toast de captcha.
+                    // O status em si (waiting_captcha/downloading) é derivado só pelo consumidor em downloads.rs
+                    // a partir do child_path, não por escrita direta no SQLite aqui (que não teria broadcast).
+                    "solving_captcha" => {
+                        let stage = status
+                            .solving_stage
+                            .clone()
+                            .or(status.solving_solver.clone())
+                            .unwrap_or_else(|| "Resolvendo captcha...".to_string());
+                        let _ = progress_tx
+                            .send(ProgressUpdate {
+                                bytes_downloaded: status.bytes_downloaded,
+                                total_bytes,
+                                child_path: Some(format!("solver:{}", stage)),
+                                child_filename: status.filename.clone(),
+                                child_bytes_downloaded: None,
+                                child_total_bytes: None,
+                                child_speed_bps: None,
+                                child_eta_secs: None,
+                            })
+                            .await;
+                        continue;
+                    }
+                    "pending" | "downloading" => {
+                        let _ = progress_tx
+                            .send(ProgressUpdate {
+                                bytes_downloaded: status.bytes_downloaded,
+                                total_bytes,
+                                child_path: None,
+                                child_filename: status.filename.clone(),
+                                child_bytes_downloaded: None,
+                                child_total_bytes: None,
+                                child_speed_bps: None,
+                                child_eta_secs: None,
+                            })
+                            .await;
+                        continue;
+                    }
                     "complete" => {
-                        return Ok(status.bytes_downloaded.max(total_bytes));
+                        // A página pode anunciar “1.30 GB” para um arquivo de
+                        // tamanho real diferente. Só o byte efetivamente
+                        // escrito (ou o Content-Length do navegador) deve ser
+                        // passado à verificação de integridade.
+                        return Ok(status.bytes_downloaded.max(status.total_bytes));
                     }
                     "cancelled" => {
                         return Err(anyhow!("O navegador integrado do Katfile cancelou este download."));

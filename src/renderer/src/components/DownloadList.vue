@@ -107,6 +107,8 @@
         ref="itemsContainerRef"
         class="items-container"
         @scroll="onListScroll"
+        @dragover.prevent
+        @drop.self.prevent="dropOutsidePackage"
       >
       <div v-if="items.length > 0 || skeletonCount > 0" class="list-toolbar">
         <span class="list-count">
@@ -324,12 +326,36 @@
           :class="{ 'reorder-animate': reorderAnimations && !virtualizationEnabled }"
           :css="reorderAnimations && !virtualizationEnabled"
         >
+        <template v-for="item in visibleItems" :key="`${item.id}:${rowLayoutVersion}`">
         <div
-          v-for="item in visibleItems"
-          :key="`${item.id}:${rowLayoutVersion}`"
+          v-if="packageHeaderFor(item)"
+          class="package-parent-row"
+          :class="{ 'package-drop-target': packageDropTargetId === item.packageId }"
+          @dragover.prevent="markPackageDropTarget(item.packageId)"
+          @dragleave="clearPackageDropTarget(item.packageId)"
+          @drop.stop.prevent="dropIntoPackage(item.packageId!, $event)"
+        >
+          <span class="package-tree-stem" aria-hidden="true"><i class="pi pi-sitemap"></i></span>
+          <div
+            class="provider-icon package-parent-icon"
+            v-html="leadingIconSvg(item)"
+            :style="leadingIconStyle(item)"
+            :title="moduleLabel(item.moduleId)"
+          ></div>
+          <div class="package-parent-copy">
+            <strong>{{ packageNameFor(item) }}</strong>
+            <span>
+              {{ moduleLabel(item.moduleId) }} · {{ packageItemCount(item.packageId) }} arquivo(s)
+            </span>
+          </div>
+        </div>
+        <div
           v-memo="rowMemoKey(item)"
           class="download-card"
-          :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id) }]"
+          :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id), 'package-child-row': !!item.packageId }]"
+          draggable="true"
+          @dragstart="startPackageDrag(item, $event)"
+          @dragend="endPackageDrag"
           @contextmenu.prevent="openContextMenu(item, $event)"
           @click="toggleDetailsFromCard(item, $event)"
         >
@@ -344,7 +370,27 @@
           </label>
           <!-- Left: provider icon -->
           <div
-            v-if="hasColumn('host') && item.moduleId === 'youtube' && (item.thumbnailData || item.thumbnailUrl)"
+            v-if="item.packageId && hasColumn('host')"
+            class="provider-icon package-child-file-icon"
+            :title="fileTypeLabel(item)"
+          >
+            <span
+              v-if="childAppIcon(item.title || item.url)"
+              class="package-child-app-icon"
+              role="img"
+              :aria-label="fileTypeLabel(item)"
+              v-html="childAppIcon(item.title || item.url)?.svg"
+            ></span>
+            <span
+              v-else
+              class="child-icon package-child-fallback-icon"
+              :class="getFileIcon(item.title || item.url, undefined, item.isFolder).className"
+              role="img"
+              :aria-label="getFileIcon(item.title || item.url, undefined, item.isFolder).alt"
+            ></span>
+          </div>
+          <div
+            v-else-if="hasColumn('host') && item.moduleId === 'youtube' && (item.thumbnailData || item.thumbnailUrl)"
             class="provider-icon provider-icon-thumb"
             :title="moduleLabel(item.moduleId)"
           >
@@ -434,8 +480,8 @@
                   <button
                     v-if="actionsFor(item).canOpenCaptcha"
                     class="action-btn"
-                    title="Resolver captcha"
-                    aria-label="Resolver captcha"
+                    :title="item.captchaType === 'manual' ? 'Abrir confirmação no host' : 'Resolver captcha'"
+                    :aria-label="item.captchaType === 'manual' ? 'Abrir confirmação no host' : 'Resolver captcha'"
                     @click="openCaptcha(item.id)"
                   >
                     <i class="pi pi-shield"></i>
@@ -530,6 +576,14 @@
                   }"
                 ></div>
               </div>
+              <span
+                v-if="providerWaitNotice(item)"
+                class="table-status-note"
+                :title="providerWaitNotice(item)!.title"
+              >
+                <i class="pi pi-info-circle"></i>
+                {{ providerWaitNotice(item)!.label }}
+              </span>
             </div>
 
             <div class="table-size-cell">
@@ -622,23 +676,34 @@
               <template v-else-if="item.status === 'rate_limited'">
                 <span class="meta-chip meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ item.retryAt && item.retryAt > nowTick
+                  {{ hasServerReportedWait(item) && item.retryAt && item.retryAt > nowTick
                     ? t('rateLimitCountdown', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
-                    : t('rateLimitBlocked') }}
+                    : t('rateLimitRevalidation') }}
                 </span>
               </template>
 
               <template v-else-if="item.status === 'waiting_captcha'">
                 <span class="meta-chip meta-captcha-wait">
                   <i class="pi pi-shield"></i>
-                  {{ t('waitingCaptcha') }}
+                  {{ item.captchaType === 'manual'
+                    ? 'Confirmação manual necessária'
+                    : (item.error && item.error.includes('Resolvendo') ? item.error : t('waitingCaptcha')) }}
+                </span>
+                <span v-if="item.error && item.error.includes('Resolvendo')" class="meta-chip meta-captcha-wait" style="opacity:0.8">
+                  <i class="pi pi-spin pi-spinner"></i>
+                  {{ item.error }}
+                </span>
+                <span v-else-if="item.captchaSitekey" class="meta-chip meta-captcha-wait" style="opacity:0.7">
+                  {{ item.captchaSitekey.slice(0, 12) }}...
                 </span>
               </template>
 
               <template v-else-if="isWaitingRetryNow(item)">
                 <span class="meta-chip meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ t('waitingRetryIn', { time: formatEta(retryCountdownNow(item)) }) }}
+                  {{ hasServerReportedWait(item)
+                    ? t('waitingRetryIn', { time: formatEta(retryCountdownNow(item)) })
+                    : t('rateLimitRevalidation') }}
                 </span>
               </template>
 
@@ -795,11 +860,11 @@
                     <div class="child-main">
                       <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
                         <span
-                          v-if="childWinrarIcon(node.name)"
+                          v-if="childAppIcon(node.name)"
                           class="child-icon child-app-icon"
-                          :aria-label="childWinrarIcon(node.name)?.app"
+                          :aria-label="childAppIcon(node.name)?.app"
                           role="img"
-                          v-html="childWinrarIcon(node.name)?.svg"
+                          v-html="childAppIcon(node.name)?.svg"
                         ></span>
                         <span
                           v-else
@@ -877,11 +942,11 @@
                       <div class="child-main">
                         <div class="child-name" :style="{ paddingInlineStart: `${node.depth * 18}px` }">
                           <span
-                            v-if="childWinrarIcon(node.name)"
+                            v-if="childAppIcon(node.name)"
                             class="child-icon child-app-icon"
-                            :aria-label="childWinrarIcon(node.name)?.app"
+                            :aria-label="childAppIcon(node.name)?.app"
                             role="img"
-                            v-html="childWinrarIcon(node.name)?.svg"
+                            v-html="childAppIcon(node.name)?.svg"
                           ></span>
                           <span
                             v-else
@@ -978,6 +1043,7 @@
             </div>
           </div>
         </div>
+        </template>
         </TransitionGroup>
         <div v-if="virtualizationEnabled && bottomSpacerHeight > 0" :style="{ height: `${bottomSpacerHeight}px` }"></div>
         <!-- Skeleton dos que estão sendo adicionados: SEMPRE abaixo dos downloads. -->
@@ -1318,6 +1384,8 @@ const uiDensity = ref<'comfortable' | 'compact' | 'dense'>('comfortable')
 const reorderAnimations = ref(true)
 const queuePanelCollapsed = ref(false)
 const draggedPreviewId = ref<string | null>(null)
+const draggedPackageItemId = ref<string | null>(null)
+const packageDropTargetId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
@@ -1433,6 +1501,34 @@ const orderedItems = computed(() =>
     return compareDownloads(left, right, sortMode.value, sortTick.value)
   })
 )
+// Um pacote continua sendo uma entidade persistida, mas é apresentado como uma
+// raiz visual seguida de seus filhos. Assim os arquivos não parecem downloads
+// soltos repetidos e o host fica concentrado no pai.
+const packageMembers = computed(() => {
+  const groups = new Map<string, DownloadItem[]>()
+  for (const item of orderedItems.value) {
+    if (!item.packageId) continue
+    const members = groups.get(item.packageId) ?? []
+    members.push(item)
+    groups.set(item.packageId, members)
+  }
+  return groups
+})
+
+function packageHeaderFor(item: DownloadItem): DownloadItem | null {
+  if (!item.packageId) return null
+  const members = packageMembers.value.get(item.packageId)
+  return members?.[0]?.id === item.id ? item : null
+}
+
+function packageNameFor(item: DownloadItem): string {
+  if (!item.packageId) return 'Downloads avulsos'
+  return packages.value.find((pkg) => pkg.id === item.packageId)?.name ?? 'Pacote'
+}
+
+function packageItemCount(packageId: string | undefined): number {
+  return packageId ? packageMembers.value.get(packageId)?.length ?? 0 : 0
+}
 const finishedCount = computed(() =>
   items.value.filter((item) => isClearable(item)).length
 )
@@ -1894,9 +1990,12 @@ function leadingIconSvg(item: DownloadItem): string {
   return getIcon(item.moduleId).svg
 }
 
-function childWinrarIcon(filename: string) {
-  const icon = getFileTypeAppIcon(filename)
-  return icon?.app === 'winrar' ? icon : null
+function childAppIcon(filename: string) {
+  return getFileTypeAppIcon(filename)
+}
+
+function fileTypeLabel(item: DownloadItem): string {
+  return getFileTypeAppIcon(item.title || item.url)?.app ?? getFileIcon(item.title || item.url, undefined, item.isFolder).alt
 }
 
 function leadingIconStyle(item: DownloadItem): Record<string, string> {
@@ -1909,6 +2008,25 @@ function leadingIconStyle(item: DownloadItem): Record<string, string> {
 
 function isPremiumProvider(moduleId: string): boolean {
   return ['rapidgator', 'katfile', 'terabox'].includes(moduleId)
+}
+
+function providerWaitNotice(item: DownloadItem): { label: string; title: string } | null {
+  const waitingForProvider = item.status === DownloadStatusEnum.RateLimited
+    || (item.status === DownloadStatusEnum.Pending && isWaitingRetryNow(item))
+  if (!waitingForProvider) return null
+
+  const provider = moduleLabel(item.moduleId)
+  const details = item.error?.trim() || `O ${provider} pediu uma nova tentativa.`
+  const knownLimits: Record<string, string> = {
+    mega: 'Mega: cota de tráfego por IP',
+    fichier: '1Fichier: janela gratuita por IP',
+    brfiles: 'BRFiles: limite do plano gratuito',
+    moondl: 'MoonDL: limite do plano gratuito',
+    rapidgator: 'Rapidgator: limite do plano gratuito',
+    brupload: 'BRUpload: limite temporário',
+  }
+  const label = knownLimits[item.moduleId] ?? `${provider}: aguardando liberação do host`
+  return { label, title: `${label}. ${details}` }
 }
 
 function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
@@ -2080,7 +2198,10 @@ function rateLimitCountdown(item: DownloadItem): string {
   return formatEta(Math.ceil((item.retryAt - nowTick.value) / 1000))
 }
 
-const virtualizationEnabled = computed(() => orderedItems.value.length > 40)
+// Cabeçalhos de pacote têm altura própria. Mantemos a virtualização para listas
+// avulsas extensas, mas não a usamos enquanto uma árvore de pacotes estiver
+// visível para que nenhum filho fique separado visualmente de seu pai.
+const virtualizationEnabled = computed(() => orderedItems.value.length > 40 && packageMembers.value.size === 0)
 // Altura FIXA por linha (o caso comum, recolhido). Antes virava 260 para TODAS as
 // linhas quando qualquer uma abria, superdimensionando os espaçadores e causando o
 // drift (linhas "sumindo/aparecendo") ao rolar. Uma linha aberta só fica mais alta
@@ -2657,6 +2778,52 @@ async function assignPackage(item: DownloadItem, packageId: string): Promise<voi
   if (idx >= 0) {
     patchItemAt(idx, { packageId: packageId || undefined })
   }
+}
+
+function startPackageDrag(item: DownloadItem, event: DragEvent): void {
+  draggedPackageItemId.value = item.id
+  event.dataTransfer?.setData('application/x-gdownloader-download', item.id)
+  event.dataTransfer?.setData('text/plain', item.id)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function endPackageDrag(): void {
+  draggedPackageItemId.value = null
+  packageDropTargetId.value = null
+}
+
+function draggedDownloadId(event: DragEvent): string | null {
+  return event.dataTransfer?.getData('application/x-gdownloader-download')
+    || draggedPackageItemId.value
+    || null
+}
+
+function markPackageDropTarget(packageId: string | undefined): void {
+  if (packageId) packageDropTargetId.value = packageId
+}
+
+function clearPackageDropTarget(packageId: string | undefined): void {
+  if (packageDropTargetId.value === packageId) packageDropTargetId.value = null
+}
+
+async function dropIntoPackage(packageId: string, event: DragEvent): Promise<void> {
+  const downloadId = draggedDownloadId(event)
+  endPackageDrag()
+  if (!downloadId || !packageId) return
+  const item = items.value.find((candidate) => candidate.id === downloadId)
+  if (!item || item.packageId === packageId) return
+  await assignPackage(item, packageId)
+  await refreshPackages()
+}
+
+async function dropOutsidePackage(event: DragEvent): Promise<void> {
+  const downloadId = draggedDownloadId(event)
+  endPackageDrag()
+  if (!downloadId) return
+  const item = items.value.find((candidate) => candidate.id === downloadId)
+  if (!item?.packageId) return
+  await assignPackage(item, '')
+  await refreshPackages()
 }
 
 function packageColor(packageId: string | undefined): string {
@@ -3274,6 +3441,13 @@ function retryCountdownNow(item: DownloadItem): number {
   return retryCountdown(item, nowTick.value)
 }
 
+// retryAt também é usado pelo scheduler para decidir *quando testar de novo*.
+// Não o exibimos como se fosse tempo do servidor sem uma duração que o host
+// tenha informado explicitamente.
+function hasServerReportedWait(item: DownloadItem): boolean {
+  return item.errorKind === 'rate_limit_server'
+}
+
 function statusTextValue(item: DownloadItem): string {
   if (item.status === DownloadStatusEnum.Downloading && stageLabels.value[item.id]) {
     return stageLabels.value[item.id]
@@ -3307,6 +3481,13 @@ function actionsFor(item: DownloadItem): Record<string, boolean> {
 function openCaptcha(id: string): void {
   activeCaptchaId.value = id
   const item = items.value.find((entry) => entry.id === id)
+  // Send.now usa uma janela persistente própria para a confirmação do host.
+  // Forçar aqui apenas inicia uma nova tentativa explícita; se o host ainda
+  // bloquear, a mesma janela reaparece. Não passa token nem automatiza captcha.
+  if (item?.moduleId === 'sendnow' && item.captchaType === 'manual') {
+    void window.api.downloads.force(id).catch(() => null)
+    return
+  }
   if (item) {
     void openCaptchaWindow(item)
   }
@@ -3490,6 +3671,21 @@ async function maybeResolveCaptcha(item: DownloadItem): Promise<void> {
   }
 
   captchaAttemptedIds.add(item.id)
+
+  // Turnstile: tenta primeiro o solver local universal (gratuito, 4 engines
+  // auto-atualizáveis), antes do NopeCha (serviço pago) e da janela manual.
+  if (item.captchaType === 'turnstile') {
+    const localToken = await window.api.turnstile
+      .solve({ sitekey: item.captchaSitekey, pageurl: item.captchaPageUrl ?? item.url })
+      .then((res) => res?.token ?? null)
+      .catch(() => null)
+    if (localToken) {
+      await window.api.captcha.submit(item.id, localToken).catch(() => null)
+      captchaSolvedIds.value = new Set([...captchaSolvedIds.value, item.id])
+      return
+    }
+  }
+
   const token = await window.api.captcha.nopechaSolve({
     type: item.captchaType ?? 'recaptcha2',
     sitekey: item.captchaSitekey,
@@ -3680,6 +3876,87 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 @media (max-width: 1100px) {
   .stat-cards {
     grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Em janelas de notebook a área útil encolhe antes de a tabela. Mantemos os
+   filtros legíveis em uma grade estável em vez de deixá-los quebrar de forma
+   aleatória ao lado do contador. */
+@media (max-width: 1320px) {
+  .download-list {
+    gap: 12px;
+  }
+
+  .list-toolbar {
+    display: block;
+  }
+
+  .list-count {
+    display: block;
+    margin: 0 0 7px;
+  }
+
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .toolbar-sort {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .toolbar-sort:nth-child(3) {
+    grid-column: span 2;
+  }
+
+  .toolbar-select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .toolbar-btn,
+  .sort-menu-wrap,
+  .display-menu-wrap {
+    min-width: 0;
+  }
+
+  .toolbar-btn {
+    justify-content: center;
+    white-space: nowrap;
+    padding-inline: 9px;
+  }
+}
+
+@media (max-width: 900px) {
+  .stat-cards,
+  .toolbar-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .toolbar-sort:nth-child(3) {
+    grid-column: span 2;
+  }
+
+  .speed-card-chart {
+    width: 58%;
+  }
+}
+
+@media (max-width: 620px) {
+  .stat-cards,
+  .toolbar-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .toolbar-sort:nth-child(3) {
+    grid-column: auto;
+  }
+
+  .stat-card {
+    padding: 13px 14px;
   }
 }
 
@@ -4301,11 +4578,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .items-stack-rows {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  /* Respiro pequeno preserva leitura de tabela sem voltar ao aspecto de cards. */
+  gap: 3px;
   width: 100%;
   min-width: 0;
   flex: 0 0 auto;
   min-height: min-content;
+  background: color-mix(in srgb, var(--border-color) 30%, var(--bg-card));
 }
 
 /* Reordenação suave (FLIP do Vue) — habilitada só fora da virtualização. */
@@ -5368,13 +5647,8 @@ button.meta-path {
    acrescenta seu divisor horizontal, sem criar uma segunda caixa. */
 .download-card {
   border: 0;
-  border-bottom: 1px solid var(--border-color);
   border-radius: 0;
-  background: transparent;
-}
-
-.items-stack-rows > .download-card:last-child {
-  border-bottom: 0;
+  background: var(--bg-card);
 }
 
 .table-size-cell,
@@ -5414,6 +5688,24 @@ button.meta-path {
 
 .table-status-cell .progress-track {
   width: 100%;
+}
+
+.table-status-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: #b7791f;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-status-note .pi {
+  flex: 0 0 auto;
+  font-size: 10px;
 }
 
 .table-speed-cell {
@@ -5480,6 +5772,8 @@ button.meta-path {
   }
 
   .item-body {
+    flex: 1 1 0;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 5px;
@@ -5488,9 +5782,33 @@ button.meta-path {
 
   .item-header {
     display: flex;
+    width: 100%;
+    min-width: 0;
+    align-items: flex-start;
+  }
+
+  /* No modo compacto o título deve começar logo após o ícone do host. As
+     regras tabulares usam colunas de grid no desktop; sem estes resets elas
+     podiam manter uma largura residual e deslocar o nome para o meio da linha. */
+  .item-title-wrap {
+    grid-column: auto;
+    grid-row: auto;
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    justify-content: flex-start;
+  }
+
+  .item-title,
+  .item-subtitle-inline {
+    max-width: 100%;
   }
 
   .item-actions {
+    grid-column: auto;
+    grid-row: auto;
     min-height: 0;
     padding-left: 0;
     border-left: 0;
@@ -6123,6 +6441,156 @@ button.meta-path {
   height: 8px;
   flex: 0 0 auto;
   border-radius: 999px;
+}
+
+/* ── Árvore de pacotes ─────────────────────────────────────── */
+.package-unassign-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 30px;
+  margin: 7px 10px 3px;
+  border: 1px dashed color-mix(in srgb, var(--border-color) 88%, transparent);
+  border-radius: 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  transition: border-color .14s ease, background .14s ease, color .14s ease;
+}
+
+.package-unassign-zone.active {
+  border-color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+  color: var(--accent-color);
+}
+
+.package-parent-row {
+  display: grid;
+  grid-template-columns: 30px 52px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  min-height: 50px;
+  padding: 7px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 66%, transparent);
+  background: color-mix(in srgb, var(--surface-section, var(--bg-card)) 78%, var(--bg-card));
+  transition: background .14s ease, box-shadow .14s ease;
+}
+
+.package-parent-row.package-drop-target {
+  background: color-mix(in srgb, var(--accent-color) 10%, var(--bg-card));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 55%, transparent);
+}
+
+.package-tree-stem {
+  justify-self: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.package-parent-icon,
+.package-parent-icon :deep(svg) {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+.package-parent-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.package-parent-copy strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.package-parent-copy span {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.package-child-row {
+  margin-left: 28px;
+  width: calc(100% - 28px) !important;
+}
+
+.package-child-row::after {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: -16px;
+  width: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+  content: '';
+  pointer-events: none;
+}
+
+.package-child-file-icon,
+.package-child-file-icon :deep(svg) {
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+}
+
+.package-child-app-icon,
+.package-child-app-icon :deep(svg),
+.package-child-fallback-icon {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+
+.package-child-app-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
+}
+
+.package-child-fallback-icon {
+  font-size: 27px;
+}
+
+@media (max-width: 1320px) {
+  .item-subtitle-inline > :not(.meta-host),
+  .item-subtitle-inline > .meta-sep {
+    display: none;
+  }
+
+  /* No layout reduzido ficam somente os quatro dados operacionais. Tags,
+     caminho, pacote e datas continuam disponíveis no painel de detalhes. */
+  .item-meta > :not(.meta-percent, .meta-size, .meta-speed, .meta-eta) {
+    display: none !important;
+  }
+
+  .package-parent-row {
+    grid-template-columns: 24px 44px minmax(0, 1fr);
+    padding: 6px 10px;
+  }
+
+  .package-child-row {
+    margin-left: 20px;
+    width: calc(100% - 20px) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .item-meta > .meta-size,
+  .item-meta > .meta-eta {
+    display: none !important;
+  }
+
+  .package-unassign-zone {
+    justify-content: flex-start;
+    padding-inline: 10px;
+  }
 }
 
 @keyframes pulse-glow {
