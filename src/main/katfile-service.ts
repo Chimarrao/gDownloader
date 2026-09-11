@@ -88,6 +88,16 @@ export function createKatfileService(opts?: {
   let lastSolverAt = 0
   let currentProxyCreds: { user: string; pass: string } | null = null
   let proxyLoginWired = false
+  // Trocar de circuito Tor sozinho não resolve todo "preso em página genérica":
+  // na prática o Katfile parece rastrear por SESSÃO (cookies), não só por IP —
+  // depois de alguns downloads bem-sucedidos na mesma persist:katfile, mesmo
+  // um IP novo continua vendo a mesma página degradada até os cookies
+  // acumulados dessa sessão também serem descartados. Depois de algumas
+  // falhas seguidas do watchdog de noop, limpa a sessão inteira (mesma ação
+  // que já resolveu isso manualmente nesta mesma investigação) antes da
+  // próxima tentativa. Zera sempre que um job passa de verdade (will-download).
+  let consecutiveNoopFailures = 0
+  const NOOP_FAILURES_BEFORE_SESSION_RESET = 2
 
   // O Katfile grátis bloqueia por IP: "Delay between free downloads must be
   // not less than 120 minutes." Confirmado em teste real — o mesmo arquivo,
@@ -674,6 +684,7 @@ export function createKatfileService(opts?: {
       }
 
       clearJobTimers(job)
+      consecutiveNoopFailures = 0
 
       logMain('katfile', 'will-download recebido', {
         jobId,
@@ -826,6 +837,13 @@ export function createKatfileService(opts?: {
       // Falha rápido depois de ~35s só de 'noop' seguido: o Rust reagenda e o
       // próximo getProxy() já sorteia um circuito novo.
       const NOOP_STREAK_LIMIT_MS = 35_000
+      // 'noop' não é o único jeito de ficar preso: 'hidden_method_free_submit_form_direct'
+      // e 'reclick_free_button' também podem entrar num loop de reenvio sem sair do
+      // lugar — visto ao vivo: o mesmo form sendo resubmetido a cada 1.8s pra sempre,
+      // porque a página seguinte devolve exatamente o mesmo gate. Qualquer um desses
+      // "branches" repetindo sem nunca chegar num branch de progresso real
+      // (token/captcha/download) conta pro mesmo watchdog.
+      const STUCK_BRANCHES = new Set(['noop', 'hidden_method_free_submit_form_direct', 'reclick_free_button'])
       const runAdvanceLoop = async (): Promise<void> => {
         if (job.driveStopped) return
         const branch = await advanceFlow().catch((e) => {
@@ -833,12 +851,22 @@ export function createKatfileService(opts?: {
           return undefined
         })
         if (job.driveStopped) return
-        if (branch === 'noop') {
+        if (branch && STUCK_BRANCHES.has(branch)) {
           job.noopStreakSince ??= Date.now()
           if (Date.now() - job.noopStreakSince > NOOP_STREAK_LIMIT_MS) {
-            logMain('katfile', 'noop persistente — provável circuito Tor ruim, abortando pra tentar de novo com IP novo', {
+            consecutiveNoopFailures += 1
+            logMain('katfile', 'preso repetindo o mesmo branch sem progresso — provável circuito Tor ruim, abortando pra tentar de novo com IP novo', {
+              branch,
               streakMs: Date.now() - job.noopStreakSince,
+              consecutiveNoopFailures,
             })
+            if (consecutiveNoopFailures >= NOOP_FAILURES_BEFORE_SESSION_RESET) {
+              consecutiveNoopFailures = 0
+              await session.fromPartition(KATFILE_PARTITION).clearStorageData().catch((e) => {
+                logMain('katfile', 'falha ao limpar sessão do Katfile', { error: String(e) })
+              })
+              logMain('katfile', 'sessão do Katfile limpa após falhas repetidas (cookies acumulados provavelmente marcados como já usados)')
+            }
             if (pendingDownloadJobId === jobId) pendingDownloadJobId = null
             clearJobTimers(job)
             job.noopStreakSince = undefined
