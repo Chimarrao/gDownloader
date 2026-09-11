@@ -1,4 +1,5 @@
-import { BrowserWindow, net, session } from 'electron'
+import { app, BrowserWindow, net, session } from 'electron'
+import { logMain } from './debug-log'
 import { HOSTER_BROWSER_USER_AGENT, configureHosterSession, configureHosterWindow, delay } from './browser-helper-common'
 
 const SENDNOW_PARTITION = 'persist:sendnow'
@@ -24,6 +25,45 @@ export function createSendNowService() {
   let helperWindow: BrowserWindow | null = null
   let redirectListenerInstalled = false
   let pendingRedirect: ((url: string) => void) | null = null
+  let currentProxyCreds: { user: string; pass: string } | null = null
+  let proxyLoginWired = false
+
+  // Sem isso o Rust busca o arquivo de verdade (via http_client(), já usando o
+  // proxy da task) mas o Electron resolvia o link temporário pela rede normal
+  // (sem proxy nenhum) — o host via o link sendo gerado de um IP e baixado de
+  // outro e respondia com uma página de verificação em vez do arquivo. Espelha
+  // o mesmo padrão do katfile-service.ts.
+  function wireProxyLogin(): void {
+    if (proxyLoginWired) return
+    proxyLoginWired = true
+    app.on('login', (event, webContents, _details, authInfo, callback) => {
+      if (!authInfo.isProxy || !currentProxyCreds) return
+      if (!helperWindow || webContents !== helperWindow.webContents) return
+      event.preventDefault()
+      callback(currentProxyCreds.user, currentProxyCreds.pass)
+    })
+  }
+
+  async function ensureBrowsingProxy(proxyUrl: string | undefined): Promise<void> {
+    wireProxyLogin()
+    const targetSession = session.fromPartition(SENDNOW_PARTITION)
+    if (!proxyUrl) {
+      currentProxyCreds = null
+      await targetSession.setProxy({ proxyRules: 'direct://' }).catch(() => undefined)
+      return
+    }
+    try {
+      const parsed = new URL(proxyUrl)
+      currentProxyCreds = parsed.username
+        ? { user: decodeURIComponent(parsed.username), pass: decodeURIComponent(parsed.password) }
+        : null
+      await targetSession.setProxy({ proxyRules: `${parsed.protocol}//${parsed.host}` })
+    } catch (err) {
+      logMain('sendnow', 'falha ao configurar proxy da janela, seguindo sem proxy', { error: String(err) })
+      currentProxyCreds = null
+      await targetSession.setProxy({ proxyRules: 'direct://' }).catch(() => undefined)
+    }
+  }
 
   function ensureRedirectCapture(targetSession: Electron.Session): void {
     if (redirectListenerInstalled) return
@@ -59,7 +99,7 @@ export function createSendNowService() {
     return helperWindow
   }
 
-  async function resolve(sourceUrl: string): Promise<{
+  async function resolve(sourceUrl: string, proxyUrl?: string): Promise<{
     url?: string
     cookieHeader?: string
     userAgent: string
@@ -69,6 +109,8 @@ export function createSendNowService() {
   }> {
     const id = fileIdFromUrl(sourceUrl)
     const win = getWindow()
+    await ensureBrowsingProxy(proxyUrl)
+    logMain('sendnow', 'resolve iniciado', { sourceUrl, usingProxy: Boolean(proxyUrl) })
     const navigation = win.loadURL(sourceUrl)
     const loaded = await Promise.race([
       navigation.then(() => true),
@@ -91,6 +133,7 @@ export function createSendNowService() {
     // fazemos polling até o desafio sumir e o campo "id" do formulário aparecer
     // preenchido, em vez de confiar num timer fixo.
     let formValues: { id?: string; rand?: string; referer?: string } = {}
+    let submittedChallengeForm = false
     const deadline = Date.now() + 20_000
     while (Date.now() < deadline) {
       await delay(700)
@@ -98,13 +141,67 @@ export function createSendNowService() {
       if (/just a moment|attention required|verifying you are human/i.test(title)) {
         continue
       }
+      // Antes da página de arquivo de verdade, o Send.now mostra uma página
+      // intermediária "Download Challenge": um form com cf-turnstile-response
+      // (Turnstile resolvido, às vezes sozinho) e um botão de submit, mas SEM
+      // "rand" — esse só existe na página seguinte. Ler id/rand direto aqui
+      // sempre dava rand vazio. Se o token do Turnstile já está pronto, submete
+      // esse form intermediário (nativo, sem depender de handler de clique) e
+      // deixa a página seguinte carregar antes de tentar ler id/rand de novo.
+      if (!submittedChallengeForm) {
+        const challengeSubmitted = await win.webContents.executeJavaScript(`(() => {
+          const tokenInput = document.querySelector('input[name="cf-turnstile-response"]')
+          const form = tokenInput ? tokenInput.closest('form') : null
+          if (tokenInput instanceof HTMLInputElement && tokenInput.value.length > 10 && form instanceof HTMLFormElement) {
+            form.submit()
+            return true
+          }
+          return false
+        })()`).catch(() => false) as boolean
+        if (challengeSubmitted) {
+          submittedChallengeForm = true
+          logMain('sendnow', 'form de challenge (Turnstile resolvido) submetido')
+          await delay(1500)
+          continue
+        }
+      }
       formValues = await win.webContents.executeJavaScript(`(() => {
         const value = (name) => document.querySelector('input[name="' + name + '"]')?.value || ''
         return { id: value('id'), rand: value('rand'), referer: value('referer') }
       })()`) as { id?: string; rand?: string; referer?: string }
-      if (formValues.id) break
+      // "id" costuma aparecer antes de "rand" no form (JS separado, talvez preso
+      // no próprio callback do Turnstile). Submeter com rand vazio faz o host
+      // devolver 200 sem redirect (nem cookie novo) em vez de erro claro — daí
+      // o "não retornou o link temporário" fica em loop achando que é rate
+      // limit. Só sai do polling com os dois campos preenchidos.
+      if (formValues.id && formValues.rand) break
     }
-    if (!formValues.id) {
+    logMain('sendnow', 'form values extraídos', { hasId: Boolean(formValues.id), hasRand: Boolean(formValues.rand) })
+    if (!formValues.id || !formValues.rand) {
+      const pageDiagnostics = await win.webContents.executeJavaScript(`(() => {
+        const inputs = Array.from(document.querySelectorAll('input')).map((input) => ({ name: input.name, type: input.type, hasValue: Boolean(input.value) }))
+        const forms = Array.from(document.querySelectorAll('form')).map((form) => form.id || form.getAttribute('name') || '(sem id/name)')
+        const clickable = Array.from(document.querySelectorAll('[id*="download" i], [class*="download" i], [id*="free" i], [class*="free" i], [id*="rand"], [name*="rand"]'))
+          .slice(0, 20)
+          .map((el) => ({ tag: el.tagName, id: el.id, cls: (el.className || '').toString().slice(0, 60), text: (el.textContent || '').trim().slice(0, 60), visible: el.getBoundingClientRect().width > 0, outerHTML: el.outerHTML.slice(0, 300) }))
+        const scriptHits = Array.from(document.querySelectorAll('script:not([src])'))
+          .map((s) => s.textContent || '')
+          .filter((text) => /rand/i.test(text))
+          .map((text) => {
+            const idx = text.search(/rand/i)
+            return text.slice(Math.max(0, idx - 150), idx + 150)
+          })
+          .slice(0, 5)
+        const bigButtons = Array.from(document.querySelectorAll('a, button, div'))
+          .filter((el) => {
+            const r = el.getBoundingClientRect()
+            return r.width > 120 && r.height > 30 && r.width < 500
+          })
+          .slice(0, 12)
+          .map((el) => ({ tag: el.tagName, id: el.id, cls: (el.className || '').toString().slice(0, 60), text: (el.textContent || '').trim().slice(0, 60) }))
+        return { title: document.title, inputs, forms, clickable, scriptHits, bigButtons, fullBodyText: (document.body?.innerText || '').slice(0, 1500) }
+      })()`).catch((error) => ({ error: String(error) }))
+      logMain('sendnow', 'diagnostico da pagina (rand/id ausente)', pageDiagnostics)
       win.show()
       win.focus()
       // Mesmo marcador usado pelo caminho de 403 abaixo: o backend Rust reconhece
@@ -148,6 +245,7 @@ export function createSendNowService() {
       pendingRedirect = (redirectUrl) => {
         request.abort()
         if (redirectUrl.startsWith('https://') || redirectUrl.startsWith('http://')) {
+          logMain('sendnow', 'redirect temporário capturado via webRequest', { redirectUrl })
           settle(() => {
             clearTimeout(timeout)
             resolvePromise({
@@ -181,6 +279,7 @@ export function createSendNowService() {
         }
       })
       request.on('response', (response) => {
+        logMain('sendnow', 'resposta do POST download2', { statusCode: response.statusCode })
         // O 403 do Send.now é a página/sessão de verificação do próprio host,
         // não uma falha transitória de rede. Exibimos a mesma janela que
         // guarda a sessão persistente para que a pessoa conclua a etapa no
@@ -209,6 +308,7 @@ export function createSendNowService() {
           settle(() => {
             clearTimeout(timeout)
             if (!cookieHeader) {
+              logMain('sendnow', 'POST 200 sem redirect e sem cookie novo', {})
               reject(new Error('Send.now não retornou o redirect temporário nem uma sessão válida.'))
               return
             }
@@ -241,11 +341,11 @@ export function createSendNowService() {
     })
   }
 
-  async function handleAction(payload: { action?: string; url?: string }): Promise<unknown> {
+  async function handleAction(payload: { action?: string; url?: string; proxy?: string }): Promise<unknown> {
     if (payload.action !== 'sendnow_resolve' || !payload.url) {
       throw new Error('Ação Send.now inválida')
     }
-    return resolve(payload.url)
+    return resolve(payload.url, payload.proxy)
   }
 
   return { handleAction }

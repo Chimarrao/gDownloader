@@ -217,9 +217,17 @@ impl SendNowProvider {
     /// obter nome e tamanho sem iniciar um download completo.
     async fn resolve_direct_url(id: &str) -> Result<String> {
         let source_url = format!("https://send.now/{id}");
+        // Se essa task está rodando atrás de um proxy/Tor, o helper Electron
+        // PRECISA navegar pelo mesmo circuito: o link temporário que ele resolve
+        // fica associado ao IP de saída, e o Rust busca esse link logo em
+        // seguida com `http_client()` (que já respeita esse mesmo proxy). Sem
+        // alinhar os dois, o host vê o link sendo gerado de um IP e baixado de
+        // outro e devolve uma página de verificação em vez do arquivo.
+        let proxy = super::current_task_proxy_url();
         let browser_result = browser_action(json!({
             "action": "sendnow_resolve",
             "url": source_url,
+            "proxy": proxy,
         }))
         .await;
         let browser_error = browser_result.as_ref().err().map(|error| error.to_string());

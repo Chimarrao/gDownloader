@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'fs/promises'
+import { appendFile, mkdir, rename, stat } from 'fs/promises'
 import { join } from 'path'
 
 import { app } from 'electron'
@@ -12,10 +12,33 @@ function resolveLogPath(): string {
 }
 
 const MAX_QUEUED_LOG_BYTES = 512 * 1024
+// Sem rotação esse arquivo cresce pra sempre (visto na prática: 2.6GB depois de
+// dias de driveInterval do Katfile logando a cada ~1.8s). Gira pra .old ao
+// passar de 20MB; mantém só a geração anterior, sem acumular histórico.
+const MAX_LOG_FILE_BYTES = 20 * 1024 * 1024
 const pendingLines: string[] = []
 let pendingBytes = 0
 let flushScheduled = false
 let flushing = false
+// Bytes escritos desde a última checagem de rotação. Evita um stat() a cada
+// flush (que pode disparar várias vezes por segundo em picos de log) sem
+// deixar a sessão crescer sem limite: reavalia a cada ~MAX_LOG_FILE_BYTES
+// escritos, então mesmo uma sessão de dias ligados acaba rotacionando.
+let bytesSinceRotationCheck = MAX_LOG_FILE_BYTES + 1
+
+async function rotateIfNeeded(logPath: string, writtenBytes: number): Promise<void> {
+  bytesSinceRotationCheck += writtenBytes
+  if (bytesSinceRotationCheck < MAX_LOG_FILE_BYTES) return
+  bytesSinceRotationCheck = 0
+  try {
+    const info = await stat(logPath)
+    if (info.size > MAX_LOG_FILE_BYTES) {
+      await rename(logPath, `${logPath}.old`)
+    }
+  } catch {
+    // Arquivo ainda não existe — nada a rotacionar.
+  }
+}
 
 function normalizePayload(payload: unknown): string {
   if (payload === undefined) {
@@ -54,8 +77,10 @@ async function flushLogs(): Promise<void> {
 
   try {
     const logPath = resolveLogPath()
+    const body = lines.join('')
     await mkdir(join(logPath, '..'), { recursive: true })
-    await appendFile(logPath, lines.join(''), 'utf8')
+    await rotateIfNeeded(logPath, Buffer.byteLength(body, 'utf8'))
+    await appendFile(logPath, body, 'utf8')
   } catch {
     // Log é best effort; nunca deve atrasar a thread principal.
   } finally {

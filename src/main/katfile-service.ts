@@ -55,6 +55,7 @@ interface KatfileDownloadJob {
   startTimeout?: ReturnType<typeof setTimeout>
   driveInterval?: ReturnType<typeof setTimeout>
   driveStopped?: boolean
+  noopStreakSince?: number
   lastBytes: number
   lastTickAt: number
   lastProgressAt: number
@@ -445,9 +446,9 @@ export function createKatfileService(opts?: {
     return Boolean(result)
   }
 
-  async function advanceFlow(): Promise<void> {
+  async function advanceFlow(): Promise<string | undefined> {
     const win = getWindow()
-    if (win.isDestroyed()) return
+    if (win.isDestroyed()) return undefined
     // Try auto solver first if challenge present (universal, como yt-dlp)
     try {
       // hasToken: um token JA injetado (resolvido num ciclo anterior) continua
@@ -577,13 +578,23 @@ export function createKatfileService(opts?: {
         // acessível via window.WAIT_SECONDS — ele se auto-envia via cdSubmitForm() sozinho
         // após ~30s reais; só precisamos aguardar sem interferir nem clicar em upsells.
 
-        const freeButton =
-          document.querySelector('#fbtn1')
-          || document.querySelector('#m_fbtn1')
-          || document.querySelector('input[name="method_free"]')
-          || document.querySelector('button[name="method_free"]')
+        const realFreeButton = document.querySelector('#fbtn1') || document.querySelector('#m_fbtn1') || document.querySelector('button[name="method_free"]')
+        const hiddenFreeInput = document.querySelector('input[name="method_free"]')
+        const freeButton = realFreeButton || hiddenFreeInput
 
         const clickCount = Number((window)[clickCountKey] || 0)
+        // input[name="method_free"] é um campo OCULTO (hidden) usado só pra carregar
+        // o valor no form — não é um botão de verdade. Nas páginas em que #fbtn1/
+        // #m_fbtn1 não existem, o fallback antigo chamava .click() nesse input
+        // escondido, que não faz absolutamente nada (elemento hidden não recebe
+        // clique de forma alguma) — ficava clicando pra sempre sem nunca avançar.
+        // Submete o form direto (mesmo padrão já comprovado no clickFreeEntry),
+        // que ignora handlers JS quebrados e o problema de elemento não-clicável.
+        if (!realFreeButton && hiddenFreeInput instanceof HTMLInputElement && activeForm instanceof HTMLFormElement) {
+          hiddenFreeInput.value = '1'
+          activeForm.submit()
+          return { branch: 'hidden_method_free_submit_form_direct' }
+        }
         // Sem limite de tentativas: o botão exige 2 cliques reais (1o so mostra
         // anuncio, 2o inicia a contagem) e depois disso vira no-op no proprio JS
         // da pagina (guard interno slowDownloadStarted), entao reclicar e sempre
@@ -621,9 +632,10 @@ export function createKatfileService(opts?: {
       true
     )) as { branch: string; [key: string]: unknown } | undefined
     logMain('katfile', 'advanceFlow', { url: win.webContents.getURL(), ...result })
+    return result?.branch
     } catch (e) {
       logMain('katfile', 'advanceFlow ERRO', { error: String(e), url: win.webContents.getURL() })
-      if (String(e).includes('destroyed')) return
+      if (String(e).includes('destroyed')) return undefined
       throw e
     }
   }
@@ -805,10 +817,39 @@ export function createKatfileService(opts?: {
       // seu proprio solver, abrindo uma pilha de janelas de Chrome que nunca
       // carregavam direito. Agenda-se de novo só depois que o ciclo anterior
       // realmente terminou, nunca em paralelo.
+      // 'noop' quer dizer "nenhum seletor conhecido bateu nessa página" — na
+      // prática, quase sempre um circuito Tor ruim (IP já visto/bloqueado por
+      // esse ou outro usuário do Tor) servindo uma página genérica em vez do
+      // fluxo real. Sem heurística própria, isso só se resolveria pelo timeout
+      // geral de 8min (job.startTimeout) — rápido demais pra travar a fila
+      // inteira, devagar demais pra girar as 8 janelas de uma temporada.
+      // Falha rápido depois de ~35s só de 'noop' seguido: o Rust reagenda e o
+      // próximo getProxy() já sorteia um circuito novo.
+      const NOOP_STREAK_LIMIT_MS = 35_000
       const runAdvanceLoop = async (): Promise<void> => {
         if (job.driveStopped) return
-        await advanceFlow().catch((e) => logMain('katfile', 'driveInterval advanceFlow rejeitou', { error: String(e) }))
+        const branch = await advanceFlow().catch((e) => {
+          logMain('katfile', 'driveInterval advanceFlow rejeitou', { error: String(e) })
+          return undefined
+        })
         if (job.driveStopped) return
+        if (branch === 'noop') {
+          job.noopStreakSince ??= Date.now()
+          if (Date.now() - job.noopStreakSince > NOOP_STREAK_LIMIT_MS) {
+            logMain('katfile', 'noop persistente — provável circuito Tor ruim, abortando pra tentar de novo com IP novo', {
+              streakMs: Date.now() - job.noopStreakSince,
+            })
+            if (pendingDownloadJobId === jobId) pendingDownloadJobId = null
+            clearJobTimers(job)
+            job.noopStreakSince = undefined
+            job.startResolve = undefined
+            job.startReject?.(new Error('O Katfile ficou preso numa página sem o fluxo esperado (circuito de rede provavelmente bloqueado). Tentando de novo com uma rota nova.'))
+            job.startReject = undefined
+            return
+          }
+        } else {
+          job.noopStreakSince = undefined
+        }
         job.driveInterval = setTimeout(() => {
           void runAdvanceLoop()
         }, 1800)

@@ -39,6 +39,26 @@ import { createFfmpegService } from './ffmpeg-service'
 import { createTurnstileService } from './turnstile-service'
 import { randomBytes } from 'crypto'
 
+// Trava de instância única: sem isso, abrir o app uma segunda vez (dev ou
+// build) sobe um segundo backend Rust/Go e um segundo helper de Katfile/Send.now
+// brigando pela mesma sessão/partição/DB — sintoma visto na prática (duas
+// janelas, downloads duplicados, comportamento imprevisível). Precisa rodar
+// antes de qualquer outra coisa tocar em `app`.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+  process.exit(0)
+}
+app.on('second-instance', () => {
+  // Alguém tentou abrir uma segunda instância: foca a janela existente em vez
+  // de deixar duas rodando.
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+})
+
 const legacySettingsPaths = [
   join(process.cwd(), 'settings.json'),
   join(app.getPath('userData'), 'settings.json'),
@@ -1152,8 +1172,15 @@ async function signalTorNewIdentity(): Promise<void> {
 async function pauseActiveDownloadsForNetworkSwitch(): Promise<string[]> {
   if (!rustPort) return []
   const downloads = await fetchBackendConfig<Array<{ id: string; status: string }>>('/downloads').catch(() => [])
+  // waiting_captcha entra aqui de propósito: é o status do Katfile (e outros
+  // providers com solver universal) enquanto a janela do navegador embutido
+  // está resolvendo o captcha. Sem isso, trocar de rede no meio de uma
+  // resolução deixava a automação presa na rota antiga por baixo do tapete.
   const activeIds = downloads
-    .filter((download) => download.status === 'downloading' || download.status === 'verifying')
+    .filter((download) =>
+      download.status === 'downloading'
+      || download.status === 'verifying'
+      || download.status === 'waiting_captcha')
     .map((download) => download.id)
   for (const id of activeIds) {
     await postBackend(`/downloads/${encodeURIComponent(id)}/pause`).catch((error) => {
@@ -2043,6 +2070,7 @@ app.whenReady().then(async () => {
             headers?: Record<string, string>
             destPath?: string
             jobId?: string
+            proxy?: string
           }
           if (body.url) {
             body.url = assertSafeHttpUrl(body.url)

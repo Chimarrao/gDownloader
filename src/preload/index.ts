@@ -29,6 +29,8 @@ async function getGoPort(): Promise<number | null> {
 }
 async function fetchBackend(path: string, options?: RequestInit): Promise<Response> {
   // Rotas migradas para Go — tenta Go primeiro, fallback para Rust
+  // Para /file-info com YouTube, Go pode falhar com "Sign in" se cookies estiverem stale,
+  // então faz fallback para Rust que tem retry mais robusto com yt-dlp
   const goRoutes = [
     '/health',
     '/config',
@@ -43,17 +45,33 @@ async function fetchBackend(path: string, options?: RequestInit): Promise<Respon
     '/packages',
     '/providers',
     '/detect',
-    '/file-info',
     '/intercept',
   ]
-  const isGoRoute = goRoutes.some((prefix) => path === prefix || path.startsWith(prefix + '/') || path.startsWith(prefix + '?'))
-  if (isGoRoute) {
+  // /file-info é migrado mas para YouTube faz fallback se Go der erro de sessão
+  const isGoRoute = goRoutes.some(
+    (prefix) => path === prefix || path.startsWith(prefix + '/') || path.startsWith(prefix + '?'),
+  )
+  const isFileInfo = path.startsWith('/file-info')
+  if (isGoRoute || isFileInfo) {
     const goPort = await getGoPort()
     if (goPort) {
       try {
         const res = await fetch(`http://127.0.0.1:${goPort}${path}`, options)
-        // Se Go respondeu 404 (rota não migrada), cai para Rust
-        if (res.status !== 404) return res
+        if (res.status === 404) {
+          // Rota não migrada em Go, cai para Rust
+        } else if (isFileInfo && res.status >= 400) {
+          // Para file-info, se Go deu erro de YouTube (ex: Sign in), tenta Rust como fallback
+          const clone = res.clone()
+          try {
+            const body = await clone.text()
+            if (body.includes('Sign in') || body.includes('sessão válida') || body.includes('session')) {
+              throw new Error('fallback to Rust for YouTube session')
+            }
+          } catch {}
+          return res
+        } else {
+          return res
+        }
       } catch {}
     }
   }

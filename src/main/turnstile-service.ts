@@ -239,6 +239,30 @@ function httpsDownload(url: string, destPath: string, onProgress: (e: { bytesDow
   })
 }
 
+// EzSolver roda com uma janela do Chrome visível (headless=False, pedido do
+// usuário para debug) presa a um profile FIXO (/tmp/ts_profile, ou
+// TS_PROFILE_DIR). O solver.py de terceiros faz `browser = await uc.start(...)`
+// FORA de qualquer try/finally: se essa chamada falhar no meio (perda de
+// conexão CDP, disputa pelo lock do profile, timeout), o processo Chrome que
+// ela já tinha aberto fica órfão — sem ninguém chamando browser.stop(). Como
+// o profile é sempre o mesmo, a próxima tentativa não abre uma janela nova:
+// o Chrome já rodando (zumbi) recebe a URL como aba nova via IPC do próprio
+// Chrome. Depois de muitas tentativas (ex.: madrugada inteira com filas de
+// Katfile se revalidando), isso vira uma janela com 100+ abas. Isso é um bug
+// no código de terceiros que não controlamos (e que pode ser sobrescrito por
+// auto-update); a defesa fica aqui: mata qualquer Chrome preso a esse profile
+// antes e depois de cada tentativa do EzSolver, garantindo no máximo 1 janela
+// viva por vez.
+const EZSOLVER_PROFILE_MARKER = 'ts_profile'
+function reapStrayEzsolverChrome(): void {
+  if (process.platform === 'win32') return
+  try {
+    require('child_process').execSync(`pkill -f "${EZSOLVER_PROFILE_MARKER}"`, { stdio: 'ignore' })
+  } catch {
+    // pkill sai com código != 0 quando não há processo pra matar — esperado na maioria das vezes
+  }
+}
+
 function findPython(): string {
   // Prefer python3.12 as proven working for nodriver, fallback to python3
   const candidates = ['python3.12', 'python3', 'python']
@@ -344,6 +368,9 @@ async function setupVenv(id: TurnstileSolverId, userDataPath: string, onProgress
 }
 
 export function createTurnstileService(userDataPath: string) {
+  // Limpa qualquer janela zumbi de uma sessão anterior (ex.: app fechado/crashado
+  // no meio de uma tentativa do EzSolver) antes de começar a usar o solver de novo.
+  reapStrayEzsolverChrome()
   const statuses = new Map<TurnstileSolverId, TurnstileSolverStatus>()
   const processes = new Map<TurnstileSolverId, ChildProcess>()
   let onProgressCallback: ((e: TurnstileProgressEvent) => void) | null = null
@@ -566,6 +593,12 @@ export function createTurnstileService(userDataPath: string) {
     if (process.platform === 'darwin') {
       env.CHROME_PATH = env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     }
+    if (id === 'ezsolver') {
+      // gDownloader só manda 1 solve por vez (fila serializada acima); o default
+      // do serviço (4 workers concorrentes) só multiplica o risco de disputa pelo
+      // profile fixo do Chrome. Trava em 1 pra bater com o uso real.
+      env.MAX_WORKERS = '1'
+    }
 
     const child = spawn(cmd, args, {
       cwd: codePath(userDataPath, id),
@@ -624,6 +657,10 @@ export function createTurnstileService(userDataPath: string) {
       try {
         const desc = descs[solverId] || DESCRIPTORS[solverId]
         if (!desc) continue
+        // Antes de qualquer tentativa nova do EzSolver, limpa uma janela zumbi
+        // deixada por uma tentativa anterior que falhou no meio — senão a
+        // próxima solicitação vira só mais uma aba na janela presa.
+        if (solverId === 'ezsolver') reapStrayEzsolverChrome()
         // Ensure solver is ready (download if missing, but not auto-update during solve)
         await ensureReady(solverId, false)
         // Start solver HTTP service if not running
@@ -808,6 +845,10 @@ export function createTurnstileService(userDataPath: string) {
         lastError = err
         // Try next solver in chain
         continue
+      } finally {
+        // Fecha a janela do EzSolver assim que a tentativa termina (sucesso ou
+        // falha) em vez de confiar só no `browser.stop()` de terceiros.
+        if (solverId === 'ezsolver') reapStrayEzsolverChrome()
       }
     }
     throw lastError || new Error('Todos os solvers falharam')

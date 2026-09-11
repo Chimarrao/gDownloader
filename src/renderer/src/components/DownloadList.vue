@@ -1129,28 +1129,14 @@
         <span class="ctx-tor-icon" v-html="torIconSvg"></span>
         {{ contextMenuItem.autoTorOnLimit ? 'Desativar Tor ao atingir limite' : 'Usar Tor ao atingir limite' }}
       </button>
-      <button v-if="contextMenuItem.isFolder && (contextMenuItem.children?.length ?? 0) > 0" @click="toggleContextFolder">
-        <i class="pi pi-sitemap"></i>{{ isExpanded(contextMenuItem.id) ? 'Ocultar itens' : 'Mostrar itens' }}
-      </button>
       <button v-if="contextCan('canOpenCaptcha')" @click="openContextCaptcha"><i class="pi pi-shield"></i>Resolver captcha</button>
       <button v-if="contextMenuItem.status === 'complete' && contextMenuItem.outputPath && isExtractableArchive(contextMenuItem.outputPath)" @click="extractContextArchive">
         <i class="pi pi-folder-plus"></i>Extrair
       </button>
-      <button v-if="contextMenuItem.outputPath" @click="openContextFolder"><i class="pi pi-folder-open"></i>Abrir pasta</button>
-      <button v-if="contextMenuItem.outputPath" @click="openContextFile"><i class="pi pi-external-link"></i>Abrir arquivo</button>
       <button @click="showContextUrl"><i class="pi pi-link"></i>Mostrar URL</button>
       <button @click="copyContextUrls"><i class="pi pi-copy"></i>Copiar URL</button>
       <button @click="copyContextNames"><i class="pi pi-file"></i>Copiar nome</button>
-      <button @click="showContextDetails"><i class="pi pi-list"></i>Mostrar detalhes</button>
       <button v-if="contextMenuItem.moduleId === 'torrent'" @click="runContextAction('retry')"><i class="pi pi-refresh"></i>Recheck</button>
-
-      <div class="context-menu-group">
-        <span>Mover pra pacote</span>
-        <button @click="assignContextPackage('')">Sem pacote</button>
-        <button v-for="pkg in packages" :key="pkg.id" @click="assignContextPackage(pkg.id)">
-          {{ pkg.name }}
-        </button>
-      </div>
 
       <div class="context-menu-group">
         <span>Prioridade</span>
@@ -1740,9 +1726,9 @@ function closeContextMenu(): void {
 }
 
 function openContextMenu(item: DownloadItem, event: MouseEvent): void {
-  if (!selectedDownloadIds.value.has(item.id)) {
-    selectDownload(item)
-  }
+  // Não marca o checkbox da linha: contextSelection já cai de volta pro item
+  // clicado quando não há seleção ativa (ver computed acima). Marcar aqui de
+  // graça ligava o modo de seleção múltipla só por abrir o menu de 3 pontos.
   contextMenu.value = {
     visible: true,
     x: Math.min(event.clientX, window.innerWidth - 260),
@@ -3108,12 +3094,6 @@ async function toggleContextPin(): Promise<void> {
   if (item) await togglePin(item.id)
 }
 
-function toggleContextFolder(): void {
-  const item = contextMenuItem.value
-  closeContextMenu()
-  if (item) toggleFolder(item.id)
-}
-
 async function toggleContextAutoTor(): Promise<void> {
   const item = contextMenuItem.value
   closeContextMenu()
@@ -3143,18 +3123,6 @@ async function extractContextArchive(): Promise<void> {
   if (path) await extract(path)
 }
 
-function openContextFolder(): void {
-  const path = contextMenuItem.value?.outputPath
-  closeContextMenu()
-  if (path) openFolder(path)
-}
-
-function openContextFile(): void {
-  const path = contextMenuItem.value?.outputPath
-  closeContextMenu()
-  if (path) void window.api.openPath(path).catch(() => null)
-}
-
 async function showContextUrl(): Promise<void> {
   const url = contextMenuItem.value?.url
   closeContextMenu()
@@ -3169,12 +3137,6 @@ async function showContextUrl(): Promise<void> {
       confirmLabel: t('close'),
     })
   }
-}
-
-function showContextDetails(): void {
-  const item = contextMenuItem.value
-  closeContextMenu()
-  if (item) toggleDetails(item)
 }
 
 async function copyContextUrls(): Promise<void> {
@@ -3192,14 +3154,6 @@ async function copyContextNames(): Promise<void> {
   const payload = contextSelection.value.map((item) => item.title || item.url).join('\n')
   closeContextMenu()
   if (payload) await window.api.clipboard.writeText(payload).catch(() => null)
-}
-
-async function assignContextPackage(packageId: string): Promise<void> {
-  const targets = [...contextSelection.value]
-  closeContextMenu()
-  for (const item of targets) {
-    await assignPackage(item, packageId)
-  }
 }
 
 async function setContextPriority(priority: number): Promise<void> {

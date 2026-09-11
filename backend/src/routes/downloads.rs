@@ -1799,23 +1799,37 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
             // presa em "Conectando" o tempo todo em que o captcha era resolvido.
             if let Some(child_path) = update.child_path.as_deref() {
                 if let Some(stage) = child_path.strip_prefix("solver:") {
-                    {
+                    // O provider reenvia esse sinal a cada poll (ex.: a cada 500ms
+                    // no Katfile) mesmo quando nada mudou. Rebroadcastar toda vez
+                    // fazia a linha na UI re-renderizar/piscar sem parar durante
+                    // toda a resolução do captcha, ainda que o status já fosse
+                    // WaitingCaptcha com a mesma mensagem. Só avisa a UI quando o
+                    // status ou a mensagem realmente mudarem.
+                    let changed = {
                         let mut map = state.downloads.lock().await;
-                        if let Some(d) = map.get_mut(&id) {
-                            d.status = DownloadStatus::WaitingCaptcha;
-                            d.error = Some(stage.to_string());
-                            d.error_kind = Some("captcha".to_string());
+                        match map.get_mut(&id) {
+                            Some(d) => {
+                                let changed = d.status != DownloadStatus::WaitingCaptcha
+                                    || d.error.as_deref() != Some(stage);
+                                d.status = DownloadStatus::WaitingCaptcha;
+                                d.error = Some(stage.to_string());
+                                d.error_kind = Some("captcha".to_string());
+                                changed
+                            }
+                            None => false,
                         }
+                    };
+                    if changed {
+                        state.broadcast(WsEvent::StatusChanged {
+                            id: id.clone(),
+                            status: DownloadStatus::WaitingCaptcha,
+                            error: Some(stage.to_string()),
+                            retry_at: None,
+                            captcha_type: None,
+                            captcha_sitekey: None,
+                            captcha_page_url: None,
+                        });
                     }
-                    state.broadcast(WsEvent::StatusChanged {
-                        id: id.clone(),
-                        status: DownloadStatus::WaitingCaptcha,
-                        error: Some(stage.to_string()),
-                        retry_at: None,
-                        captcha_type: None,
-                        captcha_sitekey: None,
-                        captcha_page_url: None,
-                    });
                     continue;
                 }
             }

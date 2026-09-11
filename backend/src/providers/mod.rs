@@ -39,6 +39,42 @@ tokio::task_local! {
     static TASK_DB_PATH: Option<String>;
 }
 
+/// URL de proxy (com credenciais embutidas, se houver) pra passar ao helper
+/// Electron do provider atual, de forma que ele navegue pelo MESMO circuito
+/// que o `http_client()` desta task vai usar pra baixar os bytes de verdade.
+/// Sem isso, um provider que resolve um link temporário via uma janela real
+/// do Electron (ex.: Send.now) e depois busca o arquivo com o reqwest do Rust
+/// pode acabar usando IPs diferentes nas duas pontas — o host vê o link sendo
+/// gerado de um IP e baixado de outro, e serve uma página de verificação em
+/// vez do arquivo. `None` quando a task não está em modo proxy (usa a rede
+/// direta normalmente, sem enviar nada pro helper).
+pub(crate) fn current_task_proxy_url() -> Option<String> {
+    let proxy = TASK_PROXY.try_with(Clone::clone).ok()?;
+    match proxy.mode.as_str() {
+        "tor" => {
+            let host = if proxy.host.trim().is_empty() { "127.0.0.1" } else { proxy.host.trim() };
+            let port = if proxy.port == 0 { 9050 } else { proxy.port };
+            Some(match (&proxy.username, &proxy.password) {
+                (Some(u), Some(p)) if !u.is_empty() => format!("socks5://{u}:{p}@{host}:{port}"),
+                _ => format!("socks5://{host}:{port}"),
+            })
+        }
+        "socks5" => Some(match (&proxy.username, &proxy.password) {
+            (Some(u), Some(p)) if !u.is_empty() => {
+                format!("socks5://{u}:{p}@{}:{}", proxy.host, proxy.port)
+            }
+            _ => format!("socks5://{}:{}", proxy.host, proxy.port),
+        }),
+        "http" | "https" => Some(match (&proxy.username, &proxy.password) {
+            (Some(u), Some(p)) if !u.is_empty() => {
+                format!("http://{u}:{p}@{}:{}", proxy.host, proxy.port)
+            }
+            _ => format!("http://{}:{}", proxy.host, proxy.port),
+        }),
+        _ => None,
+    }
+}
+
 pub fn update_global_proxy(mode: String, host: String, port: u16, username: Option<String>, password: Option<String>) {
     let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
     if let Ok(mut proxy) = lock.write() {
