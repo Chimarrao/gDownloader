@@ -64,6 +64,7 @@ export const ERROR_KIND_I18N_KEYS: Record<string, string> = {
   authentication: 'errorKindAuthentication',
   temporary: 'errorKindTemporary',
   permanent: 'errorKindPermanent',
+  tor_required: 'errorKindTorRequired',
 }
 
 export const STATUS_COLORS: Record<string, string> = {

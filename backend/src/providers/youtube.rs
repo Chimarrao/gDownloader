@@ -944,7 +944,22 @@ impl Provider for YouTubeProvider {
                 || Self::fragment_value(url, "ytdlp_download_pack")
                     .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
                     .unwrap_or(false);
-            let output_is_folder = download_pack || context.youtube_split_chapters;
+            let split_chapters = context.youtube_split_chapters
+                || Self::selected_flag(&selected_children, "ytdlp_split_chapters")
+                || Self::fragment_value(url, "ytdlp_split_chapters")
+                    .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+                    .unwrap_or(false);
+            let sub_langs = Self::selected_value(&selected_children, "ytdlp_sub_langs")
+                .or_else(|| Self::fragment_value(url, "ytdlp_sub_langs"))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| {
+                    if context.youtube_sub_langs.trim().is_empty() {
+                        "pt,en".to_string()
+                    } else {
+                        context.youtube_sub_langs.clone()
+                    }
+                });
+            let output_is_folder = download_pack || split_chapters;
             if output_is_folder {
                 tokio::fs::create_dir_all(dest_path).await?;
             } else if let Some(parent) = Path::new(dest_path).parent() {
@@ -1045,17 +1060,13 @@ impl Provider for YouTubeProvider {
                     args.push("--write-subs".to_string());
                     args.push("--write-auto-sub".to_string());
                     args.push("--sub-lang".to_string());
-                    args.push(if context.youtube_sub_langs.trim().is_empty() {
-                        "pt,en".to_string()
-                    } else {
-                        context.youtube_sub_langs.clone()
-                    });
+                    args.push(sub_langs.clone());
                     if context.youtube_embed_subs {
                         args.push("--embed-subs".to_string());
                     }
                 }
 
-                if context.youtube_split_chapters {
+                if split_chapters {
                     args.push("--split-chapters".to_string());
                     args.push("-o".to_string());
                     args.push(format!(

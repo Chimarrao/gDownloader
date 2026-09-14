@@ -429,7 +429,10 @@ pub async fn add_download_internal(
         let selected_pack = selected_fragment_value(&selected_children, "ytdlp_download_pack")
             .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
-        if settings.youtube_download_pack || settings.youtube_split_chapters || selected_pack {
+        let selected_split_chapters = selected_fragment_value(&selected_children, "ytdlp_split_chapters")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if settings.youtube_download_pack || settings.youtube_split_chapters || selected_pack || selected_split_chapters {
             let folder_name = std::path::Path::new(&file_info.filename)
                 .file_stem()
                 .and_then(|value| value.to_str())
@@ -594,6 +597,7 @@ pub async fn add_download_internal(
         channel_name: file_info.channel_name,
         channel_thumbnail_url: file_info.channel_thumbnail_url,
         auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(false),
+        tor_required: req.tor_required.unwrap_or(false),
     };
 
     {
@@ -1562,7 +1566,14 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
         // descriptografia AES-CTR sequencial e 100% correta — no download em partes,
         // o seek do cifrador por parte (em offsets não alinhados a 16 bytes) é uma
         // fonte de arquivo corrompido; conexão única elimina esse risco.
-        let effective_parallel_parts = if provider_name == "YouTube" || provider_name == "Mega" {
+        // Depois de repetidas quedas de conexão (2+) no MESMO download, servidores que
+        // fecham conexões paralelas por política anti-leech (comum em hosts simples/
+        // pessoais) tendem a continuar derrubando — visto ao vivo num vídeo do usuário:
+        // ciclo de ~11-12s baixando rápido com N conexões, caindo tudo de uma vez,
+        // reconectando, repetindo. Um navegador comum só abre 1 conexão e não sofre
+        // isso. Depois de 2 quedas seguidas, força conexão única nas próximas
+        // tentativas — mais compatível com esse tipo de servidor, mesmo mais lento.
+        let effective_parallel_parts = if provider_name == "YouTube" || provider_name == "Mega" || network_retries >= 2 {
             1
         } else {
             parallel_parts as usize
@@ -2622,6 +2633,13 @@ fn should_assign_isolated_route(auto_tor_on_limit: bool, isolated_tor_port: Opti
     auto_tor_on_limit && isolated_tor_port.is_some()
 }
 
+/// Kill switch: quando `tor_required` está marcado, o download não pode iniciar
+/// (nem seguir rodando) sem um circuito Tor isolado ativo — nunca cai para conexão
+/// direta silenciosamente, ao contrário de `auto_tor_on_limit` (fallback automático).
+fn tor_required_ready(tor_required: bool, isolated_tor_port: Option<u16>) -> bool {
+    !tor_required || isolated_tor_port.is_some()
+}
+
 /// Teto de tentativas no modo Tor isolado antes de desistir e marcar erro.
 const TOR_LIMIT_MAX_RETRIES: u32 = 50;
 
@@ -2647,7 +2665,8 @@ async fn ensure_download_network_route(
         };
         // Rota isolada por-download: flag ligada + daemon Tor rodando, mesmo que
         // o proxy global esteja desligado.
-        let want_isolated = should_assign_isolated_route(download.auto_tor_on_limit, isolated_port);
+        let want_isolated = should_assign_isolated_route(download.auto_tor_on_limit, isolated_port)
+            || should_assign_isolated_route(download.tor_required, isolated_port);
         if !global_tor && !want_isolated {
             return None;
         }
@@ -2681,7 +2700,10 @@ async fn rotate_download_tor_route(
     let want_isolated = {
         let map = state.downloads.lock().await;
         map.get(id)
-            .map(|d| should_assign_isolated_route(d.auto_tor_on_limit, isolated_port))
+            .map(|d| {
+                should_assign_isolated_route(d.auto_tor_on_limit, isolated_port)
+                    || should_assign_isolated_route(d.tor_required, isolated_port)
+            })
             .unwrap_or(false)
     };
     if !global_tor && !want_isolated {
@@ -3205,6 +3227,7 @@ pub async fn schedule_pending_downloads(state: AppState) {
         return;
     }
     let limit = *state.max_concurrent_downloads.lock().await;
+    let isolated_tor_port = *state.isolated_tor_port.lock().await;
     let active_task_ids = {
         let tasks = state.active_tasks.lock().await;
         let running = state.running_downloads.lock().await;
@@ -3236,6 +3259,24 @@ pub async fn schedule_pending_downloads(state: AppState) {
         }
 
         let now = current_unix_secs();
+        // Kill switch: dá um retorno visível na UI enquanto o download fica preso
+        // esperando o Tor (em vez de ficar "Pendente" sem explicação nenhuma).
+        for download in map.values_mut() {
+            if !matches!(download.status, DownloadStatus::Pending | DownloadStatus::RateLimited) {
+                continue;
+            }
+            let waiting_for_tor = download.tor_required && isolated_tor_port.is_none();
+            let hint = "Aguardando Tor (kill switch ativo para este download)";
+            if waiting_for_tor {
+                if download.error.as_deref() != Some(hint) {
+                    download.error = Some(hint.to_string());
+                    download.error_kind = Some("tor_required".to_string());
+                }
+            } else if download.error_kind.as_deref() == Some("tor_required") {
+                download.error = None;
+                download.error_kind = None;
+            }
+        }
         let mut active_by_provider = std::collections::HashMap::<String, usize>::new();
         for download in map.values() {
             let units = active_file_units(download);
@@ -3252,6 +3293,7 @@ pub async fn schedule_pending_downloads(state: AppState) {
                     &&
                 matches!(download.status, DownloadStatus::Pending | DownloadStatus::RateLimited)
                     && download.retry_at.map(|retry_at| retry_at <= now).unwrap_or(true)
+                    && tor_required_ready(download.tor_required, isolated_tor_port)
             })
             .map(|download| {
                 let url = if let Some(ref token) = download.captcha_token {
@@ -4596,6 +4638,7 @@ mod tests {
             channel_name: None,
             channel_thumbnail_url: None,
             auto_tor_on_limit: false,
+            tor_required: false,
         };
 
         assert!(restore_legacy_fichier_temporary_link_failure(&mut download, 1_000));

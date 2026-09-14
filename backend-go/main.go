@@ -28,6 +28,8 @@ import (
 	"gdownloader-go/internal/proxyintercept"
 	"gdownloader-go/internal/stats"
 	"gdownloader-go/internal/system"
+	"gdownloader-go/internal/torrentapi"
+	"gdownloader-go/internal/torrentengine"
 	"gdownloader-go/internal/ws"
 )
 
@@ -71,6 +73,12 @@ func main() {
 
 	// Proxy intercept manager — portado de proxy_intercept.rs spawn_intercept_proxy_manager
 	proxyintercept.SpawnInterceptProxyManager(database, dbPath)
+
+	// Torrents — feature exclusiva do Go (anacrolix/torrent), sem depender de
+	// nenhum cliente de torrent externo. Ver internal/torrentengine.
+	torrentEngine := torrentengine.NewEngine(database)
+	torrentEngine.LoadPersisted()
+	config.SetTorrentEngine(torrentEngine)
 
 	r := mux.NewRouter()
 
@@ -224,6 +232,43 @@ func main() {
 	r.HandleFunc("/history/{id}", func(w http.ResponseWriter, req *http.Request) {
 		history.DeleteHistoryItem(w, req, database)
 	}).Methods("DELETE")
+
+	// Torrents — portado só em Go (feature nova, sem equivalente em Rust)
+	r.HandleFunc("/torrents", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "GET":
+			torrentapi.List(w, req, torrentEngine)
+		case "POST":
+			torrentapi.Add(w, req, torrentEngine)
+		default:
+			http.Error(w, `{"error":"método não permitido"}`, http.StatusMethodNotAllowed)
+		}
+	}).Methods("GET", "POST")
+	r.HandleFunc("/torrents/{id}", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "GET":
+			torrentapi.Get(w, req, torrentEngine)
+		case "DELETE":
+			torrentapi.Remove(w, req, torrentEngine)
+		default:
+			http.Error(w, `{"error":"método não permitido"}`, http.StatusMethodNotAllowed)
+		}
+	}).Methods("GET", "DELETE")
+	r.HandleFunc("/torrents/{id}/pause", func(w http.ResponseWriter, req *http.Request) {
+		torrentapi.Pause(w, req, torrentEngine)
+	}).Methods("POST")
+	r.HandleFunc("/torrents/{id}/resume", func(w http.ResponseWriter, req *http.Request) {
+		torrentapi.Resume(w, req, torrentEngine)
+	}).Methods("POST")
+	r.HandleFunc("/torrents/{id}/recheck", func(w http.ResponseWriter, req *http.Request) {
+		torrentapi.Recheck(w, req, torrentEngine)
+	}).Methods("POST")
+	r.HandleFunc("/torrents/{id}/select-files", func(w http.ResponseWriter, req *http.Request) {
+		torrentapi.SelectFiles(w, req, torrentEngine)
+	}).Methods("POST")
+	r.HandleFunc("/torrents/{id}/peers", func(w http.ResponseWriter, req *http.Request) {
+		torrentapi.Peers(w, req, torrentEngine)
+	}).Methods("GET")
 
 	// Fallback para rotas não migradas — proxy para Rust (se disponível) ou 404
 	// Para migração gradual, o Go responde 404 e o preload tenta Rust

@@ -39,6 +39,18 @@ export interface CapturedRow {
   youtubeDownloadThumbnail?: boolean
   youtubeDownloadSubtitles?: boolean
   youtubeMultiAudio?: boolean
+  // Divide o vídeo em arquivos separados por capítulo (--split-chapters do yt-dlp),
+  // usando os capítulos que o próprio YouTube informa (descrição/timestamps).
+  youtubeSplitChapters?: boolean
+  // "Pacote completo": vídeo + todas as faixas de áudio + legendas + thumbnail +
+  // descrição + metadados, como o jDownloader costuma entregar.
+  youtubeDownloadPack?: boolean
+  // Idiomas de legenda como lista separada por vírgula (ex.: "pt,en,es"). Vazio
+  // usa o padrão das Configurações.
+  youtubeSubLangs?: string
+  // Kill switch por download: se marcado, o download nunca inicia (nem continua)
+  // sem um circuito Tor ativo — não cai pra conexão direta silenciosamente.
+  torRequired?: boolean
 }
 
 export interface MirrorViewResult {

@@ -306,6 +306,7 @@
   "errorKindAuthentication": "Autenticação necessária",
   "errorKindTemporary": "Temporário",
   "errorKindPermanent": "Definitivo",
+  "errorKindTorRequired": "Aguardando Tor",
   "retryAttempt": "tentativa {current}/{max}",
   "waitingRetryIn": "{time} para tentar novamente",
   "rateLimitCountdown": "{time} para desbloquear",

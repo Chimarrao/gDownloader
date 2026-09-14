@@ -313,6 +313,7 @@
   "errorKindAuthentication": "Authentication required",
   "errorKindTemporary": "Temporary",
   "errorKindPermanent": "Permanent",
+  "errorKindTorRequired": "Waiting for Tor",
   "retryAttempt": "attempt {current}/{max}",
   "waitingRetryIn": "{time} until retry",
   "rateLimitCountdown": "{time} until unlock",

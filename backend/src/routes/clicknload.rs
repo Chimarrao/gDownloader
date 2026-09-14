@@ -92,6 +92,7 @@ async fn handle_clicknload(kind: &'static str, state: AppState, form: ClickNLoad
             duplicate_action: None,
             request_headers: None,
             auto_tor_on_limit: None,
+            tor_required: None,
         };
 
         match add_download_internal(state.clone(), req).await {

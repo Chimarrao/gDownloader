@@ -1,305 +1,354 @@
-import { DownloadStatus } from './constants'
+import { DownloadStatus } from "./constants";
 
-export { DownloadStatus }
+export { DownloadStatus };
 
 export interface QuotaInfo {
-  used: number
-  total: number
+  used: number;
+  total: number;
 }
 
 export interface AccountInfo {
-  email: string
-  quota?: QuotaInfo
+  email: string;
+  quota?: QuotaInfo;
 }
 
 export interface FileInfo {
-  name: string
-  size: number
-  durationSecs?: number
-  mimeType?: string
-  isFolder?: boolean
-  children?: DownloadChild[]
-  thumbnailUrl?: string
-  channelName?: string
-  channelThumbnailUrl?: string
+  name: string;
+  size: number;
+  durationSecs?: number;
+  mimeType?: string;
+  isFolder?: boolean;
+  children?: DownloadChild[];
+  thumbnailUrl?: string;
+  channelName?: string;
+  channelThumbnailUrl?: string;
 }
 
 export interface DownloadChild {
-  filename: string
-  size: number
-  mimeType?: string
-  isFolder: boolean
-  path?: string
-  sourceUrl?: string
-  bytesDownloaded?: number
-  speedBps?: number
-  etaSec?: number
-  status?: DownloadStatus
+  filename: string;
+  size: number;
+  mimeType?: string;
+  isFolder: boolean;
+  path?: string;
+  sourceUrl?: string;
+  bytesDownloaded?: number;
+  speedBps?: number;
+  etaSec?: number;
+  status?: DownloadStatus;
 }
 
 export interface DownloadOpts {
-  onProgress: (percent: number, speedBps: number, etaSec: number) => void
-  signal: AbortSignal
+  onProgress: (percent: number, speedBps: number, etaSec: number) => void;
+  signal: AbortSignal;
 }
 
 export interface ModuleAuth {
-  type: 'credentials' | 'oauth2'
-  login(params: Record<string, string>): Promise<void>
-  logout(): Promise<void>
-  isLoggedIn(): Promise<boolean>
-  getAccountInfo(): Promise<AccountInfo>
+  type: "credentials" | "oauth2";
+  login(params: Record<string, string>): Promise<void>;
+  logout(): Promise<void>;
+  isLoggedIn(): Promise<boolean>;
+  getAccountInfo(): Promise<AccountInfo>;
 }
 
 export interface DownloaderModule {
-  id: string
-  name: string
-  icon: string
-  color: string
-  urlPatterns: RegExp[]
-  auth?: ModuleAuth
-  getFileInfo(url: string): Promise<FileInfo>
-  download(url: string, destPath: string, opts: DownloadOpts): Promise<void>
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  urlPatterns: RegExp[];
+  auth?: ModuleAuth;
+  getFileInfo(url: string): Promise<FileInfo>;
+  download(url: string, destPath: string, opts: DownloadOpts): Promise<void>;
 }
 
 export interface DownloadItem {
-  id: string
-  url: string
-  moduleId: string
-  title: string
-  size: number
-  durationSecs?: number
-  isFolder?: boolean
-  children?: DownloadChild[]
-  status: DownloadStatus
-  percent: number
-  speedBps: number
-  etaSec: number
-  retryCount?: number
-  maxRetries?: number
-  retryAt?: number
-  captchaType?: string
-  captchaSitekey?: string
-  captchaPageUrl?: string
-  error: string
+  id: string;
+  url: string;
+  moduleId: string;
+  title: string;
+  size: number;
+  durationSecs?: number;
+  isFolder?: boolean;
+  children?: DownloadChild[];
+  status: DownloadStatus;
+  percent: number;
+  speedBps: number;
+  etaSec: number;
+  retryCount?: number;
+  maxRetries?: number;
+  retryAt?: number;
+  captchaType?: string;
+  captchaSitekey?: string;
+  captchaPageUrl?: string;
+  error: string;
   /** Semantic error class from backend: network|rate_limit|captcha|premium|removed|integrity|disk_full|temporary|permanent */
-  errorKind?: string
-  expectedHash?: ExpectedHash
-  outputPath?: string
-  priority?: number
-  pinned?: boolean
-  packageId?: string
-  parallelParts?: number
-  speedLimitKib?: number
-  sequential?: boolean
-  networkRoute?: DownloadNetworkRoute
-  addedAt: number
-  startedAt?: number
-  completedAt?: number
-  lastProgressAt?: number
-  thumbnailUrl?: string
-  thumbnailData?: string
-  channelName?: string
-  channelThumbnailUrl?: string
-  autoTorOnLimit?: boolean
+  errorKind?: string;
+  expectedHash?: ExpectedHash;
+  outputPath?: string;
+  priority?: number;
+  pinned?: boolean;
+  packageId?: string;
+  parallelParts?: number;
+  speedLimitKib?: number;
+  sequential?: boolean;
+  networkRoute?: DownloadNetworkRoute;
+  addedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+  lastProgressAt?: number;
+  thumbnailUrl?: string;
+  thumbnailData?: string;
+  channelName?: string;
+  channelThumbnailUrl?: string;
+  autoTorOnLimit?: boolean;
+  // Kill switch por download: nunca inicia/continua sem um circuito Tor ativo.
+  torRequired?: boolean;
 }
 
 export interface DownloadNetworkRoute {
-  mode: string
-  isolated?: boolean
-  proxyHost?: string
-  proxyPort?: number
-  proxyUsername?: string
-  exitIp?: string
-  exitCountry?: string
-  exitCountryCode?: string
-  circuitChanges?: number
-  lastCheckedAt?: number
+  mode: string;
+  isolated?: boolean;
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  exitIp?: string;
+  exitCountry?: string;
+  exitCountryCode?: string;
+  circuitChanges?: number;
+  lastCheckedAt?: number;
+}
+
+export interface TorrentFileStatus {
+  index: number;
+  path: string;
+  size: number;
+  bytesCompleted: number;
+  selected: boolean;
+}
+
+export interface TorrentStatus {
+  id: string;
+  infoHash: string;
+  name: string;
+  source: string;
+  sourceKind: "magnet" | "file";
+  destDir: string;
+  torRequired: boolean;
+  paused: boolean;
+  checking: boolean;
+  status:
+    | "fetching_metadata"
+    | "downloading"
+    | "seeding"
+    | "paused"
+    | "checking"
+    | "error"
+    | "done";
+  bytesCompleted: number;
+  totalBytes: number;
+  progress: number;
+  downloadBps: number;
+  uploadBps: number;
+  numPeers: number;
+  numSeeds: number;
+  createdAt: number;
+  error?: string;
+  files?: TorrentFileStatus[];
+}
+
+export interface TorrentPeerStatus {
+  address: string;
+  clientName?: string;
+  source: string;
+  downloadBps: number;
+  pieceCount: number;
+  percentPieces: number;
 }
 
 export interface DownloadPackage {
-  id: string
-  name: string
-  color: string
-  comment?: string | null
-  destDirOverride?: string | null
-  priority: number
-  createdAt: number
+  id: string;
+  name: string;
+  color: string;
+  comment?: string | null;
+  destDirOverride?: string | null;
+  priority: number;
+  createdAt: number;
 }
 
 export interface CreateDownloadPackagePayload {
-  name: string
-  color?: string
-  comment?: string
-  destDirOverride?: string
-  priority?: number
+  name: string;
+  color?: string;
+  comment?: string;
+  destDirOverride?: string;
+  priority?: number;
 }
 
-export type HashAlgorithm = 'md5' | 'sha1' | 'sha256' | 'crc32'
+export type HashAlgorithm = "md5" | "sha1" | "sha256" | "crc32";
 
 export interface ExpectedHash {
-  algorithm: HashAlgorithm
-  value: string
+  algorithm: HashAlgorithm;
+  value: string;
 }
 
 export interface PersistedDownloadItem {
-  id: string
-  url: string
-  moduleId: string
-  title: string
-  size: number
-  status: string
-  percent: number
-  error: string
-  outputPath?: string
-  addedAt: number
+  id: string;
+  url: string;
+  moduleId: string;
+  title: string;
+  size: number;
+  status: string;
+  percent: number;
+  error: string;
+  outputPath?: string;
+  addedAt: number;
 }
 
 export interface PersistedSettings {
-  theme: string
-  locale: string
-  outputDir: string
-  maxConcurrentDownloads: number
-  maxRetriesPerDownload?: number
-  infiniteRetries?: boolean
-  speedLimitKib?: number
-  parallelPartsPerDownload?: number
-  fontSize: number
-  fontFamily: string
-  uiZoom: number
-  nativeNotification: boolean
-  clipboardMonitorEnabled: boolean
-  accentColor?: string
-  proxyMode?: string
-  proxyHost?: string
-  proxyPort?: number
-  proxyUsername?: string
-  proxyPassword?: string
-  startTor?: boolean
-  reservedDiskMb?: number
-  useReconnectOnRateLimit?: boolean
-  reconnectMethod?: string
-  reconnectCommand?: string
-  routerIp?: string
-  postDownloadAction?: string
-  postDownloadActionTrigger?: string
-  postDownloadCommand?: string
-  postDownloadWebhookUrl?: string
-  autoExtract?: boolean
-  passwordList?: string[]
-  duplicateAction?: 'ask' | 'skip' | 'rename' | 'always_download'
+  theme: string;
+  locale: string;
+  outputDir: string;
+  maxConcurrentDownloads: number;
+  maxRetriesPerDownload?: number;
+  infiniteRetries?: boolean;
+  speedLimitKib?: number;
+  parallelPartsPerDownload?: number;
+  fontSize: number;
+  fontFamily: string;
+  uiZoom: number;
+  nativeNotification: boolean;
+  clipboardMonitorEnabled: boolean;
+  accentColor?: string;
+  proxyMode?: string;
+  proxyHost?: string;
+  proxyPort?: number;
+  proxyUsername?: string;
+  proxyPassword?: string;
+  startTor?: boolean;
+  reservedDiskMb?: number;
+  useReconnectOnRateLimit?: boolean;
+  reconnectMethod?: string;
+  reconnectCommand?: string;
+  routerIp?: string;
+  postDownloadAction?: string;
+  postDownloadActionTrigger?: string;
+  postDownloadCommand?: string;
+  postDownloadWebhookUrl?: string;
+  autoExtract?: boolean;
+  passwordList?: string[];
+  duplicateAction?: "ask" | "skip" | "rename" | "always_download";
   remoteAccess: {
-    enabled: boolean
+    enabled: boolean;
     /** Quando true, escuta em 0.0.0.0 (LAN). Default false = só 127.0.0.1. */
-    allowLan?: boolean
-    username: string
-    password: string
-    port: number
-  }
-  visibleColumns?: string[]
+    allowLan?: boolean;
+    username: string;
+    password: string;
+    port: number;
+  };
+  visibleColumns?: string[];
   lastFilters?: {
-    statuses?: string[]
-    hosts?: string[]
-    packages?: string[]
-  }
-  uiDensity?: 'comfortable' | 'compact' | 'dense'
-  reorderAnimations?: boolean
-  interceptMode?: 'off' | 'proxy_only'
-  interceptMinSizeMb?: number
-  interceptMimeAllowlist?: string[]
-  interceptDomainBlocklist?: string[]
-  interceptAskBeforeAdd?: boolean
-  onboardingCompleted?: boolean
-  youtubeUseCookies?: boolean
-  youtubeCookieBrowser?: string
-  youtubeCookiesFile?: string
-  youtubeMergeFormat?: string
-  youtubeDownloadSubs?: boolean
-  youtubeSubLangs?: string
-  youtubeEmbedSubs?: boolean
-  youtubeSplitChapters?: boolean
-  youtubeDownloadPack?: boolean
-  ytdlpAutoUpdate?: boolean
-  ytdlpBinPath?: string
-  ffmpegBinPath?: string
-  turnstileAutoUpdate?: boolean
-  turnstileSolverOrder?: string[]
-  turnstilePreferredSolver?: string
-  turnstileEnabled?: boolean
+    statuses?: string[];
+    hosts?: string[];
+    packages?: string[];
+  };
+  uiDensity?: "comfortable" | "compact" | "dense";
+  reorderAnimations?: boolean;
+  interceptMode?: "off" | "proxy_only";
+  interceptMinSizeMb?: number;
+  interceptMimeAllowlist?: string[];
+  interceptDomainBlocklist?: string[];
+  interceptAskBeforeAdd?: boolean;
+  onboardingCompleted?: boolean;
+  youtubeUseCookies?: boolean;
+  youtubeCookieBrowser?: string;
+  youtubeCookiesFile?: string;
+  youtubeMergeFormat?: string;
+  youtubeDownloadSubs?: boolean;
+  youtubeSubLangs?: string;
+  youtubeEmbedSubs?: boolean;
+  youtubeSplitChapters?: boolean;
+  youtubeDownloadPack?: boolean;
+  ytdlpAutoUpdate?: boolean;
+  ytdlpBinPath?: string;
+  ffmpegBinPath?: string;
+  turnstileAutoUpdate?: boolean;
+  turnstileSolverOrder?: string[];
+  turnstilePreferredSolver?: string;
+  turnstileEnabled?: boolean;
 }
 
 export interface AppSettingsSnapshot extends PersistedSettings {
-  nopechaApiKey?: string
+  nopechaApiKey?: string;
 }
 
 export interface DownloadHistoryItem {
-  id: string
-  url: string
-  title: string
-  host?: string
-  thumbnail: string
-  date: string
-  formatId: string
-  outputPath?: string
-  sha256Hash?: string
+  id: string;
+  url: string;
+  title: string;
+  host?: string;
+  thumbnail: string;
+  date: string;
+  formatId: string;
+  outputPath?: string;
+  sha256Hash?: string;
 }
 
 export interface HistorySearchFilters {
-  q?: string
-  host?: string
-  from?: string
-  to?: string
-  page?: number
-  pageSize?: number
+  q?: string;
+  host?: string;
+  from?: string;
+  to?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface DuplicateDownload {
-  id: string
-  filename: string
-  url: string
-  provider: string
-  path: string
-  status: DownloadStatus
-  completedAt?: number
-  identityKey?: string
-  sha256Hash?: string
+  id: string;
+  filename: string;
+  url: string;
+  provider: string;
+  path: string;
+  status: DownloadStatus;
+  completedAt?: number;
+  identityKey?: string;
+  sha256Hash?: string;
 }
 
 export interface DuplicateGroup {
-  kind: string
-  key: string
-  items: DuplicateDownload[]
+  kind: string;
+  key: string;
+  items: DuplicateDownload[];
 }
 
 export interface DownloadEvent {
-  id: number
-  downloadId: string
-  kind: string
-  message: string
-  createdAt: number
+  id: number;
+  downloadId: string;
+  kind: string;
+  message: string;
+  createdAt: number;
 }
 
 export interface ArchivePassword {
-  password: string
-  successCount: number
-  lastUsedAt?: number
-  source: string
+  password: string;
+  successCount: number;
+  lastUsedAt?: number;
+  source: string;
 }
 
 export interface CachedFileInfoSnapshot extends FileInfo {
-  providerId?: string
-  cachedAt?: number
-  lastCheckedAt?: number
+  providerId?: string;
+  cachedAt?: number;
+  lastCheckedAt?: number;
 }
 
 export type DownloadStatusExtended =
-  | 'pending'
-  | 'downloading'
-  | 'verifying'
-  | 'paused'
-  | 'complete'
-  | 'corrupted'
-  | 'error'
-  | 'cancelled'
-  | 'rate_limited'
-  | 'waiting_captcha'
-  | 'disk_full'
+  | "pending"
+  | "downloading"
+  | "verifying"
+  | "paused"
+  | "complete"
+  | "corrupted"
+  | "error"
+  | "cancelled"
+  | "rate_limited"
+  | "waiting_captcha"
+  | "disk_full";

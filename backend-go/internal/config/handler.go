@@ -6,7 +6,16 @@ import (
 	"net/http"
 
 	"gdownloader-go/internal/db"
+	"gdownloader-go/internal/torrentengine"
 )
+
+// torrentEngine é setado uma vez por main() — o engine de torrents precisa saber a
+// porta SOCKS do Tor assim que ela muda (ver UpdateTorRuntime abaixo).
+var torrentEngine *torrentengine.Engine
+
+func SetTorrentEngine(e *torrentengine.Engine) {
+	torrentEngine = e
+}
 
 // Portado de backend/src/routes/config.rs — handlers para /config/* e /config/*
 
@@ -100,7 +109,20 @@ func UpdateDownloadConfig(w http.ResponseWriter, r *http.Request, database *sql.
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type torRuntimeRequest struct {
+	SocksPort *int `json:"socks_port"`
+}
+
 func UpdateTorRuntime(w http.ResponseWriter, r *http.Request, database *sql.DB) {
+	var req torRuntimeRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if torrentEngine != nil {
+		port := 0
+		if req.SocksPort != nil {
+			port = *req.SocksPort
+		}
+		torrentEngine.SetTorSocksPort(port)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

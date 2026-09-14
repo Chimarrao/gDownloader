@@ -11,278 +11,356 @@ import {
   net,
   session,
   Tray,
-} from 'electron'
-import { basename, dirname, extname, join, resolve } from 'path'
-import { spawn } from 'child_process'
-import { closeSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, statfsSync, watch } from 'fs'
-import { Socket } from 'net'
-import { cpus, freemem, totalmem } from 'os'
-import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import type { AppSettingsSnapshot } from '../shared/types'
+} from "electron";
+import { basename, dirname, extname, join, resolve } from "path";
+import { spawn } from "child_process";
+import {
+  closeSync,
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  statfsSync,
+  watch,
+} from "fs";
+import { Socket } from "net";
+import { cpus, freemem, totalmem } from "os";
+import { electronApp, optimizer, is } from "@electron-toolkit/utils";
+import type { AppSettingsSnapshot } from "../shared/types";
 import {
   createAppStorage,
   type HistorySearchFilters,
   type PersistedHistoryItem,
-} from './app-storage'
-import { createAkiraboxService } from './akirabox-service'
-import { createBackendRuntime, createGoRuntime } from './backend-runtime'
-import { HOSTER_BROWSER_USER_AGENT } from './browser-helper-common'
-import { createSendNowService } from './sendnow-service'
-import { createCaptchaWindowService } from './captcha-window-service'
-import { logMain } from './debug-log'
-import { createKatfileService } from './katfile-service'
-import { createRemoteAccessServer, generateRemoteAccessCredentials } from './remote-access-server'
-import { assertSafeFilesystemPath, assertSafeHttpUrl } from './path-safety'
-import { createTeraboxService, type TeraboxStoredAccount } from './terabox-service'
-import { createYtdlpService } from './ytdlp-service'
-import { createFfmpegService } from './ffmpeg-service'
-import { createTurnstileService } from './turnstile-service'
-import { randomBytes } from 'crypto'
+} from "./app-storage";
+import { createAkiraboxService } from "./akirabox-service";
+import { createBackendRuntime, createGoRuntime } from "./backend-runtime";
+import { HOSTER_BROWSER_USER_AGENT } from "./browser-helper-common";
+import { createSendNowService } from "./sendnow-service";
+import { createCaptchaWindowService } from "./captcha-window-service";
+import { logMain } from "./debug-log";
+import { createKatfileService } from "./katfile-service";
+import {
+  createRemoteAccessServer,
+  generateRemoteAccessCredentials,
+} from "./remote-access-server";
+import { assertSafeFilesystemPath, assertSafeHttpUrl } from "./path-safety";
+import {
+  createTeraboxService,
+  type TeraboxStoredAccount,
+} from "./terabox-service";
+import { createYtdlpService } from "./ytdlp-service";
+import { createFfmpegService } from "./ffmpeg-service";
+import { createTurnstileService } from "./turnstile-service";
+import { randomBytes } from "crypto";
 
 // Trava de instância única: sem isso, abrir o app uma segunda vez (dev ou
 // build) sobe um segundo backend Rust/Go e um segundo helper de Katfile/Send.now
 // brigando pela mesma sessão/partição/DB — sintoma visto na prática (duas
 // janelas, downloads duplicados, comportamento imprevisível). Precisa rodar
 // antes de qualquer outra coisa tocar em `app`.
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
-  app.quit()
-  process.exit(0)
+  app.quit();
+  process.exit(0);
 }
-app.on('second-instance', () => {
+app.on("second-instance", () => {
   // Alguém tentou abrir uma segunda instância: foca a janela existente em vez
   // de deixar duas rodando.
   if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   }
-})
+});
 
 const legacySettingsPaths = [
-  join(process.cwd(), 'settings.json'),
-  join(app.getPath('userData'), 'settings.json'),
-]
+  join(process.cwd(), "settings.json"),
+  join(app.getPath("userData"), "settings.json"),
+];
 const legacyHistoryPaths = [
-  join(app.getPath('userData'), 'history.json'),
-  join(app.getPath('userData'), 'download-history.json'),
-]
+  join(app.getPath("userData"), "history.json"),
+  join(app.getPath("userData"), "download-history.json"),
+];
 
-let previousCpuSample: { idle: number; total: number } | null = null
+let previousCpuSample: { idle: number; total: number } | null = null;
 
-function systemMetricsSnapshot(): { memoryUsed: number; memoryTotal: number; cpuPercent: number } {
-  let idle = 0
-  let total = 0
+function systemMetricsSnapshot(): {
+  memoryUsed: number;
+  memoryTotal: number;
+  cpuPercent: number;
+} {
+  let idle = 0;
+  let total = 0;
   for (const cpu of cpus()) {
-    idle += cpu.times.idle
-    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq
+    idle += cpu.times.idle;
+    total +=
+      cpu.times.user +
+      cpu.times.nice +
+      cpu.times.sys +
+      cpu.times.idle +
+      cpu.times.irq;
   }
-  const previous = previousCpuSample
-  previousCpuSample = { idle, total }
-  const totalDelta = total - (previous?.total ?? total)
-  const idleDelta = idle - (previous?.idle ?? idle)
-  const cpuPercent = totalDelta > 0 ? Math.max(0, Math.min(100, ((totalDelta - idleDelta) / totalDelta) * 100)) : 0
-  const memoryTotal = totalmem()
-  return { memoryUsed: Math.max(0, memoryTotal - freemem()), memoryTotal, cpuPercent }
+  const previous = previousCpuSample;
+  previousCpuSample = { idle, total };
+  const totalDelta = total - (previous?.total ?? total);
+  const idleDelta = idle - (previous?.idle ?? idle);
+  const cpuPercent =
+    totalDelta > 0
+      ? Math.max(
+          0,
+          Math.min(100, ((totalDelta - idleDelta) / totalDelta) * 100),
+        )
+      : 0;
+  const memoryTotal = totalmem();
+  return {
+    memoryUsed: Math.max(0, memoryTotal - freemem()),
+    memoryTotal,
+    cpuPercent,
+  };
 }
 
 function getAppIconPath(): string {
   if (is.dev) {
-    return join(process.cwd(), 'resources', 'icons', 'gdownloader-plus.png')
+    return join(process.cwd(), "resources", "icons", "gdownloader-plus.png");
   }
-  return join(process.resourcesPath, 'icons', 'gdownloader-plus.png')
+  return join(process.resourcesPath, "icons", "gdownloader-plus.png");
 }
 
 function getDatabasePath(): string {
   if (is.dev) {
-    return join(process.cwd(), 'backend', 'database', 'gdownloader.db')
+    return join(process.cwd(), "backend", "database", "gdownloader.db");
   }
-  return join(app.getPath('userData'), 'backend', 'database', 'gdownloader.db')
+  return join(app.getPath("userData"), "backend", "database", "gdownloader.db");
 }
 
 function getBackendLogPath(): string {
-  const dbPath = getDatabasePath()
-  const dbDir = dirname(dbPath)
+  const dbPath = getDatabasePath();
+  const dbDir = dirname(dbPath);
   const logDir =
-    basename(dbDir).toLowerCase() === 'database'
-      ? join(dirname(dbDir), 'logs')
-      : join(dbDir, 'logs')
+    basename(dbDir).toLowerCase() === "database"
+      ? join(dirname(dbDir), "logs")
+      : join(dbDir, "logs");
 
   try {
     const candidates = readdirSync(logDir)
-      .filter((name) => name === 'app.log' || name.startsWith('app.log.'))
+      .filter((name) => name === "app.log" || name.startsWith("app.log."))
       .map((name) => join(logDir, name))
       .filter((path) => existsSync(path))
-      .sort((left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs)
-    if (candidates.length > 0) return candidates[0]
+      .sort(
+        (left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs,
+      );
+    if (candidates.length > 0) return candidates[0];
   } catch {
     // fallback abaixo
   }
 
-  return join(logDir, 'app.log')
+  return join(logDir, "app.log");
 }
 
 function expandUserPath(path: string): string {
-  if (!path || path === '~') return app.getPath('home')
-  if (path.startsWith('~/')) return join(app.getPath('home'), path.slice(2))
-  return path
+  if (!path || path === "~") return app.getPath("home");
+  if (path.startsWith("~/")) return join(app.getPath("home"), path.slice(2));
+  return path;
 }
 
 function directorySize(path: string): number {
-  if (!existsSync(path)) return 0
-  const stat = lstatSync(path)
-  if (!stat.isDirectory()) return stat.size
-  let total = 0
+  if (!existsSync(path)) return 0;
+  const stat = lstatSync(path);
+  if (!stat.isDirectory()) return stat.size;
+  let total = 0;
   for (const entry of readdirSync(path)) {
-    total += directorySize(join(path, entry))
+    total += directorySize(join(path, entry));
   }
-  return total
+  return total;
 }
 
 function clearDirectoryContents(path: string): void {
-  if (!existsSync(path)) return
+  if (!existsSync(path)) return;
   for (const entry of readdirSync(path)) {
-    rmSync(join(path, entry), { recursive: true, force: true })
+    rmSync(join(path, entry), { recursive: true, force: true });
   }
 }
 
 function tmpCachePath(): string {
-  return join(process.cwd(), 'tmp')
+  return join(process.cwd(), "tmp");
 }
 
 function proxyCaPath(): string {
-  return join(process.cwd(), 'backend', 'database', 'proxy-ca')
+  return join(process.cwd(), "backend", "database", "proxy-ca");
 }
 
 async function localCacheStats(): Promise<{
-  totalBytes: number
-  items: Array<{ id: string; label: string; description: string; bytes: number; entries?: number; clearable: boolean }>
+  totalBytes: number;
+  items: Array<{
+    id: string;
+    label: string;
+    description: string;
+    bytes: number;
+    entries?: number;
+    clearable: boolean;
+  }>;
 }> {
-  const fileInfo = await fetchBackendConfig<{ entries: number; bytes: number }>('/file-info/cache/stats')
-    .catch(() => ({ entries: 0, bytes: 0 }))
+  const fileInfo = await fetchBackendConfig<{ entries: number; bytes: number }>(
+    "/file-info/cache/stats",
+  ).catch(() => ({ entries: 0, bytes: 0 }));
   const items = [
     {
-      id: 'file-info',
-      label: 'Metadados de links',
-      description: 'Nomes, tamanhos e árvores de pastas já lidos no LinkGrabber.',
+      id: "file-info",
+      label: "Metadados de links",
+      description:
+        "Nomes, tamanhos e árvores de pastas já lidos no LinkGrabber.",
       bytes: fileInfo.bytes,
       entries: fileInfo.entries,
       clearable: fileInfo.entries > 0,
     },
     {
-      id: 'tor-data',
-      label: 'Dados temporários do Tor',
-      description: 'Estado local do daemon Tor embutido. Será recriado ao conectar novamente.',
-      bytes: directorySize(join(app.getPath('userData'), 'tor-data')),
+      id: "tor-data",
+      label: "Dados temporários do Tor",
+      description:
+        "Estado local do daemon Tor embutido. Será recriado ao conectar novamente.",
+      bytes: directorySize(join(app.getPath("userData"), "tor-data")),
       clearable: true,
     },
     {
-      id: 'proxy-ca',
-      label: 'Certificados/cache do proxy local',
-      description: 'Arquivos auxiliares do interceptor local de navegador.',
+      id: "proxy-ca",
+      label: "Certificados/cache do proxy local",
+      description: "Arquivos auxiliares do interceptor local de navegador.",
       bytes: directorySize(proxyCaPath()),
       clearable: true,
     },
     {
-      id: 'tmp',
-      label: 'Temporários do projeto',
-      description: 'Arquivos temporários gerados por importações, testes e integrações locais.',
+      id: "tmp",
+      label: "Temporários do projeto",
+      description:
+        "Arquivos temporários gerados por importações, testes e integrações locais.",
       bytes: directorySize(tmpCachePath()),
       clearable: true,
     },
-  ]
+  ];
   return {
     totalBytes: items.reduce((sum, item) => sum + item.bytes, 0),
     items,
-  }
+  };
 }
 
-async function clearLocalCache(ids: string[]): Promise<Awaited<ReturnType<typeof localCacheStats>>> {
+async function clearLocalCache(
+  ids: string[],
+): Promise<Awaited<ReturnType<typeof localCacheStats>>> {
   for (const id of ids) {
-    if (id === 'file-info') {
-      await deleteBackend('/file-info/cache').catch((error) => {
-        logMain('cache', 'Falha ao limpar cache de metadados', error)
-      })
-    } else if (id === 'tor-data') {
-      clearDirectoryContents(join(app.getPath('userData'), 'tor-data'))
-    } else if (id === 'proxy-ca') {
-      clearDirectoryContents(proxyCaPath())
-    } else if (id === 'tmp') {
-      clearDirectoryContents(tmpCachePath())
+    if (id === "file-info") {
+      await deleteBackend("/file-info/cache").catch((error) => {
+        logMain("cache", "Falha ao limpar cache de metadados", error);
+      });
+    } else if (id === "tor-data") {
+      clearDirectoryContents(join(app.getPath("userData"), "tor-data"));
+    } else if (id === "proxy-ca") {
+      clearDirectoryContents(proxyCaPath());
+    } else if (id === "tmp") {
+      clearDirectoryContents(tmpCachePath());
     }
   }
-  return localCacheStats()
+  return localCacheStats();
 }
 
 function tailLogFile(maxLines = 500): { path: string; lines: string[] } {
-  const path = getBackendLogPath()
-  if (!existsSync(path)) return { path, lines: [] }
+  const path = getBackendLogPath();
+  if (!existsSync(path)) return { path, lines: [] };
   try {
     // Ler apenas o fim evita carregar e dividir todo o arquivo a cada atualização
     // da tela de logs. O limite é maior que o máximo exibido, mesmo com linhas longas.
-    const size = statSync(path).size
-    const bytesToRead = Math.min(size, 512 * 1024)
-    if (bytesToRead === 0) return { path, lines: [] }
-    const buffer = Buffer.allocUnsafe(bytesToRead)
-    const fd = openSync(path, 'r')
+    const size = statSync(path).size;
+    const bytesToRead = Math.min(size, 512 * 1024);
+    if (bytesToRead === 0) return { path, lines: [] };
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const fd = openSync(path, "r");
     try {
-      readSync(fd, buffer, 0, bytesToRead, Math.max(0, size - bytesToRead))
+      readSync(fd, buffer, 0, bytesToRead, Math.max(0, size - bytesToRead));
     } finally {
-      closeSync(fd)
+      closeSync(fd);
     }
-    const lines = buffer.toString('utf8').split(/\r?\n/).filter(Boolean)
+    const lines = buffer.toString("utf8").split(/\r?\n/).filter(Boolean);
     // O primeiro registro pode ter começado antes do trecho lido.
-    if (size > bytesToRead) lines.shift()
-    return { path, lines: lines.slice(-maxLines) }
+    if (size > bytesToRead) lines.shift();
+    return { path, lines: lines.slice(-maxLines) };
   } catch {
-    return { path, lines: [] }
+    return { path, lines: [] };
   }
 }
 
-async function fetchBackendConfig<T>(path: string, init?: RequestInit): Promise<T> {
+async function fetchBackendConfig<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
   if (!rustPort) {
-    throw new Error('Backend Rust ainda não está disponível')
+    throw new Error("Backend Rust ainda não está disponível");
   }
 
-  const response = await fetch(`http://127.0.0.1:${rustPort}${path}`, init)
+  const response = await fetch(`http://127.0.0.1:${rustPort}${path}`, init);
   if (!response.ok) {
-    throw new Error(`Falha ao acessar ${path}: ${response.status}`)
+    throw new Error(`Falha ao acessar ${path}: ${response.status}`);
   }
-  return response.json() as Promise<T>
+  return response.json() as Promise<T>;
 }
 
 async function postBackend(path: string, payload?: unknown): Promise<void> {
   if (!rustPort) {
-    throw new Error('Backend Rust ainda não está disponível')
+    throw new Error("Backend Rust ainda não está disponível");
   }
 
   const response = await fetch(`http://127.0.0.1:${rustPort}${path}`, {
-    method: 'POST',
-    headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers:
+      payload === undefined
+        ? undefined
+        : { "Content-Type": "application/json" },
     body: payload === undefined ? undefined : JSON.stringify(payload),
-  })
+  });
 
   if (!response.ok) {
     const body = await response
       .json()
-      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
-    throw new Error(body.error ?? `Falha ao acessar ${path}: ${response.status}`)
+      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }));
+    throw new Error(
+      body.error ?? `Falha ao acessar ${path}: ${response.status}`,
+    );
   }
+}
+
+// O engine de torrents mora só no sidecar Go, então alguns eventos (estado do Tor)
+// precisam ser replicados pra lá além do Rust.
+async function postGoBackend(path: string, payload?: unknown): Promise<void> {
+  if (!goPort) return;
+  await fetch(`http://127.0.0.1:${goPort}${path}`, {
+    method: "POST",
+    headers:
+      payload === undefined
+        ? undefined
+        : { "Content-Type": "application/json" },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+  });
 }
 
 async function deleteBackend(path: string): Promise<void> {
   if (!rustPort) {
-    throw new Error('Backend Rust ainda não está disponível')
+    throw new Error("Backend Rust ainda não está disponível");
   }
 
   const response = await fetch(`http://127.0.0.1:${rustPort}${path}`, {
-    method: 'DELETE',
-  })
+    method: "DELETE",
+  });
   if (!response.ok) {
     const body = await response
       .json()
-      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }))
-    throw new Error(body.error ?? `Falha ao acessar ${path}: ${response.status}`)
+      .catch(() => ({ error: `Falha ao acessar ${path}: ${response.status}` }));
+    throw new Error(
+      body.error ?? `Falha ao acessar ${path}: ${response.status}`,
+    );
   }
 }
 
@@ -292,40 +370,48 @@ const storage = createAppStorage({
   fetchBackendConfig,
   postBackend,
   deleteBackend,
-})
+});
 
 const remoteAccessServer = createRemoteAccessServer({
   getRustPort: () => rustPort,
   getSettings: () => storage.getPublicSettings(),
   persistSettings: async (settings) => {
-    await storage.persistPublicSettings(settings)
-    await syncBackendConfig(settings.maxConcurrentDownloads)
-    configureClipboardMonitor(settings.clipboardMonitorEnabled)
-    await remoteAccessServer.configure(settings)
+    await storage.persistPublicSettings(settings);
+    await syncBackendConfig(settings.maxConcurrentDownloads);
+    configureClipboardMonitor(settings.clipboardMonitorEnabled);
+    await remoteAccessServer.configure(settings);
   },
-})
+});
 
 async function loadSecureSettings(): Promise<void> {
   if (!rustPort) {
-    return
+    return;
   }
 
   try {
-    await storage.loadSecureSettings()
+    await storage.loadSecureSettings();
   } catch (error) {
-    logMain('settings', 'Falha ao carregar credenciais locais do SQLite', error)
+    logMain(
+      "settings",
+      "Falha ao carregar credenciais locais do SQLite",
+      error,
+    );
   }
 }
 
 async function loadPublicSettings(): Promise<void> {
   if (!rustPort) {
-    return
+    return;
   }
 
   try {
-    await storage.loadPublicSettings()
+    await storage.loadPublicSettings();
   } catch (error) {
-    logMain('settings', 'Falha ao carregar as configurações locais do SQLite', error)
+    logMain(
+      "settings",
+      "Falha ao carregar as configurações locais do SQLite",
+      error,
+    );
   }
 }
 
@@ -333,79 +419,87 @@ async function loadHistoryFromBackend(
   filters?: HistorySearchFilters,
 ): Promise<PersistedHistoryItem[]> {
   if (!rustPort) {
-    return []
+    return [];
   }
 
-  return storage.loadHistoryFromBackend(filters).catch(() => [])
+  return storage.loadHistoryFromBackend(filters).catch(() => []);
 }
 
-async function saveHistoryToBackend(items: PersistedHistoryItem[]): Promise<void> {
-  await storage.saveHistoryToBackend(items)
+async function saveHistoryToBackend(
+  items: PersistedHistoryItem[],
+): Promise<void> {
+  await storage.saveHistoryToBackend(items);
 }
 
-async function appendHistoryItemToBackend(item: PersistedHistoryItem): Promise<void> {
-  await storage.appendHistoryItemToBackend(item)
+async function appendHistoryItemToBackend(
+  item: PersistedHistoryItem,
+): Promise<void> {
+  await storage.appendHistoryItemToBackend(item);
 }
 
 async function loadHistoryHostsFromBackend(): Promise<string[]> {
   if (!rustPort) {
-    return []
+    return [];
   }
-  return storage.loadHistoryHostsFromBackend().catch(() => [])
+  return storage.loadHistoryHostsFromBackend().catch(() => []);
 }
 
 async function removeHistoryItemInBackend(id: string): Promise<void> {
-  await storage.removeHistoryItemInBackend(id)
+  await storage.removeHistoryItemInBackend(id);
 }
 
 async function clearHistoryInBackend(): Promise<void> {
-  await storage.clearHistoryInBackend()
+  await storage.clearHistoryInBackend();
 }
 
 async function migrateLegacySettings(): Promise<void> {
   if (!rustPort) {
-    return
+    return;
   }
 
   await storage.migrateLegacySettingsIfNeeded().catch((error) => {
-    logMain('settings', 'Falha ao migrar dados legados para o SQLite', error)
-  })
+    logMain("settings", "Falha ao migrar dados legados para o SQLite", error);
+  });
 }
 
 function currentSettingsSnapshot(): AppSettingsSnapshot {
-  return storage.currentSettingsSnapshot()
+  return storage.currentSettingsSnapshot();
 }
 
 function persistTeraboxAccount(account: TeraboxStoredAccount | null): void {
   void storage.persistTeraboxAccount(account).catch((error) => {
-    logMain('auth', 'Falha ao persistir conta do TeraBox no SQLite', error)
-  })
+    logMain("auth", "Falha ao persistir conta do TeraBox no SQLite", error);
+  });
 }
 
 async function solveCaptchaWithNopecha(params: {
-  type: string
-  sitekey: string
-  pageurl: string
+  type: string;
+  sitekey: string;
+  pageurl: string;
 }): Promise<string | null> {
-  const apiKey = storage.getNopechaApiKey()
+  const apiKey = storage.getNopechaApiKey();
   if (!apiKey) {
-    logMain('nopecha', 'Nenhuma chave configurada, pulando tentativa automática', {
-      type: params.type,
-      pageurl: params.pageurl,
-    })
-    return null
+    logMain(
+      "nopecha",
+      "Nenhuma chave configurada, pulando tentativa automática",
+      {
+        type: params.type,
+        pageurl: params.pageurl,
+      },
+    );
+    return null;
   }
 
-  logMain('nopecha', 'Iniciando tentativa automática de captcha', {
+  logMain("nopecha", "Iniciando tentativa automática de captcha", {
     type: params.type,
     pageurl: params.pageurl,
     hasSitekey: Boolean(params.sitekey),
-  })
+  });
 
   try {
-    const submitRes = (await fetch('https://api.nopecha.com/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const submitRes = (await fetch("https://api.nopecha.com/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: params.type,
         sitekey: params.sitekey,
@@ -414,59 +508,72 @@ async function solveCaptchaWithNopecha(params: {
       }),
     })
       .then((r) => r.json())
-      .catch(() => null)) as Record<string, unknown> | null
+      .catch(() => null)) as Record<string, unknown> | null;
 
     if (!submitRes?.data) {
-      logMain('nopecha', 'API não retornou task id', submitRes)
-      return null
+      logMain("nopecha", "API não retornou task id", submitRes);
+      return null;
     }
-    const taskId = submitRes.data as string
+    const taskId = submitRes.data as string;
 
     for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 2000))
-      const res = (await fetch(`https://api.nopecha.com/?id=${taskId}&key=${apiKey}`)
+      await new Promise((r) => setTimeout(r, 2000));
+      const res = (await fetch(
+        `https://api.nopecha.com/?id=${taskId}&key=${apiKey}`,
+      )
         .then((r) => r.json())
-        .catch(() => null)) as Record<string, unknown> | null
-      const data = res?.data
+        .catch(() => null)) as Record<string, unknown> | null;
+      const data = res?.data;
       if (Array.isArray(data) && data[0]) {
-        logMain('nopecha', 'Captcha resolvido automaticamente', {
+        logMain("nopecha", "Captcha resolvido automaticamente", {
           type: params.type,
           pageurl: params.pageurl,
-        })
-        return data[0] as string
+        });
+        return data[0] as string;
       }
     }
 
-    logMain('nopecha', 'Tempo esgotado aguardando resposta da API', {
+    logMain("nopecha", "Tempo esgotado aguardando resposta da API", {
       type: params.type,
       pageurl: params.pageurl,
-    })
-    return null
+    });
+    return null;
   } catch (error) {
-    logMain('nopecha', 'Falha ao tentar resolver captcha automaticamente', error)
-    return null
+    logMain(
+      "nopecha",
+      "Falha ao tentar resolver captcha automaticamente",
+      error,
+    );
+    return null;
   }
 }
 
-let rustPort: number | null = null
-let goPort: number | null = null
-let ytdlpService: ReturnType<typeof createYtdlpService> | null = null
-let ffmpegService: ReturnType<typeof createFfmpegService> | null = null
-let turnstileService: ReturnType<typeof createTurnstileService> | null = null
-let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null
-let lastClipboardText = ''
-let lastClipboardSignature = ''
-let managedTorProcess: ReturnType<typeof spawn> | null = null
-let managedTorBootstrap = 0
-let lastTorExit: { ip: string; country?: string; countryCode?: string; isTor: boolean } | null = null
+let rustPort: number | null = null;
+let goPort: number | null = null;
+let ytdlpService: ReturnType<typeof createYtdlpService> | null = null;
+let ffmpegService: ReturnType<typeof createFfmpegService> | null = null;
+let turnstileService: ReturnType<typeof createTurnstileService> | null = null;
+let clipboardMonitorTimer: ReturnType<typeof setInterval> | null = null;
+let lastClipboardText = "";
+let lastClipboardSignature = "";
+let managedTorProcess: ReturnType<typeof spawn> | null = null;
+let managedTorBootstrap = 0;
+let lastTorExit: {
+  ip: string;
+  country?: string;
+  countryCode?: string;
+  isTor: boolean;
+} | null = null;
 /** Token one-shot de processo para o proxy local Terabox/Akira/Kat (não é secret de usuário). */
-const helperProxyToken = randomBytes(24).toString('hex')
+const helperProxyToken = randomBytes(24).toString("hex");
 const backendRuntime = createBackendRuntime({
   dbPath: getDatabasePath(),
   createEnv: (dbPath) => {
-    const settings = storage.getPublicSettings()
-    const ytdlpBin = ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? '') ?? 'yt-dlp'
-    const ffmpegBin = ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? '') ?? ''
+    const settings = storage.getPublicSettings();
+    const ytdlpBin =
+      ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? "") ?? "yt-dlp";
+    const ffmpegBin =
+      ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? "") ?? "";
     return {
       ...process.env,
       TERABOX_PROXY_PORT: String(teraboxProxyPort),
@@ -479,28 +586,32 @@ const backendRuntime = createBackendRuntime({
       // Vazio quando nenhum ffmpeg foi resolvido: o backend só passa
       // --ffmpeg-location ao yt-dlp quando esta env não está vazia.
       GDOWNLOADER_FFMPEG_BIN: ffmpegBin,
-    }
+    };
   },
   onStdErr: (message) => {
-    void message
+    void message;
   },
   onRestarted: async (port) => {
-    rustPort = port
-    logMain('rust', 'Backend reiniciado', { port })
-    await loadPublicSettings()
-    await loadSecureSettings()
-    await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
-    configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
-    await remoteAccessServer.configure(storage.getPublicSettings())
+    rustPort = port;
+    logMain("rust", "Backend reiniciado", { port });
+    await loadPublicSettings();
+    await loadSecureSettings();
+    await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads);
+    configureClipboardMonitor(
+      storage.getPublicSettings().clipboardMonitorEnabled,
+    );
+    await remoteAccessServer.configure(storage.getPublicSettings());
   },
-})
+});
 
 const goRuntime = createGoRuntime({
   dbPath: getDatabasePath(),
   createEnv: (dbPath) => {
-    const settings = storage.getPublicSettings()
-    const ytdlpBin = ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? '') ?? 'yt-dlp'
-    const ffmpegBin = ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? '') ?? ''
+    const settings = storage.getPublicSettings();
+    const ytdlpBin =
+      ytdlpService?.effectiveBinPath(settings.ytdlpBinPath ?? "") ?? "yt-dlp";
+    const ffmpegBin =
+      ffmpegService?.effectiveBinPath(settings.ffmpegBinPath ?? "") ?? "";
     return {
       ...process.env,
       GDOWNLOADER_DB_PATH: dbPath,
@@ -511,237 +622,258 @@ const goRuntime = createGoRuntime({
       KATFILE_PROXY_PORT: String(teraboxProxyPort),
       SENDNOW_PROXY_PORT: String(teraboxProxyPort),
       GDOWNLOADER_HELPER_TOKEN: helperProxyToken,
-    }
+    };
   },
   onStdErr: (message) => {
-    void message
+    void message;
   },
   onRestarted: async (port) => {
-    goPort = port
-    logMain('go', 'Go sidecar reiniciado', { port })
+    goPort = port;
+    logMain("go", "Go sidecar reiniciado", { port });
   },
-})
+});
 
 const teraboxService = createTeraboxService({
   readAccount: () => storage.getTeraboxAccount(),
   saveAccount: persistTeraboxAccount,
-})
+});
 const akiraboxService = createAkiraboxService({
   solveCaptcha: solveCaptchaWithNopecha,
-})
-const captchaWindowService = createCaptchaWindowService()
+});
+const captchaWindowService = createCaptchaWindowService();
 // Katfile will be re-wired after turnstileService is ready (needs circular dep avoidance)
-let katfileService: ReturnType<typeof createKatfileService> = createKatfileService() as never
-const sendnowService = createSendNowService()
+let katfileService: ReturnType<typeof createKatfileService> =
+  createKatfileService() as never;
+const sendnowService = createSendNowService();
 
 function runCommand(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    let stderr = ''
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
 
-    child.stderr?.on('data', (data: Buffer) => {
-      stderr += data.toString()
-    })
+    child.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
 
-    child.on('error', reject)
-    child.on('exit', (code) => {
+    child.on("error", reject);
+    child.on("exit", (code) => {
       if (code === 0) {
-        resolve()
-        return
+        resolve();
+        return;
       }
-      reject(new Error(stderr.trim() || `${command} encerrou com código ${code}`))
-    })
-  })
+      reject(
+        new Error(stderr.trim() || `${command} encerrou com código ${code}`),
+      );
+    });
+  });
 }
 
 async function findFirstCommand(candidates: string[]): Promise<string | null> {
-  const lookup = process.platform === 'win32' ? 'where' : 'which'
+  const lookup = process.platform === "win32" ? "where" : "which";
   for (const candidate of candidates) {
     try {
-      await runCommand(lookup, [candidate])
-      return candidate
+      await runCommand(lookup, [candidate]);
+      return candidate;
     } catch {
       // segue
     }
   }
-  return null
+  return null;
 }
 
 function getArchiveOutputDir(archivePath: string): string {
-  const base = basename(archivePath)
-  const dir = dirname(archivePath)
-  const lower = base.toLowerCase()
+  const base = basename(archivePath);
+  const dir = dirname(archivePath);
+  const lower = base.toLowerCase();
   const suffixes = [
-    '.tar.gz',
-    '.tar.bz2',
-    '.tar.xz',
-    '.tar.zst',
-    '.tgz',
-    '.tbz2',
-    '.txz',
-    '.zip',
-    '.rar',
-    '.7z',
-    '.tar',
-    '.gz',
-    '.bz2',
-    '.xz',
-    '.zst',
-  ]
-  const matched = suffixes.find((suffix) => lower.endsWith(suffix))
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tar.zst",
+    ".tgz",
+    ".tbz2",
+    ".txz",
+    ".zip",
+    ".rar",
+    ".7z",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".zst",
+  ];
+  const matched = suffixes.find((suffix) => lower.endsWith(suffix));
   const name = matched
     ? base.slice(0, base.length - matched.length)
-    : base.slice(0, base.length - extname(base).length)
-  return join(dir, name || `${base}-extraido`)
+    : base.slice(0, base.length - extname(base).length);
+  return join(dir, name || `${base}-extraido`);
 }
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
-  const view = new Uint8Array(buffer)
-  const copy = new Uint8Array(view.byteLength)
-  copy.set(view)
-  return copy.buffer
+  const view = new Uint8Array(buffer);
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy.buffer;
 }
 
-async function extractRarEmbedded(archivePath: string, outputDir: string): Promise<string> {
+async function extractRarEmbedded(
+  archivePath: string,
+  outputDir: string,
+): Promise<string> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const unrar = require('node-unrar-js') as {
+  const unrar = require("node-unrar-js") as {
     createExtractorFromFile: (options: {
-      filepath: string
-      targetPath: string
-      wasmBinary: ArrayBuffer
+      filepath: string;
+      targetPath: string;
+      wasmBinary: ArrayBuffer;
     }) => Promise<{
       extract: (options?: Record<string, never>) => {
-        files: Iterable<unknown>
-      }
-    }>
-  }
+        files: Iterable<unknown>;
+      };
+    }>;
+  };
 
   const wasmBinary = toArrayBuffer(
-    readFileSync(require.resolve('node-unrar-js/dist/js/unrar.wasm')),
-  )
+    readFileSync(require.resolve("node-unrar-js/dist/js/unrar.wasm")),
+  );
   const extractor = await unrar.createExtractorFromFile({
     filepath: archivePath,
     targetPath: outputDir,
     wasmBinary,
-  })
-  const extracted = extractor.extract()
+  });
+  const extracted = extractor.extract();
   for (const entry of extracted.files) {
-    void entry
+    void entry;
     // percorre até o fim para garantir liberação dos recursos internos
   }
-  return outputDir
+  return outputDir;
 }
 
-async function extractWith7zWasm(archivePath: string, outputDir: string): Promise<string> {
-  const { default: SevenZip } = await import('7z-wasm')
-  const wasmBinary = toArrayBuffer(readFileSync(require.resolve('7z-wasm/7zz.wasm')))
-  const logs: string[] = []
-  const errors: string[] = []
+async function extractWith7zWasm(
+  archivePath: string,
+  outputDir: string,
+): Promise<string> {
+  const { default: SevenZip } = await import("7z-wasm");
+  const wasmBinary = toArrayBuffer(
+    readFileSync(require.resolve("7z-wasm/7zz.wasm")),
+  );
+  const logs: string[] = [];
+  const errors: string[] = [];
   const sevenZip = await SevenZip({
     wasmBinary,
     print: (line: string) => logs.push(line),
     printErr: (line: string) => errors.push(line),
-  })
+  });
 
-  const mountRoot = '/nodefs'
-  const realRoot = dirname(archivePath)
-  const archiveName = basename(archivePath)
-  const outputName = basename(outputDir)
+  const mountRoot = "/nodefs";
+  const realRoot = dirname(archivePath);
+  const archiveName = basename(archivePath);
+  const outputName = basename(outputDir);
 
   try {
-    sevenZip.FS.mkdir(mountRoot)
+    sevenZip.FS.mkdir(mountRoot);
   } catch {
     // já existe
   }
 
-  sevenZip.FS.mount(sevenZip.NODEFS, { root: realRoot }, mountRoot)
-  sevenZip.FS.chdir(mountRoot)
+  sevenZip.FS.mount(sevenZip.NODEFS, { root: realRoot }, mountRoot);
+  sevenZip.FS.chdir(mountRoot);
 
   try {
-    sevenZip.callMain(['x', archiveName, `-o${outputName}`, '-y'])
+    sevenZip.callMain(["x", archiveName, `-o${outputName}`, "-y"]);
   } catch (error) {
-    const detail = [...errors, ...logs].filter(Boolean).join('\n').trim()
-    throw new Error(detail || (error instanceof Error ? error.message : String(error)))
+    const detail = [...errors, ...logs].filter(Boolean).join("\n").trim();
+    throw new Error(
+      detail || (error instanceof Error ? error.message : String(error)),
+    );
   } finally {
     try {
-      sevenZip.FS.chdir('/')
-      sevenZip.FS.unmount(mountRoot)
+      sevenZip.FS.chdir("/");
+      sevenZip.FS.unmount(mountRoot);
     } catch {
       // ignora desmontagem
     }
   }
 
-  return outputDir
+  return outputDir;
 }
 
 async function extractArchive(archivePath: string): Promise<string> {
   if (!existsSync(archivePath)) {
-    throw new Error('Arquivo não encontrado para extração')
+    throw new Error("Arquivo não encontrado para extração");
   }
 
-  const outputDir = getArchiveOutputDir(archivePath)
-  mkdirSync(outputDir, { recursive: true })
-  const lower = archivePath.toLowerCase()
+  const outputDir = getArchiveOutputDir(archivePath);
+  mkdirSync(outputDir, { recursive: true });
+  const lower = archivePath.toLowerCase();
 
-  if (lower.endsWith('.zip')) {
-    if (process.platform === 'win32') {
-      await runCommand('powershell', [
-        '-NoProfile',
-        '-Command',
+  if (lower.endsWith(".zip")) {
+    if (process.platform === "win32") {
+      await runCommand("powershell", [
+        "-NoProfile",
+        "-Command",
         `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${outputDir.replace(/'/g, "''")}' -Force`,
-      ])
-      return outputDir
+      ]);
+      return outputDir;
     }
-    await runCommand('unzip', ['-o', archivePath, '-d', outputDir])
-    return outputDir
+    await runCommand("unzip", ["-o", archivePath, "-d", outputDir]);
+    return outputDir;
   }
 
   if (
-    lower.endsWith('.tar') ||
-    lower.endsWith('.tar.gz') ||
-    lower.endsWith('.tgz') ||
-    lower.endsWith('.tar.bz2') ||
-    lower.endsWith('.tbz2') ||
-    lower.endsWith('.tar.xz') ||
-    lower.endsWith('.txz') ||
-    lower.endsWith('.tar.zst')
+    lower.endsWith(".tar") ||
+    lower.endsWith(".tar.gz") ||
+    lower.endsWith(".tgz") ||
+    lower.endsWith(".tar.bz2") ||
+    lower.endsWith(".tbz2") ||
+    lower.endsWith(".tar.xz") ||
+    lower.endsWith(".txz") ||
+    lower.endsWith(".tar.zst")
   ) {
-    await runCommand('tar', ['-xf', archivePath, '-C', outputDir])
-    return outputDir
+    await runCommand("tar", ["-xf", archivePath, "-C", outputDir]);
+    return outputDir;
   }
 
-  if (lower.endsWith('.rar') || lower.endsWith('.7z')) {
-    if (lower.endsWith('.rar')) {
+  if (lower.endsWith(".rar") || lower.endsWith(".7z")) {
+    if (lower.endsWith(".rar")) {
       try {
-        return await extractRarEmbedded(archivePath, outputDir)
+        return await extractRarEmbedded(archivePath, outputDir);
       } catch (error) {
-        logMain('extract', 'Falha no extrator embutido de RAR, tentando fallback', error)
+        logMain(
+          "extract",
+          "Falha no extrator embutido de RAR, tentando fallback",
+          error,
+        );
       }
     }
 
     try {
-      return await extractWith7zWasm(archivePath, outputDir)
+      return await extractWith7zWasm(archivePath, outputDir);
     } catch (error) {
-      logMain('extract', 'Falha no extrator embutido de 7z/RAR, tentando fallback', error)
+      logMain(
+        "extract",
+        "Falha no extrator embutido de 7z/RAR, tentando fallback",
+        error,
+      );
     }
 
-    const tool = await findFirstCommand(['7z', '7za', 'unar'])
+    const tool = await findFirstCommand(["7z", "7za", "unar"]);
     if (!tool) {
       throw new Error(
-        'Não foi possível extrair este arquivo com os extratores embutidos e nenhuma ferramenta externa foi encontrada',
-      )
+        "Não foi possível extrair este arquivo com os extratores embutidos e nenhuma ferramenta externa foi encontrada",
+      );
     }
 
-    if (tool === 'unar') {
-      await runCommand(tool, ['-f', '-o', outputDir, archivePath])
-      return outputDir
+    if (tool === "unar") {
+      await runCommand(tool, ["-f", "-o", outputDir, archivePath]);
+      return outputDir;
     }
 
-    await runCommand(tool, ['x', '-y', `-o${outputDir}`, archivePath])
-    return outputDir
+    await runCommand(tool, ["x", "-y", `-o${outputDir}`, archivePath]);
+    return outputDir;
   }
 
-  throw new Error('Formato de arquivo não suportado para extração')
+  throw new Error("Formato de arquivo não suportado para extração");
 }
 
 /**
@@ -750,520 +882,618 @@ async function extractArchive(archivePath: string): Promise<string> {
  * contornando a proteção anti-scraping do Terabox na API share/list.
  */
 async function teraboxNetRequest(params: {
-  url: string
-  method?: string
-  headers?: Record<string, string>
-  body?: string
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
 }): Promise<unknown> {
-  const tbSession = session.fromPartition('persist:terabox')
+  const tbSession = session.fromPartition("persist:terabox");
   return new Promise<unknown>((resolve, reject) => {
     const request = net.request({
       url: params.url,
-      method: params.method ?? 'GET',
+      method: params.method ?? "GET",
       session: tbSession,
-    })
-    request.setHeader('User-Agent', HOSTER_BROWSER_USER_AGENT)
-    request.setHeader('Accept', 'application/json, */*')
-    request.setHeader('Accept-Language', 'pt-BR,pt;q=0.9,en-US;q=0.8')
+    });
+    request.setHeader("User-Agent", HOSTER_BROWSER_USER_AGENT);
+    request.setHeader("Accept", "application/json, */*");
+    request.setHeader("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8");
     if (params.headers) {
-      for (const [k, v] of Object.entries(params.headers)) request.setHeader(k, v)
+      for (const [k, v] of Object.entries(params.headers))
+        request.setHeader(k, v);
     }
-    const chunks: Buffer[] = []
-    request.on('response', (response) => {
-      response.on('data', (chunk) => chunks.push(chunk as Buffer))
-      response.on('end', () => {
+    const chunks: Buffer[] = [];
+    request.on("response", (response) => {
+      response.on("data", (chunk) => chunks.push(chunk as Buffer));
+      response.on("end", () => {
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
         } catch {
-          resolve({ _raw: Buffer.concat(chunks).toString('utf8') })
+          resolve({ _raw: Buffer.concat(chunks).toString("utf8") });
         }
-      })
-      response.on('error', reject)
-    })
-    request.on('error', reject)
-    if (params.body) request.write(params.body)
-    request.end()
-  })
+      });
+      response.on("error", reject);
+    });
+    request.on("error", reject);
+    if (params.body) request.write(params.body);
+    request.end();
+  });
 }
 
 /** Local HTTP proxy para o backend Rust chamar requisições Terabox via sessão Electron */
-let teraboxProxyPort = 0
+let teraboxProxyPort = 0;
 
 function allowedFilesystemRoots(): string[] {
-  const settings = storage.getPublicSettings()
+  const settings = storage.getPublicSettings();
   const roots = [
-    app.getPath('home'),
-    app.getPath('userData'),
-    app.getPath('downloads'),
-    app.getPath('temp'),
-    app.getPath('documents'),
-    app.getPath('desktop'),
-  ]
-  const outputDir = settings.outputDir?.replace(/^~(?=$|[/\\])/, app.getPath('home'))
-  if (outputDir) roots.push(outputDir)
-  return roots
+    app.getPath("home"),
+    app.getPath("userData"),
+    app.getPath("downloads"),
+    app.getPath("temp"),
+    app.getPath("documents"),
+    app.getPath("desktop"),
+  ];
+  const outputDir = settings.outputDir?.replace(
+    /^~(?=$|[/\\])/,
+    app.getPath("home"),
+  );
+  if (outputDir) roots.push(outputDir);
+  return roots;
 }
 
 function safeUserPath(raw: unknown): string {
-  return assertSafeFilesystemPath(raw, allowedFilesystemRoots())
+  return assertSafeFilesystemPath(raw, allowedFilesystemRoots());
 }
 
-async function syncBackendConfig(maxConcurrentDownloads: number): Promise<void> {
-  await postBackend('/config/downloads', {
+async function syncBackendConfig(
+  maxConcurrentDownloads: number,
+): Promise<void> {
+  await postBackend("/config/downloads", {
     max_concurrent_downloads: Math.max(1, Number(maxConcurrentDownloads) || 1),
   }).catch((error) => {
-    logMain('config', 'Falha ao sincronizar configuração do backend', error)
-  })
+    logMain("config", "Falha ao sincronizar configuração do backend", error);
+  });
 }
 
-function probeTcpPort(host: string, port: number, timeoutMs = 900): Promise<boolean> {
+function probeTcpPort(
+  host: string,
+  port: number,
+  timeoutMs = 900,
+): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = new Socket()
-    let settled = false
+    const socket = new Socket();
+    let settled = false;
     const done = (ok: boolean): void => {
-      if (settled) return
-      settled = true
-      socket.destroy()
-      resolve(ok)
-    }
-    socket.setTimeout(timeoutMs)
-    socket.once('connect', () => done(true))
-    socket.once('timeout', () => done(false))
-    socket.once('error', () => done(false))
-    socket.connect(port, host)
-  })
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+    socket.connect(port, host);
+  });
 }
 
-async function detectTorEndpoint(): Promise<{ host: string; port: number } | null> {
+async function detectTorEndpoint(): Promise<{
+  host: string;
+  port: number;
+} | null> {
   for (const port of [9150, 9050]) {
-    if (await probeTcpPort('127.0.0.1', port)) {
-      return { host: '127.0.0.1', port }
+    if (await probeTcpPort("127.0.0.1", port)) {
+      return { host: "127.0.0.1", port };
     }
   }
-  return null
+  return null;
 }
 
 function findTorBinary(): string | null {
   const platformCandidates =
-    process.platform === 'win32'
+    process.platform === "win32"
       ? [
-          'C:\\Program Files\\Tor\\tor.exe',
-          'C:\\Program Files (x86)\\Tor\\tor.exe',
-          join(app.getPath('home'), 'Desktop', 'Tor Browser', 'Browser', 'TorBrowser', 'Tor', 'tor.exe'),
-          join(app.getPath('home'), 'Downloads', 'Tor Browser', 'Browser', 'TorBrowser', 'Tor', 'tor.exe'),
+          "C:\\Program Files\\Tor\\tor.exe",
+          "C:\\Program Files (x86)\\Tor\\tor.exe",
+          join(
+            app.getPath("home"),
+            "Desktop",
+            "Tor Browser",
+            "Browser",
+            "TorBrowser",
+            "Tor",
+            "tor.exe",
+          ),
+          join(
+            app.getPath("home"),
+            "Downloads",
+            "Tor Browser",
+            "Browser",
+            "TorBrowser",
+            "Tor",
+            "tor.exe",
+          ),
         ]
-      : process.platform === 'darwin'
+      : process.platform === "darwin"
         ? [
-            '/opt/homebrew/bin/tor',
-            '/usr/local/bin/tor',
-            '/usr/bin/tor',
-            '/Applications/Tor Browser.app/Contents/MacOS/Tor/tor.real',
-            '/Applications/Tor Browser.app/Contents/MacOS/tor.real',
+            "/opt/homebrew/bin/tor",
+            "/usr/local/bin/tor",
+            "/usr/bin/tor",
+            "/Applications/Tor Browser.app/Contents/MacOS/Tor/tor.real",
+            "/Applications/Tor Browser.app/Contents/MacOS/tor.real",
           ]
-        : [
-            '/usr/bin/tor',
-            '/usr/local/bin/tor',
-            '/snap/bin/tor',
-          ]
+        : ["/usr/bin/tor", "/usr/local/bin/tor", "/snap/bin/tor"];
   const candidates = [
     process.env.GDOWNLOADER_TOR_PATH,
     bundledTorBinary(),
     ...platformCandidates,
-  ].filter(Boolean) as string[]
-  return candidates.find((candidate) => existsSync(candidate)) ?? null
+  ].filter(Boolean) as string[];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function bundledTorDir(): string {
-  const platform = process.platform === 'darwin'
-    ? process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64'
-    : process.platform === 'win32'
-      ? process.arch === 'ia32' ? 'win32-ia32' : 'win32-x64'
-      : process.arch === 'ia32'
-        ? 'linux-ia32'
-        : process.arch === 'arm64'
-          ? 'linux-arm64'
-          : 'linux-x64'
+  const platform =
+    process.platform === "darwin"
+      ? process.arch === "arm64"
+        ? "darwin-arm64"
+        : "darwin-x64"
+      : process.platform === "win32"
+        ? process.arch === "ia32"
+          ? "win32-ia32"
+          : "win32-x64"
+        : process.arch === "ia32"
+          ? "linux-ia32"
+          : process.arch === "arm64"
+            ? "linux-arm64"
+            : "linux-x64";
   if (is.dev) {
-    return join(process.cwd(), 'resources', 'tor', platform)
+    return join(process.cwd(), "resources", "tor", platform);
   }
-  return join(process.resourcesPath, 'tor', platform)
+  return join(process.resourcesPath, "tor", platform);
 }
 
 function bundledTorBinary(): string {
-  return join(bundledTorDir(), 'tor', process.platform === 'win32' ? 'tor.exe' : 'tor')
+  return join(
+    bundledTorDir(),
+    "tor",
+    process.platform === "win32" ? "tor.exe" : "tor",
+  );
 }
 
 function torResourcePath(...parts: string[]): string {
-  return join(bundledTorDir(), ...parts)
+  return join(bundledTorDir(), ...parts);
 }
 
 function torDataDirectory(): string {
-  const path = join(app.getPath('userData'), 'tor-data')
-  mkdirSync(path, { recursive: true })
-  return path
+  const path = join(app.getPath("userData"), "tor-data");
+  mkdirSync(path, { recursive: true });
+  return path;
 }
 
 function torArgs(): string[] {
   const args = [
-    '--SocksPort',
-    '127.0.0.1:9150 IsolateSOCKSAuth',
-    '--ControlPort',
-    '127.0.0.1:9151',
-    '--DataDirectory',
+    "--SocksPort",
+    "127.0.0.1:9150 IsolateSOCKSAuth",
+    "--ControlPort",
+    "127.0.0.1:9151",
+    "--DataDirectory",
     torDataDirectory(),
-    '--AvoidDiskWrites',
-    '1',
-    '--CookieAuthentication',
-    '1',
-  ]
-  const geoIp = torResourcePath('data', 'geoip')
-  const geoIp6 = torResourcePath('data', 'geoip6')
-  const defaults = torResourcePath('data', 'torrc-defaults')
-  if (existsSync(geoIp)) args.push('--GeoIPFile', geoIp)
-  if (existsSync(geoIp6)) args.push('--GeoIPv6File', geoIp6)
-  if (existsSync(defaults)) args.push('--defaults-torrc', defaults)
-  return args
+    "--AvoidDiskWrites",
+    "1",
+    "--CookieAuthentication",
+    "1",
+  ];
+  const geoIp = torResourcePath("data", "geoip");
+  const geoIp6 = torResourcePath("data", "geoip6");
+  const defaults = torResourcePath("data", "torrc-defaults");
+  if (existsSync(geoIp)) args.push("--GeoIPFile", geoIp);
+  if (existsSync(geoIp6)) args.push("--GeoIPv6File", geoIp6);
+  if (existsSync(defaults)) args.push("--defaults-torrc", defaults);
+  return args;
 }
 
 async function tryStartTor(): Promise<void> {
-  if (managedTorProcess && !managedTorProcess.killed) return
-  const torBinary = findTorBinary()
+  if (managedTorProcess && !managedTorProcess.killed) return;
+  const torBinary = findTorBinary();
   if (torBinary) {
-    if (process.platform !== 'win32') {
+    if (process.platform !== "win32") {
       try {
-        chmodSync(torBinary, 0o755)
+        chmodSync(torBinary, 0o755);
       } catch {
         // System Tor paths may not be writable; spawn will report a clear error if execution fails.
       }
     }
-    managedTorBootstrap = 0
+    managedTorBootstrap = 0;
     // O Tor empacotado loga via "Log notice stdout" (torrc-defaults), então o
     // progresso "Bootstrapped X%" sai pelo STDOUT — não pelo stderr. Antes só o
     // stderr era escutado, então o bootstrap nunca era detectado e o app achava
     // que o Tor falhava. Agora capturamos os dois.
     managedTorProcess = spawn(torBinary, torArgs(), {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
       cwd: dirname(torBinary),
       env: {
         ...process.env,
-        ...(process.platform === 'darwin' ? { DYLD_LIBRARY_PATH: dirname(torBinary) } : {}),
-        ...(process.platform === 'linux' ? { LD_LIBRARY_PATH: dirname(torBinary) } : {}),
-        ...(process.platform === 'win32' ? { PATH: `${dirname(torBinary)};${process.env.PATH ?? ''}` } : {}),
+        ...(process.platform === "darwin"
+          ? { DYLD_LIBRARY_PATH: dirname(torBinary) }
+          : {}),
+        ...(process.platform === "linux"
+          ? { LD_LIBRARY_PATH: dirname(torBinary) }
+          : {}),
+        ...(process.platform === "win32"
+          ? { PATH: `${dirname(torBinary)};${process.env.PATH ?? ""}` }
+          : {}),
       },
-    })
-    const handleTorLog = (channel: 'stdout' | 'stderr') => (data: Buffer) => {
-      const message = data.toString()
-      const match = message.match(/Bootstrapped\s+(\d+)%/i)
+    });
+    const handleTorLog = (channel: "stdout" | "stderr") => (data: Buffer) => {
+      const message = data.toString();
+      const match = message.match(/Bootstrapped\s+(\d+)%/i);
       if (match) {
-        managedTorBootstrap = Math.max(managedTorBootstrap, Number(match[1]) || 0)
+        managedTorBootstrap = Math.max(
+          managedTorBootstrap,
+          Number(match[1]) || 0,
+        );
       }
-      logMain('tor', channel, message)
-    }
-    managedTorProcess.stdout?.on('data', handleTorLog('stdout'))
-    managedTorProcess.stderr?.on('data', handleTorLog('stderr'))
-    managedTorProcess.once('exit', () => {
-      managedTorProcess = null
-      managedTorBootstrap = 0
-    })
-    return
+      logMain("tor", channel, message);
+    };
+    managedTorProcess.stdout?.on("data", handleTorLog("stdout"));
+    managedTorProcess.stderr?.on("data", handleTorLog("stderr"));
+    managedTorProcess.once("exit", () => {
+      managedTorProcess = null;
+      managedTorBootstrap = 0;
+    });
+    return;
   }
 
-  const torBrowserApp = '/Applications/Tor Browser.app'
+  const torBrowserApp = "/Applications/Tor Browser.app";
   if (existsSync(torBrowserApp)) {
     await shell.openPath(torBrowserApp).catch((error) => {
-      logMain('tor', 'Falha ao abrir Tor Browser', error)
-    })
-    return
+      logMain("tor", "Falha ao abrir Tor Browser", error);
+    });
+    return;
   }
 
   throw new Error(
     `Tor não foi encontrado para ${process.platform}/${process.arch}. Inclua o binário em ${bundledTorBinary()} ou configure GDOWNLOADER_TOR_PATH com o caminho do executável.`,
-  )
+  );
 }
 
-async function waitForManagedTorBootstrap(timeoutMs = 32_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
+async function waitForManagedTorBootstrap(
+  timeoutMs = 32_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (managedTorBootstrap >= 100) return true
-    if (!managedTorProcess || managedTorProcess.killed) return false
-    await new Promise((resolve) => setTimeout(resolve, 900))
+    if (managedTorBootstrap >= 100) return true;
+    if (!managedTorProcess || managedTorProcess.killed) return false;
+    await new Promise((resolve) => setTimeout(resolve, 900));
   }
-  return managedTorBootstrap >= 100
+  return managedTorBootstrap >= 100;
 }
 
-async function waitForTorEndpoint(timeoutMs = 18_000): Promise<{ host: string; port: number } | null> {
-  const deadline = Date.now() + timeoutMs
+async function waitForTorEndpoint(
+  timeoutMs = 18_000,
+): Promise<{ host: string; port: number } | null> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const endpoint = await detectTorEndpoint()
-    if (endpoint) return endpoint
-    await new Promise((resolve) => setTimeout(resolve, 700))
+    const endpoint = await detectTorEndpoint();
+    if (endpoint) return endpoint;
+    await new Promise((resolve) => setTimeout(resolve, 700));
   }
-  return null
+  return null;
 }
 
-async function persistTorProxy(enabled: boolean, endpoint?: { host: string; port: number }): Promise<void> {
-  const current = storage.getPublicSettings()
+async function persistTorProxy(
+  enabled: boolean,
+  endpoint?: { host: string; port: number },
+): Promise<void> {
+  const current = storage.getPublicSettings();
   const next = {
     ...current,
-    proxyMode: enabled ? 'tor' : 'none',
-    proxyHost: enabled ? endpoint?.host ?? '127.0.0.1' : '',
-    proxyPort: enabled ? endpoint?.port ?? 9150 : 0,
+    proxyMode: enabled ? "tor" : "none",
+    proxyHost: enabled ? (endpoint?.host ?? "127.0.0.1") : "",
+    proxyPort: enabled ? (endpoint?.port ?? 9150) : 0,
     startTor: enabled,
-  }
-  await storage.persistPublicSettings(next)
+  };
+  await storage.persistPublicSettings(next);
   if (rustPort) {
-    await postBackend('/config/public', next).catch((error) => {
-      logMain('tor', 'Falha ao aplicar proxy Tor no backend', error)
-    })
+    await postBackend("/config/public", next).catch((error) => {
+      logMain("tor", "Falha ao aplicar proxy Tor no backend", error);
+    });
   }
 }
 
 async function clearStaleTorProxy(): Promise<void> {
-  const settings = storage.getPublicSettings()
-  if (settings.proxyMode !== 'tor') return
+  const settings = storage.getPublicSettings();
+  if (settings.proxyMode !== "tor") return;
   if (!settings.startTor) {
-    await persistTorProxy(false)
-    return
+    await persistTorProxy(false);
+    return;
   }
-  const endpoint = settings.proxyHost && settings.proxyPort
-    ? { host: settings.proxyHost, port: settings.proxyPort }
-    : null
-  if (endpoint && await probeTcpPort(endpoint.host, endpoint.port)) return
-  await persistTorProxy(false)
+  const endpoint =
+    settings.proxyHost && settings.proxyPort
+      ? { host: settings.proxyHost, port: settings.proxyPort }
+      : null;
+  if (endpoint && (await probeTcpPort(endpoint.host, endpoint.port))) return;
+  await persistTorProxy(false);
 }
 
 async function torStatusPayload(): Promise<{
-  state: 'disconnected' | 'connected'
-  host: string
-  port: number
-  route: Array<{ role: string; country: string; code: string }>
-  ip?: string
-  country?: string
-  countryCode?: string
-  isTor?: boolean
+  state: "disconnected" | "connected";
+  host: string;
+  port: number;
+  route: Array<{ role: string; country: string; code: string }>;
+  ip?: string;
+  country?: string;
+  countryCode?: string;
+  isTor?: boolean;
 }> {
-  const settings = storage.getPublicSettings()
-  if (settings.proxyMode !== 'tor' || !settings.startTor) {
+  const settings = storage.getPublicSettings();
+  if (settings.proxyMode !== "tor" || !settings.startTor) {
     return {
-      state: 'disconnected',
-      host: '127.0.0.1',
+      state: "disconnected",
+      host: "127.0.0.1",
       port: 9150,
       route: [],
-    }
+    };
   }
-  const endpoint = settings.proxyHost && settings.proxyPort
-    ? { host: settings.proxyHost, port: settings.proxyPort }
-    : await detectTorEndpoint()
-  const connected = Boolean(endpoint && await probeTcpPort(endpoint.host, endpoint.port))
-  const exit = connected ? lastTorExit : null
+  const endpoint =
+    settings.proxyHost && settings.proxyPort
+      ? { host: settings.proxyHost, port: settings.proxyPort }
+      : await detectTorEndpoint();
+  const connected = Boolean(
+    endpoint && (await probeTcpPort(endpoint.host, endpoint.port)),
+  );
+  const exit = connected ? lastTorExit : null;
   return {
-    state: connected ? 'connected' : 'disconnected',
-    host: endpoint?.host ?? '127.0.0.1',
+    state: connected ? "connected" : "disconnected",
+    host: endpoint?.host ?? "127.0.0.1",
     port: endpoint?.port ?? 9150,
-    route: connected && exit
-      ? [
-          { role: 'Exit', country: exit.country || exit.ip, code: exit.countryCode || exit.ip },
-        ]
-      : [],
+    route:
+      connected && exit
+        ? [
+            {
+              role: "Exit",
+              country: exit.country || exit.ip,
+              code: exit.countryCode || exit.ip,
+            },
+          ]
+        : [],
     ip: exit?.ip,
     country: exit?.country,
     countryCode: exit?.countryCode,
     isTor: exit?.isTor,
-  }
+  };
 }
 
-async function countryForIp(ip: string): Promise<{ country?: string; countryCode?: string }> {
-  if (!ip || ip === 'unknown') return {}
+async function countryForIp(
+  ip: string,
+): Promise<{ country?: string; countryCode?: string }> {
+  if (!ip || ip === "unknown") return {};
   try {
-    const response = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/json/`)
-    if (!response.ok) return {}
-    const json = await response.json() as Record<string, unknown>
+    const response = await fetch(
+      `https://ipapi.co/${encodeURIComponent(ip)}/json/`,
+    );
+    if (!response.ok) return {};
+    const json = (await response.json()) as Record<string, unknown>;
     return {
-      country: typeof json.country_name === 'string' ? json.country_name : undefined,
-      countryCode: typeof json.country_code === 'string' ? json.country_code : undefined,
-    }
+      country:
+        typeof json.country_name === "string" ? json.country_name : undefined,
+      countryCode:
+        typeof json.country_code === "string" ? json.country_code : undefined,
+    };
   } catch {
-    return {}
+    return {};
   }
 }
 
-async function testTorConnection(): Promise<{ ip: string; country?: string; countryCode?: string; isTor: boolean }> {
-  const settings = storage.getPublicSettings()
-  if (settings.proxyMode !== 'tor' || !settings.startTor) {
-    throw new Error('Tor não está ativo no gDownloader.')
+async function testTorConnection(): Promise<{
+  ip: string;
+  country?: string;
+  countryCode?: string;
+  isTor: boolean;
+}> {
+  const settings = storage.getPublicSettings();
+  if (settings.proxyMode !== "tor" || !settings.startTor) {
+    throw new Error("Tor não está ativo no gDownloader.");
   }
   if (!rustPort) {
-    throw new Error('Backend Rust ainda não está disponível.')
+    throw new Error("Backend Rust ainda não está disponível.");
   }
-  const result = await fetchBackendConfig<{ ip: string; isTor?: boolean }>('/config/test-proxy')
-  const country = await countryForIp(result.ip)
+  const result = await fetchBackendConfig<{ ip: string; isTor?: boolean }>(
+    "/config/test-proxy",
+  );
+  const country = await countryForIp(result.ip);
   lastTorExit = {
     ip: result.ip,
     isTor: Boolean(result.isTor),
     ...country,
-  }
+  };
   if (!lastTorExit.isTor) {
-    throw new Error(`A conexão saiu pelo IP ${result.ip}, mas o Tor Project não reconheceu como Tor.`)
+    throw new Error(
+      `A conexão saiu pelo IP ${result.ip}, mas o Tor Project não reconheceu como Tor.`,
+    );
   }
-  return lastTorExit
+  return lastTorExit;
 }
 
 function controlPortForEndpoint(endpoint: { port: number }): number {
-  if (endpoint.port === 9150) return 9151
-  if (endpoint.port === 9050) return 9051
-  return endpoint.port + 1
+  if (endpoint.port === 9150) return 9151;
+  if (endpoint.port === 9050) return 9051;
+  return endpoint.port + 1;
 }
 
 function torControlCookieHex(): string {
-  const cookiePath = join(torDataDirectory(), 'control_auth_cookie')
+  const cookiePath = join(torDataDirectory(), "control_auth_cookie");
   if (!existsSync(cookiePath)) {
-    throw new Error('Cookie de controle do Tor não encontrado. Conecte usando o Tor embutido do gDownloader.')
+    throw new Error(
+      "Cookie de controle do Tor não encontrado. Conecte usando o Tor embutido do gDownloader.",
+    );
   }
-  return readFileSync(cookiePath).toString('hex')
+  return readFileSync(cookiePath).toString("hex");
 }
 
-function sendTorControlCommands(port: number, commands: string[]): Promise<string> {
+function sendTorControlCommands(
+  port: number,
+  commands: string[],
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const socket = new Socket()
-    let output = ''
+    const socket = new Socket();
+    let output = "";
     const timer = setTimeout(() => {
-      socket.destroy()
-      reject(new Error('Tempo esgotado falando com o ControlPort do Tor.'))
-    }, 5000)
-    socket.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    socket.on('data', (chunk: Buffer) => {
-      output += chunk.toString('utf8')
-      if (output.toLowerCase().includes('250 closing connection')) {
-        clearTimeout(timer)
-        socket.end()
-        resolve(output)
+      socket.destroy();
+      reject(new Error("Tempo esgotado falando com o ControlPort do Tor."));
+    }, 5000);
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (output.toLowerCase().includes("250 closing connection")) {
+        clearTimeout(timer);
+        socket.end();
+        resolve(output);
       }
-    })
-    socket.connect(port, '127.0.0.1', () => {
-      socket.write(commands.join('\r\n') + '\r\n')
-    })
-  })
+    });
+    socket.connect(port, "127.0.0.1", () => {
+      socket.write(commands.join("\r\n") + "\r\n");
+    });
+  });
 }
 
 async function signalTorNewIdentity(): Promise<void> {
-  const settings = storage.getPublicSettings()
-  const endpoint = settings.proxyHost && settings.proxyPort
-    ? { host: settings.proxyHost, port: settings.proxyPort }
-    : await detectTorEndpoint()
+  const settings = storage.getPublicSettings();
+  const endpoint =
+    settings.proxyHost && settings.proxyPort
+      ? { host: settings.proxyHost, port: settings.proxyPort }
+      : await detectTorEndpoint();
   if (!endpoint) {
-    throw new Error('Tor não está ativo.')
+    throw new Error("Tor não está ativo.");
   }
-  const cookie = torControlCookieHex()
-  const response = await sendTorControlCommands(controlPortForEndpoint(endpoint), [
-    `AUTHENTICATE ${cookie}`,
-    'SIGNAL NEWNYM',
-    'QUIT',
-  ])
-  if (!response.includes('250 OK')) {
-    throw new Error(`Tor recusou nova identidade: ${response.trim()}`)
+  const cookie = torControlCookieHex();
+  const response = await sendTorControlCommands(
+    controlPortForEndpoint(endpoint),
+    [`AUTHENTICATE ${cookie}`, "SIGNAL NEWNYM", "QUIT"],
+  );
+  if (!response.includes("250 OK")) {
+    throw new Error(`Tor recusou nova identidade: ${response.trim()}`);
   }
-  lastTorExit = null
-  await new Promise((resolve) => setTimeout(resolve, 3500))
+  lastTorExit = null;
+  await new Promise((resolve) => setTimeout(resolve, 3500));
 }
 
 async function pauseActiveDownloadsForNetworkSwitch(): Promise<string[]> {
-  if (!rustPort) return []
-  const downloads = await fetchBackendConfig<Array<{ id: string; status: string }>>('/downloads').catch(() => [])
+  if (!rustPort) return [];
+  const downloads = await fetchBackendConfig<
+    Array<{ id: string; status: string }>
+  >("/downloads").catch(() => []);
   // waiting_captcha entra aqui de propósito: é o status do Katfile (e outros
   // providers com solver universal) enquanto a janela do navegador embutido
   // está resolvendo o captcha. Sem isso, trocar de rede no meio de uma
   // resolução deixava a automação presa na rota antiga por baixo do tapete.
   const activeIds = downloads
-    .filter((download) =>
-      download.status === 'downloading'
-      || download.status === 'verifying'
-      || download.status === 'waiting_captcha')
-    .map((download) => download.id)
+    .filter(
+      (download) =>
+        download.status === "downloading" ||
+        download.status === "verifying" ||
+        download.status === "waiting_captcha",
+    )
+    .map((download) => download.id);
   for (const id of activeIds) {
-    await postBackend(`/downloads/${encodeURIComponent(id)}/pause`).catch((error) => {
-      logMain('tor', 'Falha ao pausar download antes de trocar rede', { id, error })
-    })
+    await postBackend(`/downloads/${encodeURIComponent(id)}/pause`).catch(
+      (error) => {
+        logMain("tor", "Falha ao pausar download antes de trocar rede", {
+          id,
+          error,
+        });
+      },
+    );
   }
-  return activeIds
+  return activeIds;
 }
 
 async function resumeDownloadsAfterNetworkSwitch(ids: string[]): Promise<void> {
   for (const id of ids) {
-    await postBackend(`/downloads/${encodeURIComponent(id)}/resume`).catch((error) => {
-      logMain('tor', 'Falha ao retomar download após trocar rede', { id, error })
-    })
+    await postBackend(`/downloads/${encodeURIComponent(id)}/resume`).catch(
+      (error) => {
+        logMain("tor", "Falha ao retomar download após trocar rede", {
+          id,
+          error,
+        });
+      },
+    );
   }
 }
 
 function extractClipboardUrls(text: string): string[] {
-  const matches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? []
-  const seen = new Set<string>()
+  const matches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? [];
+  const seen = new Set<string>();
   return matches
-    .map((url) => url.replace(/[),.;\]]+$/g, ''))
+    .map((url) => url.replace(/[),.;\]]+$/g, ""))
     .filter((url) => {
-      if (seen.has(url)) return false
-      seen.add(url)
-      return true
-    })
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
 }
 
-async function detectClipboardUrl(url: string): Promise<{ id?: string; name?: string } | null> {
-  if (!rustPort) return null
+async function detectClipboardUrl(
+  url: string,
+): Promise<{ id?: string; name?: string } | null> {
+  if (!rustPort) return null;
   try {
     const response = await fetch(
       `http://127.0.0.1:${rustPort}/detect?url=${encodeURIComponent(url)}`,
-    )
-    if (!response.ok) return null
-    return response.json() as Promise<{ id?: string; name?: string } | null>
+    );
+    if (!response.ok) return null;
+    return response.json() as Promise<{ id?: string; name?: string } | null>;
   } catch (error) {
-    logMain('clipboard', 'Falha ao consultar provider para clipboard', {
+    logMain("clipboard", "Falha ao consultar provider para clipboard", {
       url,
       error,
-    })
-    return null
+    });
+    return null;
   }
 }
 
 async function inspectClipboardForLinks(): Promise<void> {
-  const text = clipboard.readText().trim()
+  const text = clipboard.readText().trim();
   if (!text || text === lastClipboardText) {
-    return
+    return;
   }
-  lastClipboardText = text
+  lastClipboardText = text;
 
-  const detected: Array<{ url: string; provider: { id?: string; name?: string } }> = []
+  const detected: Array<{
+    url: string;
+    provider: { id?: string; name?: string };
+  }> = [];
   for (const url of extractClipboardUrls(text)) {
-    const provider = await detectClipboardUrl(url)
+    const provider = await detectClipboardUrl(url);
     if (!provider?.id) {
-      continue
+      continue;
     }
-    detected.push({ url, provider })
+    detected.push({ url, provider });
   }
 
   if (detected.length > 0) {
-    const urls = detected.map((item) => item.url)
-    const signature = urls.join('\n')
+    const urls = detected.map((item) => item.url);
+    const signature = urls.join("\n");
     if (signature === lastClipboardSignature) {
-      return
+      return;
     }
-    const first = detected[0]
+    const first = detected[0];
 
-    lastClipboardSignature = signature
-    logMain('clipboard', 'Link suportado detectado na área de transferência', {
+    lastClipboardSignature = signature;
+    logMain("clipboard", "Link suportado detectado na área de transferência", {
       provider: first.provider.id,
       url: first.url,
       count: urls.length,
-    })
+    });
     for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send('clipboard:link-detected', {
+      window.webContents.send("clipboard:link-detected", {
         url: first.url,
         urls,
         provider: first.provider.id,
         providerName: first.provider.name ?? first.provider.id,
-      })
+      });
     }
   }
 }
@@ -1271,60 +1501,63 @@ async function inspectClipboardForLinks(): Promise<void> {
 function configureClipboardMonitor(enabled: boolean): void {
   if (!enabled) {
     if (clipboardMonitorTimer) {
-      clearInterval(clipboardMonitorTimer)
-      clipboardMonitorTimer = null
+      clearInterval(clipboardMonitorTimer);
+      clipboardMonitorTimer = null;
     }
-    return
+    return;
   }
 
   if (clipboardMonitorTimer) {
-    return
+    return;
   }
 
-  lastClipboardText = ''
-  lastClipboardSignature = ''
+  lastClipboardText = "";
+  lastClipboardSignature = "";
   clipboardMonitorTimer = setInterval(() => {
-    void inspectClipboardForLinks()
-  }, 350)
-  void inspectClipboardForLinks()
-  logMain('clipboard', 'Monitor de clipboard ativado')
+    void inspectClipboardForLinks();
+  }, 350);
+  void inspectClipboardForLinks();
+  logMain("clipboard", "Monitor de clipboard ativado");
 }
 
-let tray: Tray | null = null
-let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null;
+let mainWindow: BrowserWindow | null = null;
 const logWatchers = new Map<
   number,
-  { watcher: ReturnType<typeof watch>; timer: ReturnType<typeof setTimeout> | null }
->()
+  {
+    watcher: ReturnType<typeof watch>;
+    timer: ReturnType<typeof setTimeout> | null;
+  }
+>();
 
 function createTray(win: BrowserWindow): void {
-  const iconPath = getAppIconPath()
-  let icon: Electron.NativeImage
+  const iconPath = getAppIconPath();
+  let icon: Electron.NativeImage;
   try {
-    icon = nativeImage.createFromPath(iconPath)
+    icon = nativeImage.createFromPath(iconPath);
     if (icon.isEmpty()) {
-      icon = nativeImage.createEmpty()
+      icon = nativeImage.createEmpty();
     }
   } catch {
-    icon = nativeImage.createEmpty()
+    icon = nativeImage.createEmpty();
   }
 
   if (!icon.isEmpty()) {
-    icon = icon.resize({ width: 16, height: 16 })
+    icon = icon.resize({ width: 16, height: 16 });
   }
 
-  tray = new Tray(icon)
-  tray.setToolTip('gDownloader')
+  tray = new Tray(icon);
+  tray.setToolTip("gDownloader");
 
-  updateTrayMenu(win, tray, 0, '0 B/s')
+  updateTrayMenu(win, tray, 0, "0 B/s");
 
-  tray.on('click', () => {
+  tray.on("click", () => {
     if (win.isVisible()) {
-      win.focus()
+      win.focus();
     } else {
-      win.show()
+      win.show();
     }
-  })
+  });
 }
 
 function updateTrayMenu(
@@ -1338,62 +1571,62 @@ function updateTrayMenu(
       label: `gDownloader — ${activeCount} baixando · ${speed}`,
       enabled: false,
     },
-    { type: 'separator' },
+    { type: "separator" },
     {
-      label: 'Mostrar app',
+      label: "Mostrar app",
       click: () => {
-        win.show()
-        win.focus()
+        win.show();
+        win.focus();
       },
     },
     {
-      label: 'Pausar tudo',
+      label: "Pausar tudo",
       click: () => {
-        win.webContents.send('tray:pause-all')
+        win.webContents.send("tray:pause-all");
       },
     },
     {
-      label: 'Retomar tudo',
+      label: "Retomar tudo",
       click: () => {
-        win.webContents.send('tray:resume-all')
+        win.webContents.send("tray:resume-all");
       },
     },
-    { type: 'separator' },
+    { type: "separator" },
     {
-      label: 'Limite de velocidade',
+      label: "Limite de velocidade",
       submenu: [
         {
-          label: 'Sem limite',
-          click: () => win.webContents.send('tray:set-speed-limit', 0),
+          label: "Sem limite",
+          click: () => win.webContents.send("tray:set-speed-limit", 0),
         },
         {
-          label: '500 KB/s',
-          click: () => win.webContents.send('tray:set-speed-limit', 500),
+          label: "500 KB/s",
+          click: () => win.webContents.send("tray:set-speed-limit", 500),
         },
         {
-          label: '200 KB/s',
-          click: () => win.webContents.send('tray:set-speed-limit', 200),
+          label: "200 KB/s",
+          click: () => win.webContents.send("tray:set-speed-limit", 200),
         },
         {
-          label: '50 KB/s',
-          click: () => win.webContents.send('tray:set-speed-limit', 50),
+          label: "50 KB/s",
+          click: () => win.webContents.send("tray:set-speed-limit", 50),
         },
       ],
     },
-    { type: 'separator' },
+    { type: "separator" },
     {
-      label: 'Sair',
+      label: "Sair",
       click: () => {
-        app.quit()
+        app.quit();
       },
     },
-  ])
-  trayInstance.setContextMenu(contextMenu)
+  ]);
+  trayInstance.setContextMenu(contextMenu);
 }
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    title: 'gDownloader',
+    title: "gDownloader",
     width: 1200,
     height: 750,
     minWidth: 900,
@@ -1402,822 +1635,1006 @@ function createWindow(): BrowserWindow {
     autoHideMenuBar: true,
     icon: nativeImage.createFromPath(getAppIconPath()),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
     },
-  })
+  });
 
-  win.on('ready-to-show', () => win.show())
+  win.on("ready-to-show", () => win.show());
 
-  win.on('close', (event) => {
+  win.on("close", (event) => {
     if (tray) {
-      event.preventDefault()
-      win.hide()
+      event.preventDefault();
+      win.hide();
     }
-  })
+  });
 
   // Abre links externos no browser padrão do sistema
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
-    return { action: 'deny' }
-  })
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
 
   // A janela principal é um aplicativo, não uma aba de navegador. Mantemos
   // F12 livre para depuração, mas anulamos apenas os atalhos de navegador
   // (zoom, reload e histórico), sem interferir em copiar/colar ou atalhos do
   // sistema usados pelos campos de texto.
-  win.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'F12') return
+  win.webContents.on("before-input-event", (event, input) => {
+    if (input.key === "F12") return;
 
-    const key = input.key.toLowerCase()
-    const commandOrControl = input.control || input.meta
-    const browserShortcut = commandOrControl && ['+', '=', '-', '_', '0', 'r', 'l', '[', ']'].includes(key)
-    const historyShortcut = input.alt && ['left', 'right'].includes(key)
-    const devToolsShortcut = commandOrControl && input.alt && key === 'i'
+    const key = input.key.toLowerCase();
+    const commandOrControl = input.control || input.meta;
+    const browserShortcut =
+      commandOrControl &&
+      ["+", "=", "-", "_", "0", "r", "l", "[", "]"].includes(key);
+    const historyShortcut = input.alt && ["left", "right"].includes(key);
+    const devToolsShortcut = commandOrControl && input.alt && key === "i";
 
     if (browserShortcut || historyShortcut || devToolsShortcut) {
-      event.preventDefault()
+      event.preventDefault();
     }
-  })
-  void win.webContents.setVisualZoomLevelLimits(1, 1)
-  win.webContents.setZoomFactor(1)
+  });
+  void win.webContents.setVisualZoomLevelLimits(1, 1);
+  win.webContents.setZoomFactor(1);
 
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  if (is.dev && process.env["ELECTRON_RENDERER_URL"]) {
+    win.loadURL(process.env["ELECTRON_RENDERER_URL"]);
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
+    win.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
-  return win
+  return win;
 }
 
 // Inicia o daemon Tor apenas para roteamento isolado por-download, SEM alterar o
 // proxy global. Informa a porta SOCKS ao backend para habilitar as rotas isoladas.
-async function ensureTorRunningForIsolation(): Promise<{ running: boolean; port: number | null }> {
-  let endpoint = await detectTorEndpoint()
+async function ensureTorRunningForIsolation(): Promise<{
+  running: boolean;
+  port: number | null;
+}> {
+  let endpoint = await detectTorEndpoint();
   if (!endpoint) {
-    await tryStartTor()
-    endpoint = await waitForTorEndpoint()
+    await tryStartTor();
+    endpoint = await waitForTorEndpoint();
     if (endpoint && managedTorProcess && managedTorBootstrap < 100) {
-      const bootstrapped = await waitForManagedTorBootstrap()
+      const bootstrapped = await waitForManagedTorBootstrap();
       if (!bootstrapped) {
         if (managedTorProcess && !managedTorProcess.killed) {
-          managedTorProcess.kill()
-          managedTorProcess = null
+          managedTorProcess.kill();
+          managedTorProcess = null;
         }
-        const percent = managedTorBootstrap
-        managedTorBootstrap = 0
-        throw new Error(`Tor iniciou mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`)
+        const percent = managedTorBootstrap;
+        managedTorBootstrap = 0;
+        throw new Error(
+          `Tor iniciou mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`,
+        );
       }
     }
   }
   if (!endpoint) {
-    throw new Error('Tor embutido não iniciou em 127.0.0.1:9150.')
+    throw new Error("Tor embutido não iniciou em 127.0.0.1:9150.");
   }
   // Informa o backend sem alterar o proxy global.
-  await postBackend('/config/tor-runtime', { socks_port: endpoint.port }).catch((error) => {
-    logMain('tor', 'Falha ao informar porta Tor isolada ao backend', error)
-  })
-  return { running: true, port: endpoint.port }
+  await postBackend("/config/tor-runtime", { socks_port: endpoint.port }).catch(
+    (error) => {
+      logMain("tor", "Falha ao informar porta Tor isolada ao backend", error);
+    },
+  );
+  await postGoBackend("/config/tor-runtime", {
+    socks_port: endpoint.port,
+  }).catch(() => undefined);
+  return { running: true, port: endpoint.port };
 }
 
 app.whenReady().then(async () => {
-  ytdlpService = createYtdlpService(app.getPath('userData'))
-  ffmpegService = createFfmpegService(app.getPath('userData'))
-  turnstileService = createTurnstileService(app.getPath('userData'))
+  ytdlpService = createYtdlpService(app.getPath("userData"));
+  ffmpegService = createFfmpegService(app.getPath("userData"));
+  turnstileService = createTurnstileService(app.getPath("userData"));
   // Rewire Katfile to use Turnstile solvers (1,2,3,4) com Tor isolado — como yt-dlp auto-update
   katfileService = createKatfileService({
     turnstile: turnstileService
       ? {
           solve: async (req) => {
-            const settings = storage.getPublicSettings()
-            if (settings.turnstileEnabled === false) throw new Error('Turnstile desativado')
+            const settings = storage.getPublicSettings();
+            if (settings.turnstileEnabled === false)
+              throw new Error("Turnstile desativado");
             // Proxy isolado por solve (IsolateSOCKSAuth) — mesmo padrão do Tor per_file
-            let proxy = req.proxy
+            let proxy = req.proxy;
             if (!proxy) {
-              if (settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
-                const user = `gdl-katfile-${Date.now() % 10000}`
-                proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
+              if (
+                settings.proxyMode === "tor" &&
+                settings.proxyHost &&
+                settings.proxyPort
+              ) {
+                const user = `gdl-katfile-${Date.now() % 10000}`;
+                proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`;
               } else {
-                const endpoint = await detectTorEndpoint().catch(() => null)
+                const endpoint = await detectTorEndpoint().catch(() => null);
                 if (endpoint) {
-                  const user = `gdl-katfile-${Date.now() % 10000}`
-                  proxy = `socks5://${user}:pass@127.0.0.1:${endpoint.port}`
+                  const user = `gdl-katfile-${Date.now() % 10000}`;
+                  proxy = `socks5://${user}:pass@127.0.0.1:${endpoint.port}`;
                 }
               }
             }
-            const order = (settings.turnstileSolverOrder as import('./turnstile-service').TurnstileSolverId[]) || undefined
-            return turnstileService!.solve({ sitekey: req.sitekey, pageurl: req.pageurl, proxy, timeoutMs: req.timeoutMs, solverOrder: order })
+            const order =
+              (settings.turnstileSolverOrder as import("./turnstile-service").TurnstileSolverId[]) ||
+              undefined;
+            return turnstileService!.solve({
+              sitekey: req.sitekey,
+              pageurl: req.pageurl,
+              proxy,
+              timeoutMs: req.timeoutMs,
+              solverOrder: order,
+            });
           },
         }
       : undefined,
     getProxy: async () => {
-      const settings = storage.getPublicSettings()
-      if (settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
-        const user = `gdl-katfile-${Date.now() % 10000}`
-        return `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
+      const settings = storage.getPublicSettings();
+      if (
+        settings.proxyMode === "tor" &&
+        settings.proxyHost &&
+        settings.proxyPort
+      ) {
+        const user = `gdl-katfile-${Date.now() % 10000}`;
+        return `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`;
       }
       // O Katfile bloqueia downloads gratuitos por IP ("Delay between free
       // downloads must be not less than 120 minutes"). Sem Tor, só o 1º item
       // da fila baixa de verdade por sessão de 2h — mas o Tor só é usado se o
       // usuário já ligou ele manualmente (botão "Tor" na barra); não ligamos
       // sozinhos, é uma decisão do usuário.
-      const endpoint = await detectTorEndpoint().catch(() => null)
+      const endpoint = await detectTorEndpoint().catch(() => null);
       if (endpoint) {
-        const user = `gdl-katfile-${Date.now() % 10000}`
-        return `socks5://${user}:pass@127.0.0.1:${endpoint.port}`
+        const user = `gdl-katfile-${Date.now() % 10000}`;
+        return `socks5://${user}:pass@127.0.0.1:${endpoint.port}`;
       }
-      return undefined
+      return undefined;
     },
-  })
-  app.setName('gDownloader')
-  electronApp.setAppUserModelId('com.gdownloader')
+  });
+  app.setName("gDownloader");
+  electronApp.setAppUserModelId("com.gdownloader");
 
-  app.on('browser-window-created', (_, window) => {
-    optimizer.watchWindowShortcuts(window)
-  })
+  app.on("browser-window-created", (_, window) => {
+    optimizer.watchWindowShortcuts(window);
+  });
 
   // IPC: porta do backend Rust
-  ipcMain.handle('backend:getPort', () => rustPort)
-  ipcMain.handle('backend:getGoPort', () => goPort)
-  ipcMain.handle('terabox:getProxyPort', () => teraboxProxyPort)
+  ipcMain.handle("backend:getPort", () => rustPort);
+  ipcMain.handle("backend:getGoPort", () => goPort);
+  ipcMain.handle("terabox:getProxyPort", () => teraboxProxyPort);
 
   // IPC: shell (paths validados — evita open/show arbitrário via XSS no renderer)
-  ipcMain.handle('shell:openPath', (_e, p: string) => {
-    const safe = safeUserPath(p)
-    return shell.openPath(safe)
-  })
-  ipcMain.handle('shell:showInFolder', (_e, p: string) => {
-    const safe = safeUserPath(p)
+  ipcMain.handle("shell:openPath", (_e, p: string) => {
+    const safe = safeUserPath(p);
+    return shell.openPath(safe);
+  });
+  ipcMain.handle("shell:showInFolder", (_e, p: string) => {
+    const safe = safeUserPath(p);
     try {
       if (existsSync(safe) && lstatSync(safe).isDirectory()) {
-        return shell.openPath(safe)
+        return shell.openPath(safe);
       }
     } catch {
       // fallback abaixo
     }
-    shell.showItemInFolder(safe)
-    return ''
-  })
-  ipcMain.handle('clipboard:writeText', (_e, text: string) => {
-    if (typeof text !== 'string') return false
+    shell.showItemInFolder(safe);
+    return "";
+  });
+  ipcMain.handle("clipboard:writeText", (_e, text: string) => {
+    if (typeof text !== "string") return false;
     // Cap defensivo: evita dump enorme de memória via IPC
-    clipboard.writeText(text.slice(0, 2_000_000))
-    return true
-  })
-  ipcMain.handle('logs:tail', (_e, maxLines?: number) => {
-    return tailLogFile(Math.max(50, Math.min(Number(maxLines ?? 500), 2000)))
-  })
-  ipcMain.on('logs:watch-start', (event) => {
-    const senderId = event.sender.id
-    const previous = logWatchers.get(senderId)
-    previous?.watcher.close()
-    if (previous?.timer) clearTimeout(previous.timer)
-    const logPath = getBackendLogPath()
+    clipboard.writeText(text.slice(0, 2_000_000));
+    return true;
+  });
+  ipcMain.handle("logs:tail", (_e, maxLines?: number) => {
+    return tailLogFile(Math.max(50, Math.min(Number(maxLines ?? 500), 2000)));
+  });
+  ipcMain.on("logs:watch-start", (event) => {
+    const senderId = event.sender.id;
+    const previous = logWatchers.get(senderId);
+    previous?.watcher.close();
+    if (previous?.timer) clearTimeout(previous.timer);
+    const logPath = getBackendLogPath();
     try {
-      mkdirSync(dirname(logPath), { recursive: true })
-      const record: { watcher: ReturnType<typeof watch>; timer: ReturnType<typeof setTimeout> | null } = {
+      mkdirSync(dirname(logPath), { recursive: true });
+      const record: {
+        watcher: ReturnType<typeof watch>;
+        timer: ReturnType<typeof setTimeout> | null;
+      } = {
         watcher: undefined as unknown as ReturnType<typeof watch>,
         timer: null,
-      }
+      };
       const sendUpdate = (): void => {
-        if (record.timer) clearTimeout(record.timer)
+        if (record.timer) clearTimeout(record.timer);
         record.timer = setTimeout(() => {
-          record.timer = null
+          record.timer = null;
           if (!event.sender.isDestroyed()) {
-            event.sender.send('logs:update', tailLogFile(500))
+            event.sender.send("logs:update", tailLogFile(500));
           }
-        }, 350)
-      }
-      record.watcher = watch(dirname(logPath), { persistent: false }, sendUpdate)
-      logWatchers.set(senderId, record)
-      event.sender.once('destroyed', () => {
-        const active = logWatchers.get(senderId)
-        active?.watcher.close()
-        if (active?.timer) clearTimeout(active.timer)
-        logWatchers.delete(senderId)
-      })
+        }, 350);
+      };
+      record.watcher = watch(
+        dirname(logPath),
+        { persistent: false },
+        sendUpdate,
+      );
+      logWatchers.set(senderId, record);
+      event.sender.once("destroyed", () => {
+        const active = logWatchers.get(senderId);
+        active?.watcher.close();
+        if (active?.timer) clearTimeout(active.timer);
+        logWatchers.delete(senderId);
+      });
     } catch {
       // A tela continua exibindo o conteúdo já carregado se o watcher falhar.
     }
-  })
-  ipcMain.on('logs:watch-stop', (event) => {
-    const senderId = event.sender.id
-    const active = logWatchers.get(senderId)
-    active?.watcher.close()
-    if (active?.timer) clearTimeout(active.timer)
-    logWatchers.delete(senderId)
-  })
-  ipcMain.handle('system:notify', (_e, title: string, body?: string) => {
-    if (!Notification.isSupported()) return false
-    new Notification({ title, body }).show()
-    return true
-  })
-  ipcMain.handle('archive:extract', async (_e, archivePath: string) => {
-    return extractArchive(safeUserPath(archivePath))
-  })
-  ipcMain.handle('archive:auto-extract', async (_e, archivePath: string, passwords: string[]) => {
-    const safeArchivePath = safeUserPath(archivePath)
-    const { autoExtract, shouldAutoExtractFile, allPartsReady } = await import('./archive-service')
-    if (!shouldAutoExtractFile(safeArchivePath)) {
-      return { success: false, error: 'not_extractable' }
-    }
-    // For multipart, check all parts are present first
-    if (!allPartsReady(safeArchivePath)) {
-      return { success: false, error: 'parts_missing' }
-    }
-    const learned = await fetchBackendConfig<Array<{ password: string }>>(
-      '/archive-passwords',
-    ).catch(() => [])
-    const mergedPasswords = [
-      ...new Set([
-        ...learned
-          .slice(0, 20)
-          .map((item) => item.password)
-          .filter(Boolean),
-        ...(Array.isArray(passwords) ? passwords : []),
-      ]),
-    ]
-    const result = await autoExtract(safeArchivePath, mergedPasswords)
-    if (result.success && result.passwordUsed) {
-      await postBackend('/archive-passwords/success', {
-        password: result.passwordUsed,
-        source: 'auto',
-      }).catch((error) => {
-        logMain('archive-passwords', 'Falha ao registrar senha de archive', error)
-      })
-    }
-    return result
-  })
-  ipcMain.handle('archive-passwords:list', async () => {
-    return fetchBackendConfig('/archive-passwords')
-  })
-  ipcMain.handle('archive-passwords:import', async (_e, passwords: string[]) => {
-    await postBackend('/archive-passwords/import', {
-      passwords,
-      source: 'manual',
-    })
-  })
-  ipcMain.handle('archive-passwords:forget', async (_e, password: string) => {
-    await postBackend('/archive-passwords/delete', { password })
-  })
+  });
+  ipcMain.on("logs:watch-stop", (event) => {
+    const senderId = event.sender.id;
+    const active = logWatchers.get(senderId);
+    active?.watcher.close();
+    if (active?.timer) clearTimeout(active.timer);
+    logWatchers.delete(senderId);
+  });
+  ipcMain.handle("system:notify", (_e, title: string, body?: string) => {
+    if (!Notification.isSupported()) return false;
+    new Notification({ title, body }).show();
+    return true;
+  });
+  ipcMain.handle("archive:extract", async (_e, archivePath: string) => {
+    return extractArchive(safeUserPath(archivePath));
+  });
+  ipcMain.handle(
+    "archive:auto-extract",
+    async (_e, archivePath: string, passwords: string[]) => {
+      const safeArchivePath = safeUserPath(archivePath);
+      const { autoExtract, shouldAutoExtractFile, allPartsReady } =
+        await import("./archive-service");
+      if (!shouldAutoExtractFile(safeArchivePath)) {
+        return { success: false, error: "not_extractable" };
+      }
+      // For multipart, check all parts are present first
+      if (!allPartsReady(safeArchivePath)) {
+        return { success: false, error: "parts_missing" };
+      }
+      const learned = await fetchBackendConfig<Array<{ password: string }>>(
+        "/archive-passwords",
+      ).catch(() => []);
+      const mergedPasswords = [
+        ...new Set([
+          ...learned
+            .slice(0, 20)
+            .map((item) => item.password)
+            .filter(Boolean),
+          ...(Array.isArray(passwords) ? passwords : []),
+        ]),
+      ];
+      const result = await autoExtract(safeArchivePath, mergedPasswords);
+      if (result.success && result.passwordUsed) {
+        await postBackend("/archive-passwords/success", {
+          password: result.passwordUsed,
+          source: "auto",
+        }).catch((error) => {
+          logMain(
+            "archive-passwords",
+            "Falha ao registrar senha de archive",
+            error,
+          );
+        });
+      }
+      return result;
+    },
+  );
+  ipcMain.handle("archive-passwords:list", async () => {
+    return fetchBackendConfig("/archive-passwords");
+  });
+  ipcMain.handle(
+    "archive-passwords:import",
+    async (_e, passwords: string[]) => {
+      await postBackend("/archive-passwords/import", {
+        passwords,
+        source: "manual",
+      });
+    },
+  );
+  ipcMain.handle("archive-passwords:forget", async (_e, password: string) => {
+    await postBackend("/archive-passwords/delete", { password });
+  });
 
   // Proxy HTTP via sessão persist:terabox — usa cookies reais do browser, bypass fingerprint
   ipcMain.handle(
-    'terabox:net-request',
+    "terabox:net-request",
     async (
       _e,
       reqParams: {
-        url: string
-        method?: string
-        headers?: Record<string, string>
-        body?: string
+        url: string;
+        method?: string;
+        headers?: Record<string, string>;
+        body?: string;
       },
     ) => {
       return teraboxNetRequest({
         ...reqParams,
         url: assertSafeHttpUrl(reqParams.url),
-      })
+      });
     },
-  )
-  ipcMain.handle('dialog:chooseDirectory', async () => {
-    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  );
+  ipcMain.handle("dialog:chooseDirectory", async () => {
+    const window =
+      BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     const result = await dialog.showOpenDialog(window, {
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    if (result.canceled || result.filePaths.length === 0) return ''
-    return result.filePaths[0]
-  })
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return "";
+    return result.filePaths[0];
+  });
+  ipcMain.handle("torrents:pickFile", async () => {
+    const window =
+      BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const result = await dialog.showOpenDialog(window, {
+      properties: ["openFile"],
+      filters: [{ name: "Torrent", extensions: ["torrent"] }],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
 
   // IPC: settings (preferências no JSON + segredos no SQLite local)
-  ipcMain.handle('settings:load', async () => {
-    await loadPublicSettings().catch(() => null)
-    await loadSecureSettings().catch(() => null)
-    return currentSettingsSnapshot()
-  })
-  ipcMain.handle('settings:save', async (_e, s: unknown) => {
-    const currentDisk = storage.getPublicSettings()
-    const next = (s as Partial<AppSettingsSnapshot>) ?? {}
-    const { nopechaApiKey, ...publicPatch } = next
+  ipcMain.handle("settings:load", async () => {
+    await loadPublicSettings().catch(() => null);
+    await loadSecureSettings().catch(() => null);
+    return currentSettingsSnapshot();
+  });
+  ipcMain.handle("settings:save", async (_e, s: unknown) => {
+    const currentDisk = storage.getPublicSettings();
+    const next = (s as Partial<AppSettingsSnapshot>) ?? {};
+    const { nopechaApiKey, ...publicPatch } = next;
 
     const nextDisk = {
       ...currentDisk,
       ...publicPatch,
+    };
+
+    if (Object.prototype.hasOwnProperty.call(next, "nopechaApiKey")) {
+      storage.setNopechaApiKey(nopechaApiKey);
     }
 
-    if (Object.prototype.hasOwnProperty.call(next, 'nopechaApiKey')) {
-      storage.setNopechaApiKey(nopechaApiKey)
-    }
+    await storage.persistPublicSettings(nextDisk);
+    await storage.persistSecureSettings();
+    await syncBackendConfig(nextDisk.maxConcurrentDownloads);
+    configureClipboardMonitor(nextDisk.clipboardMonitorEnabled);
+    await remoteAccessServer.configure(nextDisk);
+    return storage.currentSettingsSnapshot();
+  });
 
-    await storage.persistPublicSettings(nextDisk)
-    await storage.persistSecureSettings()
-    await syncBackendConfig(nextDisk.maxConcurrentDownloads)
-    configureClipboardMonitor(nextDisk.clipboardMonitorEnabled)
-    await remoteAccessServer.configure(nextDisk)
-    return storage.currentSettingsSnapshot()
-  })
-
-  ipcMain.handle('system:disk-space', async (_event, rawPath: string) => {
-    let target = resolve(expandUserPath(rawPath || storage.getPublicSettings().outputDir || app.getPath('downloads')))
+  ipcMain.handle("system:disk-space", async (_event, rawPath: string) => {
+    let target = resolve(
+      expandUserPath(
+        rawPath ||
+          storage.getPublicSettings().outputDir ||
+          app.getPath("downloads"),
+      ),
+    );
     while (!existsSync(target) && dirname(target) !== target) {
-      target = dirname(target)
+      target = dirname(target);
     }
-    const stats = statfsSync(target)
+    const stats = statfsSync(target);
     return {
       path: target,
       freeBytes: Number(stats.bavail) * Number(stats.bsize),
       totalBytes: Number(stats.blocks) * Number(stats.bsize),
-    }
-  })
+    };
+  });
 
-  ipcMain.handle('system:metrics', () => systemMetricsSnapshot())
+  ipcMain.handle("system:metrics", () => systemMetricsSnapshot());
 
-  ipcMain.handle('cache:stats', async () => localCacheStats())
-  ipcMain.handle('cache:clear', async (_event, ids: string[]) => clearLocalCache(ids))
+  ipcMain.handle("cache:stats", async () => localCacheStats());
+  ipcMain.handle("cache:clear", async (_event, ids: string[]) =>
+    clearLocalCache(ids),
+  );
 
-  ipcMain.handle('remote:info', async () => {
-    await loadPublicSettings().catch(() => null)
-    const settings = storage.getPublicSettings()
-    await remoteAccessServer.configure(settings).catch(() => null)
-    return remoteAccessServer.info(settings)
-  })
+  ipcMain.handle("remote:info", async () => {
+    await loadPublicSettings().catch(() => null);
+    const settings = storage.getPublicSettings();
+    await remoteAccessServer.configure(settings).catch(() => null);
+    return remoteAccessServer.info(settings);
+  });
 
-  ipcMain.handle('remote:generateCredentials', () => {
-    const current = storage.getPublicSettings().remoteAccess
+  ipcMain.handle("remote:generateCredentials", () => {
+    const current = storage.getPublicSettings().remoteAccess;
     return {
       ...generateRemoteAccessCredentials(),
       enabled: Boolean(current?.enabled),
       port: current?.port ?? 9786,
-    }
-  })
-  ipcMain.handle('remote:revokeSession', (_event, id: string) => {
-    return remoteAccessServer.revokeSession(id)
-  })
+    };
+  });
+  ipcMain.handle("remote:revokeSession", (_event, id: string) => {
+    return remoteAccessServer.revokeSession(id);
+  });
 
-  ipcMain.handle('tor:status', async () => {
-    return torStatusPayload()
-  })
-  ipcMain.handle('tor:bootstrapProgress', async () => {
+  ipcMain.handle("tor:status", async () => {
+    return torStatusPayload();
+  });
+  ipcMain.handle("tor:bootstrapProgress", async () => {
     // Progresso do bootstrap do Tor empacotado (0–100). Usado para a animação
     // de conexão mostrar a porcentagem real em vez de um spinner sem fim.
-    return Math.max(0, Math.min(100, managedTorBootstrap))
-  })
-  ipcMain.handle('tor:ensureRunning', async () => {
-    return ensureTorRunningForIsolation()
-  })
-  ipcMain.handle('tor:runtimeStatus', async () => {
-    const endpoint = await detectTorEndpoint()
-    return { running: Boolean(endpoint), port: endpoint?.port ?? null }
-  })
-  ipcMain.handle('tor:connect', async () => {
-    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+    return Math.max(0, Math.min(100, managedTorBootstrap));
+  });
+  ipcMain.handle("tor:ensureRunning", async () => {
+    return ensureTorRunningForIsolation();
+  });
+  ipcMain.handle("tor:runtimeStatus", async () => {
+    const endpoint = await detectTorEndpoint();
+    return { running: Boolean(endpoint), port: endpoint?.port ?? null };
+  });
+  ipcMain.handle("tor:connect", async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch();
     try {
-      let endpoint = await detectTorEndpoint()
+      let endpoint = await detectTorEndpoint();
       if (!endpoint) {
-        await tryStartTor()
-        endpoint = await waitForTorEndpoint()
+        await tryStartTor();
+        endpoint = await waitForTorEndpoint();
         if (endpoint && managedTorProcess && managedTorBootstrap < 100) {
-          const bootstrapped = await waitForManagedTorBootstrap()
+          const bootstrapped = await waitForManagedTorBootstrap();
           if (!bootstrapped) {
             if (managedTorProcess && !managedTorProcess.killed) {
-              managedTorProcess.kill()
-              managedTorProcess = null
+              managedTorProcess.kill();
+              managedTorProcess = null;
             }
-            const percent = managedTorBootstrap
-            managedTorBootstrap = 0
-            throw new Error(`Tor iniciou em ${endpoint.host}:${endpoint.port}, mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`)
+            const percent = managedTorBootstrap;
+            managedTorBootstrap = 0;
+            throw new Error(
+              `Tor iniciou em ${endpoint.host}:${endpoint.port}, mas parou em ${percent}% do bootstrap. Verifique bloqueio de rede/firewall e tente novamente.`,
+            );
           }
         }
       }
       if (!endpoint) {
-        throw new Error('Tor embutido não iniciou em 127.0.0.1:9150.')
+        throw new Error("Tor embutido não iniciou em 127.0.0.1:9150.");
       }
-      await persistTorProxy(true, endpoint)
-      await testTorConnection()
-      return torStatusPayload()
+      await persistTorProxy(true, endpoint);
+      await testTorConnection();
+      return torStatusPayload();
     } catch (error) {
-      await persistTorProxy(false).catch(() => null)
-      throw error
+      await persistTorProxy(false).catch(() => null);
+      throw error;
     } finally {
-      await resumeDownloadsAfterNetworkSwitch(pausedIds)
+      await resumeDownloadsAfterNetworkSwitch(pausedIds);
     }
-  })
-  ipcMain.handle('tor:disconnect', async () => {
-    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+  });
+  ipcMain.handle("tor:disconnect", async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch();
     try {
-      await persistTorProxy(false)
-      lastTorExit = null
+      await persistTorProxy(false);
+      lastTorExit = null;
       if (managedTorProcess && !managedTorProcess.killed) {
-        managedTorProcess.kill()
-        managedTorProcess = null
+        managedTorProcess.kill();
+        managedTorProcess = null;
       }
-      return torStatusPayload()
+      // Sem isso, downloads/torrents com Tor isolado (auto_tor_on_limit/tor_required)
+      // continuavam achando que o Tor ainda estava de pé depois de um disconnect manual.
+      await postBackend("/config/tor-runtime", { socks_port: null }).catch(
+        () => undefined,
+      );
+      await postGoBackend("/config/tor-runtime", { socks_port: null }).catch(
+        () => undefined,
+      );
+      return torStatusPayload();
     } finally {
-      await resumeDownloadsAfterNetworkSwitch(pausedIds)
+      await resumeDownloadsAfterNetworkSwitch(pausedIds);
     }
-  })
-  ipcMain.handle('tor:testConnection', async () => {
-    await testTorConnection()
-    return torStatusPayload()
-  })
-  ipcMain.handle('tor:newIdentity', async () => {
-    const pausedIds = await pauseActiveDownloadsForNetworkSwitch()
+  });
+  ipcMain.handle("tor:testConnection", async () => {
+    await testTorConnection();
+    return torStatusPayload();
+  });
+  ipcMain.handle("tor:newIdentity", async () => {
+    const pausedIds = await pauseActiveDownloadsForNetworkSwitch();
     try {
-      await signalTorNewIdentity()
-      await testTorConnection()
-      return torStatusPayload()
+      await signalTorNewIdentity();
+      await testTorConnection();
+      return torStatusPayload();
     } finally {
-      await resumeDownloadsAfterNetworkSwitch(pausedIds)
+      await resumeDownloadsAfterNetworkSwitch(pausedIds);
     }
-  })
+  });
 
-  ipcMain.handle('config:test-proxy', async () => {
-    if (!rustPort) throw new Error('Backend not available')
-    const response = await fetch(`http://127.0.0.1:${rustPort}/config/test-proxy`)
+  ipcMain.handle("config:test-proxy", async () => {
+    if (!rustPort) throw new Error("Backend not available");
+    const response = await fetch(
+      `http://127.0.0.1:${rustPort}/config/test-proxy`,
+    );
     if (!response.ok) {
-      const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
-      throw new Error(body.error ?? `HTTP ${response.status}`)
+      const body = await response
+        .json()
+        .catch(() => ({ error: `HTTP ${response.status}` }));
+      throw new Error(body.error ?? `HTTP ${response.status}`);
     }
-    return response.json()
-  })
+    return response.json();
+  });
 
-  ipcMain.handle('intercept:status', async () => {
-    return fetchBackendConfig('/intercept/status')
-  })
-  ipcMain.handle('intercept:install-ca', async () => {
-    const info = await fetchBackendConfig<{ caCertPath?: string }>('/intercept/status')
-    if (!info.caCertPath) return false
-    await shell.openPath(info.caCertPath)
-    return true
-  })
-  ipcMain.handle('intercept:open-proxy-settings', async () => {
-    if (process.platform === 'darwin') {
-      await shell.openExternal('x-apple.systempreferences:com.apple.Network-Settings.extension')
-      return true
+  ipcMain.handle("intercept:status", async () => {
+    return fetchBackendConfig("/intercept/status");
+  });
+  ipcMain.handle("intercept:install-ca", async () => {
+    const info = await fetchBackendConfig<{ caCertPath?: string }>(
+      "/intercept/status",
+    );
+    if (!info.caCertPath) return false;
+    await shell.openPath(info.caCertPath);
+    return true;
+  });
+  ipcMain.handle("intercept:open-proxy-settings", async () => {
+    if (process.platform === "darwin") {
+      await shell.openExternal(
+        "x-apple.systempreferences:com.apple.Network-Settings.extension",
+      );
+      return true;
     }
-    if (process.platform === 'win32') {
-      await shell.openExternal('ms-settings:network-proxy')
-      return true
+    if (process.platform === "win32") {
+      await shell.openExternal("ms-settings:network-proxy");
+      return true;
     }
-    await shell.openExternal('x-scheme-handler/settings')
-    return true
-  })
+    await shell.openExternal("x-scheme-handler/settings");
+    return true;
+  });
 
   // IPC: auth
-  ipcMain.handle('auth:isLoggedIn', (_e, moduleId: string) => {
-    const normalized = moduleId.toLowerCase()
-    if (normalized === 'terabox') return teraboxService.isLoggedIn()
-    return false
-  })
-  ipcMain.handle('auth:accountInfo', (_e, moduleId: string) => {
-    const normalized = moduleId.toLowerCase()
-    if (normalized === 'terabox') return teraboxService.accountInfo()
-    return null
-  })
-  ipcMain.handle('auth:login', async (_e, moduleId: string, params: Record<string, string>) => {
-    const normalized = moduleId.toLowerCase()
-    if (normalized === 'terabox') {
-      return teraboxService.login(params)
-    }
-    throw new Error('Módulo sem suporte a conta')
-  })
-  ipcMain.handle('auth:logout', (_e, moduleId: string) => {
-    const normalized = moduleId.toLowerCase()
-    if (normalized === 'terabox') return teraboxService.logout()
-    return false
-  })
+  ipcMain.handle("auth:isLoggedIn", (_e, moduleId: string) => {
+    const normalized = moduleId.toLowerCase();
+    if (normalized === "terabox") return teraboxService.isLoggedIn();
+    return false;
+  });
+  ipcMain.handle("auth:accountInfo", (_e, moduleId: string) => {
+    const normalized = moduleId.toLowerCase();
+    if (normalized === "terabox") return teraboxService.accountInfo();
+    return null;
+  });
+  ipcMain.handle(
+    "auth:login",
+    async (_e, moduleId: string, params: Record<string, string>) => {
+      const normalized = moduleId.toLowerCase();
+      if (normalized === "terabox") {
+        return teraboxService.login(params);
+      }
+      throw new Error("Módulo sem suporte a conta");
+    },
+  );
+  ipcMain.handle("auth:logout", (_e, moduleId: string) => {
+    const normalized = moduleId.toLowerCase();
+    if (normalized === "terabox") return teraboxService.logout();
+    return false;
+  });
 
   // IPC: histórico de downloads
-  ipcMain.handle('history:load', async (_e, filters?: HistorySearchFilters) => {
-    return loadHistoryFromBackend(filters)
-  })
-  ipcMain.handle('history:save', async (_e, items: unknown) => {
-    await saveHistoryToBackend(Array.isArray(items) ? (items as PersistedHistoryItem[]) : [])
-  })
-  ipcMain.handle('history:append', async (_e, item: PersistedHistoryItem) => {
-    await appendHistoryItemToBackend(item)
-  })
-  ipcMain.handle('history:hosts', async () => {
-    return loadHistoryHostsFromBackend()
-  })
-  ipcMain.handle('history:remove', async (_e, id: string) => {
-    await removeHistoryItemInBackend(id)
-  })
-  ipcMain.handle('history:clear', async () => {
-    await clearHistoryInBackend()
-  })
+  ipcMain.handle("history:load", async (_e, filters?: HistorySearchFilters) => {
+    return loadHistoryFromBackend(filters);
+  });
+  ipcMain.handle("history:save", async (_e, items: unknown) => {
+    await saveHistoryToBackend(
+      Array.isArray(items) ? (items as PersistedHistoryItem[]) : [],
+    );
+  });
+  ipcMain.handle("history:append", async (_e, item: PersistedHistoryItem) => {
+    await appendHistoryItemToBackend(item);
+  });
+  ipcMain.handle("history:hosts", async () => {
+    return loadHistoryHostsFromBackend();
+  });
+  ipcMain.handle("history:remove", async (_e, id: string) => {
+    await removeHistoryItemInBackend(id);
+  });
+  ipcMain.handle("history:clear", async () => {
+    await clearHistoryInBackend();
+  });
 
   // NoPecha: auto-resolve captchas
   ipcMain.handle(
-    'captcha:nopecha-solve',
+    "captcha:nopecha-solve",
     async (
       _e,
       params: {
-        type: string
-        sitekey: string
-        pageurl: string
+        type: string;
+        sitekey: string;
+        pageurl: string;
       },
     ) => {
-      return solveCaptchaWithNopecha(params)
+      return solveCaptchaWithNopecha(params);
     },
-  )
+  );
 
   ipcMain.handle(
-    'captcha:open-window',
+    "captcha:open-window",
     async (
       _e,
       params: {
-        provider?: string
-        pageUrl: string
-        sourceUrl?: string
+        provider?: string;
+        pageUrl: string;
+        sourceUrl?: string;
       },
     ) => {
-      const pageUrl = params.pageUrl ? assertSafeHttpUrl(params.pageUrl) : ''
-      const sourceUrl = params.sourceUrl ? assertSafeHttpUrl(params.sourceUrl) : undefined
+      const pageUrl = params.pageUrl ? assertSafeHttpUrl(params.pageUrl) : "";
+      const sourceUrl = params.sourceUrl
+        ? assertSafeHttpUrl(params.sourceUrl)
+        : undefined;
       return captchaWindowService.solve({
         provider: params.provider,
         pageUrl,
         sourceUrl,
-      })
+      });
     },
-  )
+  );
 
   // IPC: ytdlp status and update
-  ipcMain.handle('ytdlp:status', () => ytdlpService?.getStatus() ?? { version: null, updateAvailable: false, state: 'downloading' as const })
+  ipcMain.handle(
+    "ytdlp:status",
+    () =>
+      ytdlpService?.getStatus() ?? {
+        version: null,
+        updateAvailable: false,
+        state: "downloading" as const,
+      },
+  );
 
-  ipcMain.handle('ytdlp:checkUpdate', async () => {
+  ipcMain.handle("ytdlp:checkUpdate", async () => {
     if (ytdlpService) {
-      const settings = storage.getPublicSettings()
+      const settings = storage.getPublicSettings();
       await ytdlpService
-        .ensureReady(settings.ytdlpBinPath ?? '', settings.ytdlpAutoUpdate ?? true)
+        .ensureReady(
+          settings.ytdlpBinPath ?? "",
+          settings.ytdlpAutoUpdate ?? true,
+        )
         .catch((err) => {
-          logMain('ytdlp', 'Falha na verificação manual de atualização', err)
-        })
-      return ytdlpService.getStatus()
+          logMain("ytdlp", "Falha na verificação manual de atualização", err);
+        });
+      return ytdlpService.getStatus();
     }
-    return { version: null, updateAvailable: false, state: 'error' as const, error: 'Serviço não inicializado' }
-  })
+    return {
+      version: null,
+      updateAvailable: false,
+      state: "error" as const,
+      error: "Serviço não inicializado",
+    };
+  });
 
   // IPC: ffmpeg status / detecção / download gerenciado
-  ipcMain.handle('ffmpeg:status', async () => {
+  ipcMain.handle("ffmpeg:status", async () => {
     if (ffmpegService) {
-      const settings = storage.getPublicSettings()
-      await ffmpegService.ensureReady(settings.ffmpegBinPath ?? '').catch(() => null)
-      return ffmpegService.getStatus()
+      const settings = storage.getPublicSettings();
+      await ffmpegService
+        .ensureReady(settings.ffmpegBinPath ?? "")
+        .catch(() => null);
+      return ffmpegService.getStatus();
     }
-    return { version: null, state: 'error' as const, source: 'none' as const, path: null, error: 'Serviço não inicializado' }
-  })
+    return {
+      version: null,
+      state: "error" as const,
+      source: "none" as const,
+      path: null,
+      error: "Serviço não inicializado",
+    };
+  });
 
-  ipcMain.handle('ffmpeg:download', async () => {
+  ipcMain.handle("ffmpeg:download", async () => {
     if (!ffmpegService) {
-      return { version: null, state: 'error' as const, source: 'none' as const, path: null, error: 'Serviço não inicializado' }
+      return {
+        version: null,
+        state: "error" as const,
+        source: "none" as const,
+        path: null,
+        error: "Serviço não inicializado",
+      };
     }
-    const result = await ffmpegService.download()
+    const result = await ffmpegService.download();
     // Reinicia o backend para reinjetar GDOWNLOADER_FFMPEG_BIN com o novo caminho.
-    if (result.state === 'ready') {
-      await backendRuntime.forceRestart().catch((err) => logMain('ffmpeg', 'Falha ao reiniciar backend após instalar ffmpeg', err))
+    if (result.state === "ready") {
+      await backendRuntime
+        .forceRestart()
+        .catch((err) =>
+          logMain(
+            "ffmpeg",
+            "Falha ao reiniciar backend após instalar ffmpeg",
+            err,
+          ),
+        );
     }
-    return result
-  })
+    return result;
+  });
 
   // IPC: turnstile solvers (ezsolver/icemellow/surafelabeje/flaresolverr) — atualizável como yt-dlp
-  ipcMain.handle('turnstile:statusAll', () => turnstileService?.getAllStatuses() ?? [])
-  ipcMain.handle('turnstile:status', (_e, id: string) => turnstileService?.getStatus(id as never) ?? null)
-  ipcMain.handle('turnstile:checkUpdate', async (_e, id: string) => {
-    if (!turnstileService) return null
-    return turnstileService.checkUpdate(id as never)
-  })
-  ipcMain.handle('turnstile:update', async (_e, id: string) => {
-    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
-    const result = await turnstileService.updateSolver(id as never)
-    logMain('turnstile', `Solver ${id} atualizado`, result)
-    return result
-  })
-  ipcMain.handle('turnstile:ensureReady', async (_e, id: string) => {
-    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
-    await turnstileService.ensureReady(id as never, true)
-    return turnstileService.getStatus(id as never)
-  })
-  ipcMain.handle('turnstile:solve', async (_e, params: { sitekey: string; pageurl: string; proxy?: string; timeoutMs?: number }) => {
-    if (!turnstileService) throw new Error('Serviço turnstile não inicializado')
-    const settings = storage.getPublicSettings()
-    if (settings.turnstileEnabled === false) throw new Error('Solver Turnstile desativado nas configurações')
-    // Monta proxy Tor se estiver em modo Tor isolado ou global
-    let proxy = params.proxy
-    if (!proxy && settings.proxyMode === 'tor' && settings.proxyHost && settings.proxyPort) {
-      const user = `gdl-turnstile-${Date.now() % 10000}`
-      proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`
-    } else if (!proxy) {
-      // Tenta usar porta Tor isolada do backendRuntime (sem alterar proxy global)
-      const torPort = await detectTorEndpoint().then((e) => e?.port).catch(() => null)
-      if (torPort) {
-        const user = `gdl-turnstile-${Date.now() % 10000}`
-        proxy = `socks5://${user}:pass@127.0.0.1:${torPort}`
+  ipcMain.handle(
+    "turnstile:statusAll",
+    () => turnstileService?.getAllStatuses() ?? [],
+  );
+  ipcMain.handle(
+    "turnstile:status",
+    (_e, id: string) => turnstileService?.getStatus(id as never) ?? null,
+  );
+  ipcMain.handle("turnstile:checkUpdate", async (_e, id: string) => {
+    if (!turnstileService) return null;
+    return turnstileService.checkUpdate(id as never);
+  });
+  ipcMain.handle("turnstile:update", async (_e, id: string) => {
+    if (!turnstileService)
+      throw new Error("Serviço turnstile não inicializado");
+    const result = await turnstileService.updateSolver(id as never);
+    logMain("turnstile", `Solver ${id} atualizado`, result);
+    return result;
+  });
+  ipcMain.handle("turnstile:ensureReady", async (_e, id: string) => {
+    if (!turnstileService)
+      throw new Error("Serviço turnstile não inicializado");
+    await turnstileService.ensureReady(id as never, true);
+    return turnstileService.getStatus(id as never);
+  });
+  ipcMain.handle(
+    "turnstile:solve",
+    async (
+      _e,
+      params: {
+        sitekey: string;
+        pageurl: string;
+        proxy?: string;
+        timeoutMs?: number;
+      },
+    ) => {
+      if (!turnstileService)
+        throw new Error("Serviço turnstile não inicializado");
+      const settings = storage.getPublicSettings();
+      if (settings.turnstileEnabled === false)
+        throw new Error("Solver Turnstile desativado nas configurações");
+      // Monta proxy Tor se estiver em modo Tor isolado ou global
+      let proxy = params.proxy;
+      if (
+        !proxy &&
+        settings.proxyMode === "tor" &&
+        settings.proxyHost &&
+        settings.proxyPort
+      ) {
+        const user = `gdl-turnstile-${Date.now() % 10000}`;
+        proxy = `socks5://${user}:pass@${settings.proxyHost}:${settings.proxyPort}`;
+      } else if (!proxy) {
+        // Tenta usar porta Tor isolada do backendRuntime (sem alterar proxy global)
+        const torPort = await detectTorEndpoint()
+          .then((e) => e?.port)
+          .catch(() => null);
+        if (torPort) {
+          const user = `gdl-turnstile-${Date.now() % 10000}`;
+          proxy = `socks5://${user}:pass@127.0.0.1:${torPort}`;
+        }
       }
-    }
-    const order = (settings.turnstileSolverOrder as never) || undefined
-    return turnstileService.solve({ sitekey: params.sitekey, pageurl: params.pageurl, proxy, timeoutMs: params.timeoutMs ?? 45000, solverOrder: order })
-  })
+      const order = (settings.turnstileSolverOrder as never) || undefined;
+      return turnstileService.solve({
+        sitekey: params.sitekey,
+        pageurl: params.pageurl,
+        proxy,
+        timeoutMs: params.timeoutMs ?? 45000,
+        solverOrder: order,
+      });
+    },
+  );
 
   // IPC: tray stats update
   ipcMain.on(
-    'tray:update-stats',
-    (_event, { activeCount, speed }: { activeCount: number; speed: string }) => {
-      const activeTray = tray
-      const activeWin = mainWindow
+    "tray:update-stats",
+    (
+      _event,
+      { activeCount, speed }: { activeCount: number; speed: string },
+    ) => {
+      const activeTray = tray;
+      const activeWin = mainWindow;
       if (activeTray && activeWin) {
-        activeTray.setToolTip(`gDownloader — ${activeCount} baixando · ${speed}`)
-        updateTrayMenu(activeWin, activeTray, activeCount, speed)
+        activeTray.setToolTip(
+          `gDownloader — ${activeCount} baixando · ${speed}`,
+        );
+        updateTrayMenu(activeWin, activeTray, activeCount, speed);
       }
     },
-  )
+  );
 
   // Inicia o proxy local do Terabox (usa sessão browser com cookies reais).
   // Exige header X-GDownloader-Token — só o backend Rust da sessão conhece o token.
   await new Promise<void>((resolve) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const http = require('http') as typeof import('http')
+    const http = require("http") as typeof import("http");
     const server = http.createServer(async (req, res) => {
-      if (req.method !== 'POST') {
-        res.writeHead(405)
-        res.end()
-        return
+      if (req.method !== "POST") {
+        res.writeHead(405);
+        res.end();
+        return;
       }
-      const tokenHeader = String(req.headers['x-gdownloader-token'] ?? '')
+      const tokenHeader = String(req.headers["x-gdownloader-token"] ?? "");
       if (!tokenHeader || tokenHeader !== helperProxyToken) {
-        res.writeHead(401, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Unauthorized' }))
-        return
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
       }
-      const chunks: Buffer[] = []
-      let size = 0
-      req.on('data', (c: Buffer) => {
-        size += c.byteLength
+      const chunks: Buffer[] = [];
+      let size = 0;
+      req.on("data", (c: Buffer) => {
+        size += c.byteLength;
         if (size > 8 * 1024 * 1024) {
-          res.writeHead(413)
-          res.end()
-          req.destroy()
-          return
+          res.writeHead(413);
+          res.end();
+          req.destroy();
+          return;
         }
-        chunks.push(c)
-      })
-      req.on('end', async () => {
+        chunks.push(c);
+      });
+      req.on("end", async () => {
         try {
-          const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-            action?: string
-            url?: string
-            method?: string
-            headers?: Record<string, string>
-            destPath?: string
-            jobId?: string
-            proxy?: string
-          }
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            action?: string;
+            url?: string;
+            method?: string;
+            headers?: Record<string, string>;
+            destPath?: string;
+            jobId?: string;
+            proxy?: string;
+          };
           if (body.url) {
-            body.url = assertSafeHttpUrl(body.url)
+            body.url = assertSafeHttpUrl(body.url);
           }
           if (body.destPath) {
-            body.destPath = safeUserPath(body.destPath)
+            body.destPath = safeUserPath(body.destPath);
           }
-          const result = body.action?.startsWith('terabox_')
+          const result = body.action?.startsWith("terabox_")
             ? await teraboxService.handleAction(body)
-            : body.action?.startsWith('akirabox_')
+            : body.action?.startsWith("akirabox_")
               ? await akiraboxService.handleAction(body)
-            : body.action?.startsWith('katfile_')
+              : body.action?.startsWith("katfile_")
                 ? await katfileService.handleAction(body)
-                : body.action?.startsWith('sendnow_')
+                : body.action?.startsWith("sendnow_")
                   ? await sendnowService.handleAction(body)
-                : await teraboxNetRequest({
-                    url: body.url ?? '',
-                    method: body.method,
-                    headers: body.headers,
-                  })
-          res.writeHead(200, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify(result))
+                  : await teraboxNetRequest({
+                      url: body.url ?? "",
+                      method: body.method,
+                      headers: body.headers,
+                    });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
         } catch (e) {
-          logMain('helper-proxy', 'Falha ao processar ação local', {
+          logMain("helper-proxy", "Falha ao processar ação local", {
             error: String(e),
-          })
-          res.writeHead(500, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error: String(e) }))
+          });
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(e) }));
         }
-      })
-    })
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address() as { port: number }
-      teraboxProxyPort = addr.port
-      logMain('terabox-proxy', `porta ${teraboxProxyPort} (token auth)`)
-      resolve()
-    })
-  })
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as { port: number };
+      teraboxProxyPort = addr.port;
+      logMain("terabox-proxy", `porta ${teraboxProxyPort} (token auth)`);
+      resolve();
+    });
+  });
 
   // Inicia o backend Rust antes de abrir a janela
   try {
-    rustPort = await backendRuntime.start()
+    rustPort = await backendRuntime.start();
     // Inicia Go sidecar para os 6 módulos migrados (migrations, models, config, captcha, health, history)
     // Go compartilha o mesmo SQLite em WAL, então Rust+Go coexistem no mesmo arquivo
     try {
-      goPort = await goRuntime.start()
-      logMain('go', 'Go sidecar pronto', { goPort })
+      goPort = await goRuntime.start();
+      logMain("go", "Go sidecar pronto", { goPort });
     } catch (err) {
-      logMain('go', 'Go sidecar falhou, Rust continua como fallback', err)
+      logMain("go", "Go sidecar falhou, Rust continua como fallback", err);
       // Não falha o app se Go não subir — Rust ainda serve as rotas legadas
     }
     // Inicia download/atualização do yt-dlp em background (não bloqueia)
     if (ytdlpService) {
-      const settingsForYtdlp = storage.getPublicSettings()
+      const settingsForYtdlp = storage.getPublicSettings();
       ytdlpService.onProgress((e) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send('ytdlp:progress', e)
+          win.webContents.send("ytdlp:progress", e);
         }
-      })
+      });
       void ytdlpService
-        .ensureReady(settingsForYtdlp.ytdlpBinPath ?? '', settingsForYtdlp.ytdlpAutoUpdate ?? true)
+        .ensureReady(
+          settingsForYtdlp.ytdlpBinPath ?? "",
+          settingsForYtdlp.ytdlpAutoUpdate ?? true,
+        )
         .catch((err) => {
-          logMain('ytdlp', 'Falha ao garantir yt-dlp pronto', err)
-        })
+          logMain("ytdlp", "Falha ao garantir yt-dlp pronto", err);
+        });
     }
     // Detecta o ffmpeg (sistema/gerenciado) em background — não baixa sozinho.
     if (ffmpegService) {
-      const settingsForFfmpeg = storage.getPublicSettings()
+      const settingsForFfmpeg = storage.getPublicSettings();
       ffmpegService.onProgress((e) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send('ffmpeg:progress', e)
+          win.webContents.send("ffmpeg:progress", e);
         }
-      })
-      void ffmpegService.ensureReady(settingsForFfmpeg.ffmpegBinPath ?? '').catch((err) => {
-        logMain('ffmpeg', 'Falha ao detectar ffmpeg', err)
-      })
+      });
+      void ffmpegService
+        .ensureReady(settingsForFfmpeg.ffmpegBinPath ?? "")
+        .catch((err) => {
+          logMain("ffmpeg", "Falha ao detectar ffmpeg", err);
+        });
     }
     // Solver universal 1,2,3,4 — atualizável como yt-dlp, auto-pull de novos via manifest
     if (turnstileService) {
-      const settingsForSolver = storage.getPublicSettings()
+      const settingsForSolver = storage.getPublicSettings();
       turnstileService.onProgress((e) => {
         for (const win of BrowserWindow.getAllWindows()) {
-          win.webContents.send('turnstile:progress', e)
+          win.webContents.send("turnstile:progress", e);
         }
-      })
-      void turnstileService.ensureAllReady(settingsForSolver.turnstileAutoUpdate ?? true).catch((err) => {
-        logMain('turnstile', 'Falha ao garantir solvers prontos', err)
-      })
+      });
+      void turnstileService
+        .ensureAllReady(settingsForSolver.turnstileAutoUpdate ?? true)
+        .catch((err) => {
+          logMain("turnstile", "Falha ao garantir solvers prontos", err);
+        });
     }
-    await loadPublicSettings()
-    await loadSecureSettings()
-    await migrateLegacySettings()
-    await loadPublicSettings()
-    await clearStaleTorProxy()
-    const settings = currentSettingsSnapshot()
-    await syncBackendConfig(settings.maxConcurrentDownloads)
-    configureClipboardMonitor(settings.clipboardMonitorEnabled)
-    await remoteAccessServer.configure(settings)
+    await loadPublicSettings();
+    await loadSecureSettings();
+    await migrateLegacySettings();
+    await loadPublicSettings();
+    await clearStaleTorProxy();
+    const settings = currentSettingsSnapshot();
+    await syncBackendConfig(settings.maxConcurrentDownloads);
+    configureClipboardMonitor(settings.clipboardMonitorEnabled);
+    await remoteAccessServer.configure(settings);
   } catch (err) {
-    logMain('electron', 'Backend não pôde ser iniciado', err)
+    logMain("electron", "Backend não pôde ser iniciado", err);
   }
 
-  mainWindow = createWindow()
-  createTray(mainWindow)
+  mainWindow = createWindow();
+  createTray(mainWindow);
 
-  app.on('activate', () => {
+  app.on("activate", () => {
     // macOS: recria a janela ao clicar no ícone do dock se não houver janelas abertas
     if (!rustPort) {
       void (async () => {
         try {
-          rustPort = await backendRuntime.start()
-          await loadPublicSettings()
-          await loadSecureSettings()
-          await clearStaleTorProxy()
-          await syncBackendConfig(storage.getPublicSettings().maxConcurrentDownloads)
-          configureClipboardMonitor(storage.getPublicSettings().clipboardMonitorEnabled)
-          await remoteAccessServer.configure(storage.getPublicSettings())
+          rustPort = await backendRuntime.start();
+          await loadPublicSettings();
+          await loadSecureSettings();
+          await clearStaleTorProxy();
+          await syncBackendConfig(
+            storage.getPublicSettings().maxConcurrentDownloads,
+          );
+          configureClipboardMonitor(
+            storage.getPublicSettings().clipboardMonitorEnabled,
+          );
+          await remoteAccessServer.configure(storage.getPublicSettings());
         } catch (error) {
-          logMain('electron', 'Falha ao reativar backend Rust', error)
+          logMain("electron", "Falha ao reativar backend Rust", error);
         }
-      })()
+      })();
     }
     if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow()
-      if (!tray && mainWindow) createTray(mainWindow)
+      mainWindow = createWindow();
+      if (!tray && mainWindow) createTray(mainWindow);
     }
-  })
-})
+  });
+});
 
 // Para o backend Rust quando todas as janelas são fechadas
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    backendRuntime.markQuitting()
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    backendRuntime.markQuitting();
   }
-  backendRuntime.stop()
-  void remoteAccessServer.stop()
-  rustPort = null
-  if (process.platform !== 'darwin') app.quit()
-})
+  backendRuntime.stop();
+  void remoteAccessServer.stop();
+  rustPort = null;
+  if (process.platform !== "darwin") app.quit();
+});
 
 // Garante que o backend para mesmo se o Electron fechar inesperadamente
-app.on('before-quit', () => {
-  tray?.destroy()
-  tray = null
-  void postBackend('/config/tor-runtime', { socks_port: null }).catch(() => undefined)
-  backendRuntime.markQuitting()
-  backendRuntime.stop()
-  void remoteAccessServer.stop()
-  rustPort = null
-})
+app.on("before-quit", () => {
+  tray?.destroy();
+  tray = null;
+  void postBackend("/config/tor-runtime", { socks_port: null }).catch(
+    () => undefined,
+  );
+  void postGoBackend("/config/tor-runtime", { socks_port: null }).catch(
+    () => undefined,
+  );
+  backendRuntime.markQuitting();
+  backendRuntime.stop();
+  void remoteAccessServer.stop();
+  rustPort = null;
+});

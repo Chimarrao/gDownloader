@@ -11,11 +11,16 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             />
-            <path d="M4 19 H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            <path
+              d="M4 19 H20"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            />
           </svg>
         </div>
         <div class="brand-text">
-          <strong>{{ t('appName') }}</strong>
+          <strong>{{ t("appName") }}</strong>
           <span class="brand-version">v2.0.0</span>
         </div>
       </div>
@@ -27,8 +32,10 @@
           @click="activeTab = 'downloads'"
         >
           <i class="pi pi-download"></i>
-          <span>{{ t('downloads') }}</span>
-          <span v-if="downloadCount > 0" class="nav-badge">{{ downloadCount }}</span>
+          <span>{{ t("downloads") }}</span>
+          <span v-if="downloadCount > 0" class="nav-badge">{{
+            downloadCount
+          }}</span>
         </button>
         <button
           class="nav-item"
@@ -37,7 +44,16 @@
           @click="activeTab = 'grabber'"
         >
           <i class="pi pi-link"></i>
-          <span>{{ t('linkGrabber') }}</span>
+          <span>{{ t("linkGrabber") }}</span>
+        </button>
+        <button
+          class="nav-item"
+          :class="{ active: activeTab === 'torrents' }"
+          data-tour="torrents-tab"
+          @click="activeTab = 'torrents'"
+        >
+          <i class="pi pi-share-alt"></i>
+          <span>Torrents</span>
         </button>
         <button
           class="nav-item"
@@ -46,7 +62,7 @@
           @click="activeTab = 'account'"
         >
           <i class="pi pi-user"></i>
-          <span>{{ t('account') }}</span>
+          <span>{{ t("account") }}</span>
         </button>
         <button
           class="nav-item"
@@ -64,7 +80,7 @@
           @click="activeTab = 'settings'"
         >
           <i class="pi pi-cog"></i>
-          <span>{{ t('settings') }}</span>
+          <span>{{ t("settings") }}</span>
         </button>
       </nav>
 
@@ -72,37 +88,62 @@
         <button
           type="button"
           class="sidebar-disk"
-          :class="{ warn: diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows }"
+          :class="{
+            warn:
+              diskUsage.available < diskUsage.total * 0.1 || diskQueueOverflows,
+          }"
           :title="diskTooltip"
           @click="toggleDisksPopover"
         >
           <span class="sidebar-disk-title">Espaço em disco</span>
           <div class="sidebar-disk-stats">
-            <div><strong>{{ formatBytes(diskUsage.used) }}</strong><span>{{ t('diskUsed') }}</span></div>
-            <div><strong>{{ formatBytes(diskUsage.available) }}</strong><span>{{ t('diskFreeLabel') }}</span></div>
+            <div>
+              <strong>{{ formatBytes(diskUsage.used) }}</strong
+              ><span>{{ t("diskUsed") }}</span>
+            </div>
+            <div>
+              <strong>{{ formatBytes(diskUsage.available) }}</strong
+              ><span>{{ t("diskFreeLabel") }}</span>
+            </div>
           </div>
           <div class="sidebar-disk-bar">
-            <span class="seg-used" :style="{ width: `${diskUsedPercent}%` }"></span>
+            <span
+              class="seg-used"
+              :style="{ width: `${diskUsedPercent}%` }"
+            ></span>
             <span
               class="seg-queued"
               :class="{ overflow: diskQueueOverflows }"
               :style="{ width: `${diskQueuedPercent}%` }"
             ></span>
           </div>
-          <span class="sidebar-disk-total">Total: {{ formatBytes(diskUsage.total) }}</span>
+          <span class="sidebar-disk-total"
+            >Total: {{ formatBytes(diskUsage.total) }}</span
+          >
         </button>
 
-        <div v-if="disksPopoverOpen" class="disks-popover sidebar-disks-popover" @click.stop>
+        <div
+          v-if="disksPopoverOpen"
+          class="disks-popover sidebar-disks-popover"
+          @click.stop
+        >
           <div class="disks-popover-head">
-            <span>{{ t('disksAndVolumes') }}</span>
-            <button class="disks-popover-close" @click="disksPopoverOpen = false"><i class="pi pi-times"></i></button>
+            <span>{{ t("disksAndVolumes") }}</span>
+            <button
+              class="disks-popover-close"
+              @click="disksPopoverOpen = false"
+            >
+              <i class="pi pi-times"></i>
+            </button>
           </div>
           <div class="disks-legend">
-            <span><i class="dot used"></i>{{ t('diskUsed') }}</span>
-            <span><i class="dot queued"></i>{{ t('diskQueued') }}</span>
-            <span><i class="dot free"></i>{{ t('diskFreeLabel') }}</span>
+            <span><i class="dot used"></i>{{ t("diskUsed") }}</span>
+            <span><i class="dot queued"></i>{{ t("diskQueued") }}</span>
+            <span><i class="dot free"></i>{{ t("diskFreeLabel") }}</span>
           </div>
-          <div v-if="allDisks.length === 0" class="disks-empty">{{ t('noDiskInfo') }}</div>
+          <div v-if="allDisks.length === 0" class="disks-empty">
+            {{ t("noDiskInfo") }}
+          </div>
           <div
             v-for="disk in allDisks"
             :key="disk.mount"
@@ -110,28 +151,44 @@
             :class="{ active: disk.mount === diskUsage.mount }"
           >
             <div class="disk-row-head">
-              <i class="pi" :class="disk.removable ? 'pi-usb' : 'pi-database'"></i>
+              <i
+                class="pi"
+                :class="disk.removable ? 'pi-usb' : 'pi-database'"
+              ></i>
               <span class="disk-name" :title="disk.mount">{{ disk.name }}</span>
-              <span class="disk-kind">{{ disk.kind }}{{ disk.removable ? ` · ${t('removableDisk')}` : '' }}</span>
+              <span class="disk-kind"
+                >{{ disk.kind
+                }}{{ disk.removable ? ` · ${t("removableDisk")}` : "" }}</span
+              >
             </div>
             <div class="disk-row-bar">
-              <span class="seg-used" :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"></span>
+              <span
+                class="seg-used"
+                :style="{ width: `${diskPercent(disk.used, disk.total)}%` }"
+              ></span>
               <span
                 v-if="disk.mount === diskUsage.mount && queuedBytes > 0"
                 class="seg-queued"
-                :style="{ width: `${diskPercent(Math.min(queuedBytes, disk.available), disk.total)}%` }"
+                :style="{
+                  width: `${diskPercent(Math.min(queuedBytes, disk.available), disk.total)}%`,
+                }"
               ></span>
             </div>
             <div class="disk-row-sub">
               <span>{{ formatBytes(disk.used) }} usados</span>
-              <span>{{ formatBytes(disk.available) }} livres de {{ formatBytes(disk.total) }}</span>
+              <span
+                >{{ formatBytes(disk.available) }} livres de
+                {{ formatBytes(disk.total) }}</span
+              >
             </div>
             <div class="disk-row-io">
               <span class="io-read" title="Leitura">
-                <i class="pi pi-arrow-down"></i>{{ formatBytes(disk.readBps ?? 0) }}/s
+                <i class="pi pi-arrow-down"></i
+                >{{ formatBytes(disk.readBps ?? 0) }}/s
               </span>
               <span class="io-write" title="Escrita">
-                <i class="pi pi-arrow-up"></i>{{ formatBytes(disk.writeBps ?? 0) }}/s
+                <i class="pi pi-arrow-up"></i
+                >{{ formatBytes(disk.writeBps ?? 0) }}/s
               </span>
             </div>
           </div>
@@ -139,150 +196,232 @@
       </div>
     </aside>
     <div class="app-body">
-    <header class="topbar">
-      <div class="topbar-actions">
-        <button
-          class="quick-toggle-btn"
-          :class="{ active: clipboardMonitorEnabled }"
-          :title="clipboardMonitorEnabled ? t('clipboardCaptureOn') : t('clipboardCaptureOff')"
-          @click="toggleClipboardMonitor"
-        >
-          <i class="pi pi-link"></i>
-          <span>{{ t('clipboardCapture') }}</span>
-        </button>
-        <button class="quick-icon-btn" :title="t('toggleTheme')" @click="toggleQuickTheme">
-          <i :class="effectiveTheme === 'light' ? 'pi pi-moon' : 'pi pi-sun'"></i>
-        </button>
-        <div class="tor-widget" :class="[`tor-${torState.state}`, { open: torPanelOpen }]" data-tour="tor-widget">
-          <button class="tor-main-btn" :disabled="torBusy" @click="toggleTorPanel">
-            <span
-              class="tor-icon"
-              :class="{ 'tor-icon-busy': torState.state === 'connecting' || torState.state === 'disconnecting' }"
-              :style="{ '--tor-progress': `${torBootstrap}%` }"
-              aria-hidden="true"
+      <header class="topbar">
+        <div class="topbar-actions">
+          <button
+            class="quick-toggle-btn"
+            :class="{ active: clipboardMonitorEnabled }"
+            :title="
+              clipboardMonitorEnabled
+                ? t('clipboardCaptureOn')
+                : t('clipboardCaptureOff')
+            "
+            @click="toggleClipboardMonitor"
+          >
+            <i class="pi pi-link"></i>
+            <span>{{ t("clipboardCapture") }}</span>
+          </button>
+          <button
+            class="quick-icon-btn"
+            :title="t('toggleTheme')"
+            @click="toggleQuickTheme"
+          >
+            <i
+              :class="effectiveTheme === 'light' ? 'pi pi-moon' : 'pi pi-sun'"
+            ></i>
+          </button>
+          <div
+            class="tor-widget"
+            :class="[`tor-${torState.state}`, { open: torPanelOpen }]"
+            data-tour="tor-widget"
+          >
+            <button
+              class="tor-main-btn"
+              :disabled="torBusy"
+              @click="toggleTorPanel"
             >
-              <span class="tor-icon-glyph" v-html="torIconSvg"></span>
-            </span>
-            <strong>Tor</strong>
-            <em>{{ torStatusLabel }}</em>
-          </button>
-          <div v-if="torPanelOpen" class="tor-panel">
-            <div class="tor-panel-head">
-              <div>
-                <strong>{{ torPanelTitle }}</strong>
-                <span>{{ torEndpointLabel }}</span>
-              </div>
-              <button
-                class="tor-power-btn"
-                :disabled="torBusy"
-                @click="torState.state === 'connected' ? disconnectTor() : connectTor()"
+              <span
+                class="tor-icon"
+                :class="{
+                  'tor-icon-busy':
+                    torState.state === 'connecting' ||
+                    torState.state === 'disconnecting',
+                }"
+                :style="{ '--tor-progress': `${torBootstrap}%` }"
+                aria-hidden="true"
               >
-                <i :class="torState.state === 'connected' ? 'pi pi-power-off' : 'pi pi-play'"></i>
-                <span>{{ torPowerLabel }}</span>
-              </button>
-            </div>
-            <div class="tor-route" :class="{ empty: torRouteNodes.length === 0 }">
-              <div
-                v-for="(node, index) in torRouteNodes"
-                :key="node.role"
-                class="tor-node"
-                :class="{ active: torState.state === 'connected' || torState.state === 'connecting', pulse: torState.state === 'connecting' && index === torPulseIndex }"
-              >
-                <span class="tor-node-dot">
-                  <span v-if="flagClass(node.code)" :class="flagClass(node.code)"></span>
-                  <span v-else>{{ node.code }}</span>
-                </span>
-                <strong>{{ node.role }}</strong>
-                <em>{{ node.country }}</em>
-              </div>
-              <div v-if="torRouteNodes.length === 0" class="tor-empty-state">
-                <strong>{{ torState.state === 'connected' ? 'Circuito confirmado' : 'Não conectado' }}</strong>
-                <span>{{ torState.state === 'connected' ? 'Saída validada; rota detalhada indisponível' : 'Nenhum circuito Tor ativo' }}</span>
-              </div>
-            </div>
-            <div class="tor-panel-meta">
-              <span>{{ torExitLabel }}</span>
-              <span class="tor-test-result" :class="{ ok: torState.isTor === true, warn: torState.isTor === false }">
-                {{ torTestLabel }}
+                <span class="tor-icon-glyph" v-html="torIconSvg"></span>
               </span>
-            </div>
-            <div class="tor-panel-actions">
-              <button :disabled="torBusy || torState.state !== 'connected'" @click="testTorConnection">
-                <i class="pi pi-bolt"></i>
-                <span>Testar conexão</span>
-              </button>
-              <button :disabled="torBusy || torState.state !== 'connected'" @click="newTorIdentity">
-                <i class="pi pi-refresh"></i>
-                <span>Nova identidade</span>
-              </button>
-            </div>
-            <p v-if="torError" class="tor-error">{{ torError }}</p>
-          </div>
-        </div>
-        <div class="help-menu-wrap" data-tour="help-tour">
-          <button class="help-btn" title="Ajuda" @click="helpMenuOpen = !helpMenuOpen">
-            <i class="pi pi-question-circle"></i>
-            <span>Ajuda</span>
-          </button>
-          <div v-if="helpMenuOpen" class="help-menu">
-            <button @click="startOnboarding">
-              <i class="pi pi-map"></i>
-              <span>Refazer tour</span>
+              <strong>Tor</strong>
+              <em>{{ torStatusLabel }}</em>
             </button>
+            <div v-if="torPanelOpen" class="tor-panel">
+              <div class="tor-panel-head">
+                <div>
+                  <strong>{{ torPanelTitle }}</strong>
+                  <span>{{ torEndpointLabel }}</span>
+                </div>
+                <button
+                  class="tor-power-btn"
+                  :disabled="torBusy"
+                  @click="
+                    torState.state === 'connected'
+                      ? disconnectTor()
+                      : connectTor()
+                  "
+                >
+                  <i
+                    :class="
+                      torState.state === 'connected'
+                        ? 'pi pi-power-off'
+                        : 'pi pi-play'
+                    "
+                  ></i>
+                  <span>{{ torPowerLabel }}</span>
+                </button>
+              </div>
+              <div
+                class="tor-route"
+                :class="{ empty: torRouteNodes.length === 0 }"
+              >
+                <div
+                  v-for="(node, index) in torRouteNodes"
+                  :key="node.role"
+                  class="tor-node"
+                  :class="{
+                    active:
+                      torState.state === 'connected' ||
+                      torState.state === 'connecting',
+                    pulse:
+                      torState.state === 'connecting' &&
+                      index === torPulseIndex,
+                  }"
+                >
+                  <span class="tor-node-dot">
+                    <span
+                      v-if="flagClass(node.code)"
+                      :class="flagClass(node.code)"
+                    ></span>
+                    <span v-else>{{ node.code }}</span>
+                  </span>
+                  <strong>{{ node.role }}</strong>
+                  <em>{{ node.country }}</em>
+                </div>
+                <div v-if="torRouteNodes.length === 0" class="tor-empty-state">
+                  <strong>{{
+                    torState.state === "connected"
+                      ? "Circuito confirmado"
+                      : "Não conectado"
+                  }}</strong>
+                  <span>{{
+                    torState.state === "connected"
+                      ? "Saída validada; rota detalhada indisponível"
+                      : "Nenhum circuito Tor ativo"
+                  }}</span>
+                </div>
+              </div>
+              <div class="tor-panel-meta">
+                <span>{{ torExitLabel }}</span>
+                <span
+                  class="tor-test-result"
+                  :class="{
+                    ok: torState.isTor === true,
+                    warn: torState.isTor === false,
+                  }"
+                >
+                  {{ torTestLabel }}
+                </span>
+              </div>
+              <div class="tor-panel-actions">
+                <button
+                  :disabled="torBusy || torState.state !== 'connected'"
+                  @click="testTorConnection"
+                >
+                  <i class="pi pi-bolt"></i>
+                  <span>Testar conexão</span>
+                </button>
+                <button
+                  :disabled="torBusy || torState.state !== 'connected'"
+                  @click="newTorIdentity"
+                >
+                  <i class="pi pi-refresh"></i>
+                  <span>Nova identidade</span>
+                </button>
+              </div>
+              <p v-if="torError" class="tor-error">{{ torError }}</p>
+            </div>
+          </div>
+          <div class="help-menu-wrap" data-tour="help-tour">
+            <button
+              class="help-btn"
+              title="Ajuda"
+              @click="helpMenuOpen = !helpMenuOpen"
+            >
+              <i class="pi pi-question-circle"></i>
+              <span>Ajuda</span>
+            </button>
+            <div v-if="helpMenuOpen" class="help-menu">
+              <button @click="startOnboarding">
+                <i class="pi pi-map"></i>
+                <span>Refazer tour</span>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    </header>
+      </header>
 
+      <main class="app-main">
+        <section
+          v-show="activeTab === 'downloads'"
+          class="panel downloads-panel"
+          data-tour="download-queue"
+        >
+          <DownloadList
+            :skeleton-count="skeletonCount"
+            :tor-active="torState.state === 'connected'"
+            @count-change="onDownloadCountChange"
+            @download-complete="onDownloadComplete"
+            @global-speed="onGlobalSpeed"
+            @queued-bytes="onQueuedBytes"
+            @open-grabber="activeTab = 'grabber'"
+            @tor-changed="refreshTorStatus"
+          />
+        </section>
 
-    <main class="app-main">
-      <section v-show="activeTab === 'downloads'" class="panel downloads-panel" data-tour="download-queue">
-        <DownloadList
-          :skeleton-count="skeletonCount"
-          :tor-active="torState.state === 'connected'"
-          @count-change="onDownloadCountChange"
-          @download-complete="onDownloadComplete"
-          @global-speed="onGlobalSpeed"
-          @queued-bytes="onQueuedBytes"
-          @open-grabber="activeTab = 'grabber'"
-          @tor-changed="refreshTorStatus"
-        />
-      </section>
+        <section v-show="activeTab === 'grabber'" class="panel">
+          <LinkGrabber
+            :incoming-url="clipboardIncomingUrl"
+            @added="handleAddedToQueue"
+            @adding-urls="onAddingUrls"
+          />
+        </section>
 
-      <section v-show="activeTab === 'grabber'" class="panel">
-        <LinkGrabber
-          :incoming-url="clipboardIncomingUrl"
-          @added="handleAddedToQueue"
-          @adding-urls="onAddingUrls"
-        />
-      </section>
+        <section v-show="activeTab === 'torrents'" class="panel">
+          <TorrentPanel />
+        </section>
 
-      <section v-show="activeTab === 'settings'" class="panel">
-        <AppSettings />
-      </section>
+        <section v-show="activeTab === 'settings'" class="panel">
+          <AppSettings />
+        </section>
 
-      <section v-show="activeTab === 'account'" class="panel">
-        <AccountSettings />
-      </section>
+        <section v-show="activeTab === 'account'" class="panel">
+          <AccountSettings />
+        </section>
 
-      <section v-show="activeTab === 'logs'" class="panel" data-tour="logs-panel">
-        <LogsView />
-      </section>
-    </main>
-    <footer class="status-bar">
-      <span class="status-item">
-        <i class="pi pi-server"></i>
-        RAM: {{ formatBytes(systemMetrics.memoryUsed) }} / {{ formatBytes(systemMetrics.memoryTotal) }}
-      </span>
-      <span class="status-item">
-        <i class="pi pi-microchip"></i>
-        CPU: {{ systemMetrics.cpuPercent.toFixed(0) }}%
-      </span>
-      <span class="status-item">
-        <i class="pi pi-database"></i>
-        I/O: ↓ {{ formatSpeed(systemMetrics.ioReadBps) }} · ↑ {{ formatSpeed(systemMetrics.ioWriteBps) }}
-      </span>
-    </footer>
+        <section
+          v-show="activeTab === 'logs'"
+          class="panel"
+          data-tour="logs-panel"
+        >
+          <LogsView />
+        </section>
+      </main>
+      <footer class="status-bar">
+        <span class="status-item">
+          <i class="pi pi-server"></i>
+          RAM: {{ formatBytes(systemMetrics.memoryUsed) }} /
+          {{ formatBytes(systemMetrics.memoryTotal) }}
+        </span>
+        <span class="status-item">
+          <i class="pi pi-microchip"></i>
+          CPU: {{ systemMetrics.cpuPercent.toFixed(0) }}%
+        </span>
+        <span class="status-item">
+          <i class="pi pi-database"></i>
+          I/O: ↓ {{ formatSpeed(systemMetrics.ioReadBps) }} · ↑
+          {{ formatSpeed(systemMetrics.ioWriteBps) }}
+        </span>
+      </footer>
     </div>
     <OnboardingTour
       v-if="showOnboarding"
@@ -295,304 +434,357 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import type { DownloadHistoryItem } from '../../shared/types'
-import DownloadList from './components/DownloadList.vue'
-import LinkGrabber from './components/LinkGrabber.vue'
-import AppSettings from './components/AppSettings.vue'
-import AccountSettings from './components/AccountSettings.vue'
-import LogsView from './components/LogsView.vue'
-import OnboardingTour from './components/OnboardingTour.vue'
-import Toast from 'primevue/toast'
-import { useToast } from 'primevue/usetoast'
-import { setLocale, useI18n } from './i18n'
-import { applyUiPreferences, useTheme, type ThemeId } from './themes'
-import { flagClass } from './utils/flag'
-import torIconSvg from './assets/tor.svg?raw'
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import type { DownloadHistoryItem } from "../../shared/types";
+import DownloadList from "./components/DownloadList.vue";
+import LinkGrabber from "./components/LinkGrabber.vue";
+import TorrentPanel from "./components/TorrentPanel.vue";
+import AppSettings from "./components/AppSettings.vue";
+import AccountSettings from "./components/AccountSettings.vue";
+import LogsView from "./components/LogsView.vue";
+import OnboardingTour from "./components/OnboardingTour.vue";
+import Toast from "primevue/toast";
+import { useToast } from "primevue/usetoast";
+import { setLocale, useI18n } from "./i18n";
+import { applyUiPreferences, useTheme, type ThemeId } from "./themes";
+import { flagClass } from "./utils/flag";
+import torIconSvg from "./assets/tor.svg?raw";
 
-type AppTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
+type AppTab =
+  | "downloads"
+  | "grabber"
+  | "torrents"
+  | "settings"
+  | "account"
+  | "logs";
 
 interface DownloadCompletePayload {
-  id: string
-  outputPath: string
-  url?: string
-  title?: string
-  sha256Hash?: string
+  id: string;
+  outputPath: string;
+  url?: string;
+  title?: string;
+  sha256Hash?: string;
 }
 
-type TorStateName = 'disconnected' | 'connecting' | 'connected' | 'disconnecting'
+type TorStateName =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "disconnecting";
 
 interface TorRouteNode {
-  role: string
-  country: string
-  code: string
+  role: string;
+  country: string;
+  code: string;
 }
 
-const activeTab = ref<AppTab>('downloads')
-const downloadCount = ref(0)
-const skeletonCount = ref(0)
-const skeletonBaseCount = ref(0)
-const skeletonTargetCount = ref(0)
-let skeletonSafetyTimer: ReturnType<typeof setTimeout> | null = null
-const currentSpeed = ref(0)
-const systemMetrics = ref({ memoryUsed: 0, memoryTotal: 0, cpuPercent: 0, ioReadBps: 0, ioWriteBps: 0 })
-const clipboardIncomingUrl = ref('')
-const showOnboarding = ref(false)
-const helpMenuOpen = ref(false)
-const torPanelOpen = ref(false)
-const torBusy = ref(false)
-const torError = ref('')
-const torPulseIndex = ref(0)
-const torBootstrap = ref(0)
-const clipboardMonitorEnabled = ref(false)
+const activeTab = ref<AppTab>("downloads");
+const downloadCount = ref(0);
+const skeletonCount = ref(0);
+const skeletonBaseCount = ref(0);
+const skeletonTargetCount = ref(0);
+let skeletonSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+const currentSpeed = ref(0);
+const systemMetrics = ref({
+  memoryUsed: 0,
+  memoryTotal: 0,
+  cpuPercent: 0,
+  ioReadBps: 0,
+  ioWriteBps: 0,
+});
+const clipboardIncomingUrl = ref("");
+const showOnboarding = ref(false);
+const helpMenuOpen = ref(false);
+const torPanelOpen = ref(false);
+const torBusy = ref(false);
+const torError = ref("");
+const torPulseIndex = ref(0);
+const torBootstrap = ref(0);
+const clipboardMonitorEnabled = ref(false);
 const torState = ref<{
-  state: TorStateName
-  host: string
-  port: number
-  route: TorRouteNode[]
-  ip?: string
-  country?: string
-  countryCode?: string
-  isTor?: boolean
+  state: TorStateName;
+  host: string;
+  port: number;
+  route: TorRouteNode[];
+  ip?: string;
+  country?: string;
+  countryCode?: string;
+  isTor?: boolean;
 }>({
-  state: 'disconnected',
-  host: '127.0.0.1',
+  state: "disconnected",
+  host: "127.0.0.1",
   port: 9150,
   route: [],
-})
-let currentSettings: Awaited<ReturnType<typeof window.api.settings.load>> | null = null
-let torPulseTimer: ReturnType<typeof setInterval> | null = null
-let diskTicker: ReturnType<typeof setInterval> | null = null
-let systemMetricsTicker: ReturnType<typeof setInterval> | null = null
-let disposeClipboardDetected: (() => void) | null = null
-let disposeToastComplete: (() => void) | null = null
-let disposeToastStatus: (() => void) | null = null
-const captchaToastShownIds = new Set<string>()
-let appMounted = true
+});
+let currentSettings: Awaited<
+  ReturnType<typeof window.api.settings.load>
+> | null = null;
+let torPulseTimer: ReturnType<typeof setInterval> | null = null;
+let diskTicker: ReturnType<typeof setInterval> | null = null;
+let systemMetricsTicker: ReturnType<typeof setInterval> | null = null;
+let disposeClipboardDetected: (() => void) | null = null;
+let disposeToastComplete: (() => void) | null = null;
+let disposeToastStatus: (() => void) | null = null;
+const captchaToastShownIds = new Set<string>();
+let appMounted = true;
 
-const torRouteNodes = computed(() => torState.value.route)
+const torRouteNodes = computed(() => torState.value.route);
 const torStatusLabel = computed(() => {
-  if (torBusy.value && torState.value.state === 'connecting') {
-    return torBootstrap.value > 0 ? `conectando ${torBootstrap.value}%` : 'conectando'
+  if (torBusy.value && torState.value.state === "connecting") {
+    return torBootstrap.value > 0
+      ? `conectando ${torBootstrap.value}%`
+      : "conectando";
   }
-  if (torBusy.value && torState.value.state === 'disconnecting') return 'desconectando'
-  if (torState.value.state === 'connected') return 'conectado'
-  return 'desconectado'
-})
+  if (torBusy.value && torState.value.state === "disconnecting")
+    return "desconectando";
+  if (torState.value.state === "connected") return "conectado";
+  return "desconectado";
+});
 const torPowerLabel = computed(() => {
-  if (torBusy.value && torState.value.state === 'connecting') return 'Conectando'
-  if (torBusy.value && torState.value.state === 'disconnecting') return 'Desconectando'
-  return torState.value.state === 'connected' ? 'Desconectar' : 'Conectar'
-})
+  if (torBusy.value && torState.value.state === "connecting")
+    return "Conectando";
+  if (torBusy.value && torState.value.state === "disconnecting")
+    return "Desconectando";
+  return torState.value.state === "connected" ? "Desconectar" : "Conectar";
+});
 const torPanelTitle = computed(() =>
-  torState.value.state === 'connected' ? 'Downloads via Tor ativos' : 'Rede Tor',
-)
+  torState.value.state === "connected"
+    ? "Downloads via Tor ativos"
+    : "Rede Tor",
+);
 const torEndpointLabel = computed(() =>
-  torState.value.state === 'connected'
+  torState.value.state === "connected"
     ? `${torState.value.host}:${torState.value.port}`
-    : 'Clique para conectar',
-)
+    : "Clique para conectar",
+);
 const torExitLabel = computed(() => {
-  if (torState.value.state !== 'connected') return 'Saída: indisponível'
-  if (!torState.value.ip) return 'Saída: aguardando teste'
+  if (torState.value.state !== "connected") return "Saída: indisponível";
+  if (!torState.value.ip) return "Saída: aguardando teste";
   return torState.value.country
     ? `Saída: ${torState.value.ip} - ${torState.value.country}`
-    : `Saída: ${torState.value.ip}`
-})
+    : `Saída: ${torState.value.ip}`;
+});
 const torTestLabel = computed(() => {
-  if (torState.value.state !== 'connected') return 'Teste: desconectado'
-  if (torState.value.isTor === true) return 'Teste: tráfego via Tor'
-  if (torState.value.isTor === false) return 'Teste: rota não confirmada'
-  return 'Teste: pendente'
-})
+  if (torState.value.state !== "connected") return "Teste: desconectado";
+  if (torState.value.isTor === true) return "Teste: tráfego via Tor";
+  if (torState.value.isTor === false) return "Teste: rota não confirmada";
+  return "Teste: pendente";
+});
 
 const statsTickHandler = (event: Event): void => {
-  onStatsTick(event as CustomEvent)
-}
+  onStatsTick(event as CustomEvent);
+};
 
 function onGlobalSpeed(bps: number): void {
-  currentSpeed.value = bps
-  updateTrayStats()
+  currentSpeed.value = bps;
+  updateTrayStats();
 }
 
 function updateTrayStats(): void {
   try {
-    const bps = currentSpeed.value
-    let speed: string
+    const bps = currentSpeed.value;
+    let speed: string;
     if (bps >= 1024 * 1024) {
-      speed = `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+      speed = `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
     } else if (bps >= 1024) {
-      speed = `${(bps / 1024).toFixed(0)} KB/s`
+      speed = `${(bps / 1024).toFixed(0)} KB/s`;
     } else {
-      speed = `${bps} B/s`
+      speed = `${bps} B/s`;
     }
-    window.api.tray.updateStats({ activeCount: downloadCount.value, speed })
+    window.api.tray.updateStats({ activeCount: downloadCount.value, speed });
   } catch {
     // tray API may not be available in some environments
   }
 }
 
 onUnmounted(() => {
-  appMounted = false
-  if (torPulseTimer) clearInterval(torPulseTimer)
-  if (diskTicker) clearInterval(diskTicker)
-  if (systemMetricsTicker) clearInterval(systemMetricsTicker)
-  if (disksPollTimer) clearInterval(disksPollTimer)
-  disposeClipboardDetected?.()
-  disposeToastComplete?.()
-  disposeToastStatus?.()
-  window.removeEventListener('stats-tick', statsTickHandler)
-  disposeTheme()
-})
-const { t } = useI18n()
-const toast = useToast()
+  appMounted = false;
+  if (torPulseTimer) clearInterval(torPulseTimer);
+  if (diskTicker) clearInterval(diskTicker);
+  if (systemMetricsTicker) clearInterval(systemMetricsTicker);
+  if (disksPollTimer) clearInterval(disksPollTimer);
+  disposeClipboardDetected?.();
+  disposeToastComplete?.();
+  disposeToastStatus?.();
+  window.removeEventListener("stats-tick", statsTickHandler);
+  disposeTheme();
+});
+const { t } = useI18n();
+const toast = useToast();
 
 function fileNameFromPath(path?: string): string {
-  if (!path) return ''
-  return path.split(/[\\/]/).pop() ?? ''
+  if (!path) return "";
+  return path.split(/[\\/]/).pop() ?? "";
 }
 
 // Toasts in-app para eventos relevantes (concluído, erro, captcha). Os demais
 // status (baixando, pausado, etc.) não geram toast para não poluir.
 function registerEventToasts(): void {
-  disposeToastComplete = window.api.downloads.on('download:complete', (data: unknown) => {
-    const ev = data as { path?: string }
-    toast.add({
-      severity: 'success',
-      summary: t('toastDownloadCompleted'),
-      detail: fileNameFromPath(ev.path),
-      life: 4000,
-    })
-  })
-  disposeToastStatus = window.api.downloads.on('download:status', (data: unknown) => {
-    const ev = data as { id?: string; status?: string; error?: string }
-    if (ev.status === 'waiting_captcha') {
-      // O Rust manda um StatusChanged a cada tick de progresso enquanto o
-      // solver ainda está resolvendo (pra atualizar o texto do chip ao vivo),
-      // não só na entrada nesse estado — sem essa deduplicação por id, cada
-      // tick empilhava um toast novo "Captcha necessário".
-      if (!captchaToastShownIds.has(ev.id ?? '')) {
-        captchaToastShownIds.add(ev.id ?? '')
-        toast.add({ severity: 'warn', summary: t('toastCaptchaNeeded'), life: 6000 })
+  disposeToastComplete = window.api.downloads.on(
+    "download:complete",
+    (data: unknown) => {
+      const ev = data as { path?: string };
+      toast.add({
+        severity: "success",
+        summary: t("toastDownloadCompleted"),
+        detail: fileNameFromPath(ev.path),
+        life: 4000,
+      });
+    },
+  );
+  disposeToastStatus = window.api.downloads.on(
+    "download:status",
+    (data: unknown) => {
+      const ev = data as { id?: string; status?: string; error?: string };
+      if (ev.status === "waiting_captcha") {
+        // O Rust manda um StatusChanged a cada tick de progresso enquanto o
+        // solver ainda está resolvendo (pra atualizar o texto do chip ao vivo),
+        // não só na entrada nesse estado — sem essa deduplicação por id, cada
+        // tick empilhava um toast novo "Captcha necessário".
+        if (!captchaToastShownIds.has(ev.id ?? "")) {
+          captchaToastShownIds.add(ev.id ?? "");
+          toast.add({
+            severity: "warn",
+            summary: t("toastCaptchaNeeded"),
+            life: 6000,
+          });
+        }
+      } else {
+        if (ev.id) captchaToastShownIds.delete(ev.id);
+        if (
+          ev.status === "error" ||
+          ev.status === "corrupted" ||
+          ev.status === "disk_full"
+        ) {
+          toast.add({
+            severity: "error",
+            summary: t("toastDownloadFailed"),
+            detail: ev.error ?? undefined,
+            life: 6000,
+          });
+        }
       }
-    } else {
-      if (ev.id) captchaToastShownIds.delete(ev.id)
-      if (ev.status === 'error' || ev.status === 'corrupted' || ev.status === 'disk_full') {
-        toast.add({
-          severity: 'error',
-          summary: t('toastDownloadFailed'),
-          detail: ev.error ?? undefined,
-          life: 6000,
-        })
-      }
-    }
-  })
+    },
+  );
 }
-const { initTheme, disposeTheme, setTheme, themeOptions, effectiveTheme } = useTheme()
+const { initTheme, disposeTheme, setTheme, themeOptions, effectiveTheme } =
+  useTheme();
 
 onMounted(async () => {
-  initTheme()
+  initTheme();
   torPulseTimer = setInterval(() => {
-    if (!appMounted) return
-    torPulseIndex.value = (torPulseIndex.value + 1) % 3
-  }, 520)
+    if (!appMounted) return;
+    torPulseIndex.value = (torPulseIndex.value + 1) % 3;
+  }, 520);
 
   disposeClipboardDetected = window.api.clipboard.onLinkDetected((payload) => {
-    if (!payload.url) return
-    const urls = payload.urls?.length ? payload.urls : [payload.url]
-    const nextValue = urls.join('\n')
-    clipboardIncomingUrl.value = ''
+    if (!payload.url) return;
+    const urls = payload.urls?.length ? payload.urls : [payload.url];
+    const nextValue = urls.join("\n");
+    clipboardIncomingUrl.value = "";
     nextTick(() => {
-      clipboardIncomingUrl.value = nextValue
-    })
-    activeTab.value = 'grabber'
+      clipboardIncomingUrl.value = nextValue;
+    });
+    activeTab.value = "grabber";
     if (currentSettings?.nativeNotification) {
-      const shortUrl = urls.length > 1
-        ? `${urls.length} links capturados`
-        : payload.url.length > 90 ? `${payload.url.slice(0, 87)}...` : payload.url
-      void window.api.system.notify('Link capturado', shortUrl).catch(() => null)
+      const shortUrl =
+        urls.length > 1
+          ? `${urls.length} links capturados`
+          : payload.url.length > 90
+            ? `${payload.url.slice(0, 87)}...`
+            : payload.url;
+      void window.api.system
+        .notify("Link capturado", shortUrl)
+        .catch(() => null);
     }
-  })
-  window.addEventListener('stats-tick', statsTickHandler)
-  registerEventToasts()
+  });
+  window.addEventListener("stats-tick", statsTickHandler);
+  registerEventToasts();
 
-  const settings = await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  currentSettings = settings
-  clipboardMonitorEnabled.value = Boolean(settings.clipboardMonitorEnabled)
+  const settings = await window.api.settings.load().catch(() => null);
+  if (!settings) return;
+  currentSettings = settings;
+  clipboardMonitorEnabled.value = Boolean(settings.clipboardMonitorEnabled);
   if (settings.locale) {
-    setLocale(settings.locale)
+    setLocale(settings.locale);
   }
   if (themeOptions.some((option) => option.id === settings.theme)) {
-    setTheme(settings.theme as ThemeId)
+    setTheme(settings.theme as ThemeId);
   }
-  applyUiPreferences(settings)
-  void refreshDiskUsage()
-  void refreshSystemMetrics()
+  applyUiPreferences(settings);
+  void refreshDiskUsage();
+  void refreshSystemMetrics();
   // Atualiza com frequência (statvfs é um único syscall, não pesa) para refletir
   // rápido o espaço consumido durante os downloads.
   diskTicker = setInterval(() => {
-    if (appMounted) void refreshDiskUsage()
-  }, 5_000)
+    if (appMounted) void refreshDiskUsage();
+  }, 5_000);
   systemMetricsTicker = setInterval(() => {
-    if (appMounted) void refreshSystemMetrics()
-  }, 3_000)
+    if (appMounted) void refreshSystemMetrics();
+  }, 3_000);
   if (!settings.onboardingCompleted) {
-    showOnboarding.value = true
+    showOnboarding.value = true;
   }
-  await refreshTorStatus()
-})
+  await refreshTorStatus();
+});
 
 function formatSpeed(bps: number): string {
-  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
-  if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`
-  return `${bps} B/s`
+  if (bps >= 1024 * 1024) return `${(bps / (1024 * 1024)).toFixed(1)} MB/s`;
+  if (bps >= 1024) return `${(bps / 1024).toFixed(0)} KB/s`;
+  return `${bps} B/s`;
 }
 
 // Widget de disco: total/usado do volume da pasta de download.
-const diskUsage = ref<{ total: number; available: number; used: number; mount: string }>({
+const diskUsage = ref<{
+  total: number;
+  available: number;
+  used: number;
+  mount: string;
+}>({
   total: 0,
   available: 0,
   used: 0,
-  mount: '',
-})
+  mount: "",
+});
 // Bytes que ainda serão gravados pelos downloads na fila (segmento amarelo).
-const queuedBytes = ref(0)
+const queuedBytes = ref(0);
 
 // Multi-disco: balão com todos os discos/volumes ao clicar no widget.
-const disksPopoverOpen = ref(false)
+const disksPopoverOpen = ref(false);
 const allDisks = ref<
   Array<{
-    name: string
-    mount: string
-    total: number
-    available: number
-    used: number
-    removable: boolean
-    kind: string
-    readBps?: number
-    writeBps?: number
+    name: string;
+    mount: string;
+    total: number;
+    available: number;
+    used: number;
+    removable: boolean;
+    kind: string;
+    readBps?: number;
+    writeBps?: number;
   }>
->([])
+>([]);
 
 function diskPercent(part: number, total: number): number {
-  return total > 0 ? Math.min(100, (part / total) * 100) : 0
+  return total > 0 ? Math.min(100, (part / total) * 100) : 0;
 }
 
-let disksPollTimer: ReturnType<typeof setInterval> | null = null
+let disksPollTimer: ReturnType<typeof setInterval> | null = null;
 async function toggleDisksPopover(): Promise<void> {
-  disksPopoverOpen.value = !disksPopoverOpen.value
+  disksPopoverOpen.value = !disksPopoverOpen.value;
   if (disksPopoverOpen.value) {
-    allDisks.value = await window.api.getAllDisks().catch(() => [])
+    allDisks.value = await window.api.getAllDisks().catch(() => []);
     // Atualiza o I/O ao vivo (leitura/escrita por disco) enquanto o painel está aberto.
-    if (disksPollTimer) clearInterval(disksPollTimer)
+    if (disksPollTimer) clearInterval(disksPollTimer);
     disksPollTimer = setInterval(async () => {
-      if (!disksPopoverOpen.value) return
-      allDisks.value = await window.api.getAllDisks().catch(() => allDisks.value)
-    }, 1500)
+      if (!disksPopoverOpen.value) return;
+      allDisks.value = await window.api
+        .getAllDisks()
+        .catch(() => allDisks.value);
+    }, 1500);
   } else if (disksPollTimer) {
-    clearInterval(disksPollTimer)
-    disksPollTimer = null
+    clearInterval(disksPollTimer);
+    disksPollTimer = null;
   }
 }
 
@@ -600,89 +792,108 @@ const diskUsedPercent = computed(() =>
   diskUsage.value.total > 0
     ? Math.min(100, (diskUsage.value.used / diskUsage.value.total) * 100)
     : 0,
-)
+);
 // Segmento amarelo: espaço que a fila vai ocupar, limitado ao que ainda está livre.
 const diskQueuedPercent = computed(() => {
-  if (diskUsage.value.total <= 0) return 0
-  const willUse = Math.min(queuedBytes.value, diskUsage.value.available)
-  return Math.min(100 - diskUsedPercent.value, (willUse / diskUsage.value.total) * 100)
-})
+  if (diskUsage.value.total <= 0) return 0;
+  const willUse = Math.min(queuedBytes.value, diskUsage.value.available);
+  return Math.min(
+    100 - diskUsedPercent.value,
+    (willUse / diskUsage.value.total) * 100,
+  );
+});
 // A fila não cabe no espaço livre? (barra amarela fica vermelha + aviso.)
 const diskQueueOverflows = computed(
-  () => diskUsage.value.total > 0 && queuedBytes.value > diskUsage.value.available,
-)
+  () =>
+    diskUsage.value.total > 0 && queuedBytes.value > diskUsage.value.available,
+);
 
 const diskTooltip = computed(() => {
-  const freeOf = t('diskFreeOf', {
+  const freeOf = t("diskFreeOf", {
     available: formatBytes(diskUsage.value.available),
     total: formatBytes(diskUsage.value.total),
-  })
-  return `Disco ${diskUsage.value.mount}: ${formatBytes(diskUsage.value.used)} ${t('diskUsed').toLowerCase()} · ${formatBytes(queuedBytes.value)} · ${freeOf}${diskQueueOverflows.value ? t('diskQueueOverflow') : ''}${t('diskClickAll')}`
-})
+  });
+  return `Disco ${diskUsage.value.mount}: ${formatBytes(diskUsage.value.used)} ${t("diskUsed").toLowerCase()} · ${formatBytes(queuedBytes.value)} · ${freeOf}${diskQueueOverflows.value ? t("diskQueueOverflow") : ""}${t("diskClickAll")}`;
+});
 
 function onQueuedBytes(bytes: number): void {
-  queuedBytes.value = Math.max(0, bytes)
+  queuedBytes.value = Math.max(0, bytes);
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${bytes} B`
+  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(1)} TB`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${bytes} B`;
 }
 
 async function refreshDiskUsage(): Promise<void> {
-  const dir = currentSettings?.outputDir || undefined
-  const usage = await window.api.getDiskUsage(dir).catch(() => null)
-  if (usage) diskUsage.value = usage
+  const dir = currentSettings?.outputDir || undefined;
+  const usage = await window.api.getDiskUsage(dir).catch(() => null);
+  if (usage) diskUsage.value = usage;
 }
 
 async function refreshSystemMetrics(): Promise<void> {
   const [metrics, disks] = await Promise.all([
     window.api.system.metrics().catch(() => null),
     window.api.getAllDisks().catch(() => []),
-  ])
-  if (!metrics) return
+  ]);
+  if (!metrics) return;
   systemMetrics.value = {
     ...metrics,
     ioReadBps: disks.reduce((sum, disk) => sum + (disk.readBps ?? 0), 0),
     ioWriteBps: disks.reduce((sum, disk) => sum + (disk.writeBps ?? 0), 0),
-  }
+  };
 }
 
 async function toggleQuickTheme(): Promise<void> {
-  const settings = currentSettings ?? await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  const nextTheme: ThemeId = effectiveTheme.value === 'light' ? 'dark-default' : 'light'
-  setTheme(nextTheme)
-  currentSettings = await window.api.settings.save({ ...settings, theme: nextTheme }).catch(() => settings)
-  window.dispatchEvent(new CustomEvent('gdownloader-settings-updated', { detail: currentSettings }))
+  const settings =
+    currentSettings ?? (await window.api.settings.load().catch(() => null));
+  if (!settings) return;
+  const nextTheme: ThemeId =
+    effectiveTheme.value === "light" ? "dark-default" : "light";
+  setTheme(nextTheme);
+  currentSettings = await window.api.settings
+    .save({ ...settings, theme: nextTheme })
+    .catch(() => settings);
+  window.dispatchEvent(
+    new CustomEvent("gdownloader-settings-updated", {
+      detail: currentSettings,
+    }),
+  );
 }
 
 async function toggleClipboardMonitor(): Promise<void> {
-  const settings = currentSettings ?? await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  const next = !clipboardMonitorEnabled.value
-  clipboardMonitorEnabled.value = next
-  currentSettings = await window.api.settings.save({ ...settings, clipboardMonitorEnabled: next }).catch(() => settings)
-  window.dispatchEvent(new CustomEvent('gdownloader-settings-updated', { detail: currentSettings }))
+  const settings =
+    currentSettings ?? (await window.api.settings.load().catch(() => null));
+  if (!settings) return;
+  const next = !clipboardMonitorEnabled.value;
+  clipboardMonitorEnabled.value = next;
+  currentSettings = await window.api.settings
+    .save({ ...settings, clipboardMonitorEnabled: next })
+    .catch(() => settings);
+  window.dispatchEvent(
+    new CustomEvent("gdownloader-settings-updated", {
+      detail: currentSettings,
+    }),
+  );
 }
 
 function startOnboarding(): void {
-  helpMenuOpen.value = false
-  showOnboarding.value = true
+  helpMenuOpen.value = false;
+  showOnboarding.value = true;
 }
 
 function applyTorPayload(payload: {
-  state: 'disconnected' | 'connected'
-  host: string
-  port: number
-  route: TorRouteNode[]
-  ip?: string
-  country?: string
-  countryCode?: string
-  isTor?: boolean
+  state: "disconnected" | "connected";
+  host: string;
+  port: number;
+  route: TorRouteNode[];
+  ip?: string;
+  country?: string;
+  countryCode?: string;
+  isTor?: boolean;
 }): void {
   torState.value = {
     state: payload.state,
@@ -693,194 +904,212 @@ function applyTorPayload(payload: {
     country: payload.country,
     countryCode: payload.countryCode,
     isTor: payload.isTor,
-  }
+  };
 }
 
 async function refreshTorStatus(): Promise<void> {
-  const payload = await window.api.tor.status().catch(() => null)
-  if (payload) applyTorPayload(payload)
+  const payload = await window.api.tor.status().catch(() => null);
+  if (payload) applyTorPayload(payload);
 }
 
 function toggleTorPanel(): void {
-  torPanelOpen.value = !torPanelOpen.value
-  if (torPanelOpen.value) void refreshTorStatus()
+  torPanelOpen.value = !torPanelOpen.value;
+  if (torPanelOpen.value) void refreshTorStatus();
 }
 
 async function connectTor(): Promise<void> {
-  torBusy.value = true
-  torError.value = ''
-  torBootstrap.value = 0
-  torState.value = { ...torState.value, state: 'connecting' }
+  torBusy.value = true;
+  torError.value = "";
+  torBootstrap.value = 0;
+  torState.value = { ...torState.value, state: "connecting" };
   // Acompanha o bootstrap real do Tor para a animação mostrar a porcentagem.
   const bootstrapPoll = setInterval(() => {
     void window.api.tor
       .bootstrapProgress()
       .then((percent) => {
-        if (typeof percent === 'number') torBootstrap.value = Math.max(torBootstrap.value, percent)
+        if (typeof percent === "number")
+          torBootstrap.value = Math.max(torBootstrap.value, percent);
       })
-      .catch(() => null)
-  }, 600)
+      .catch(() => null);
+  }, 600);
   try {
     const payload = await withTimeout(
       window.api.tor.connect(),
       45_000,
-      'Tempo esgotado conectando ao Tor. O processo foi iniciado, mas não completou a conexão com a rede.',
-    )
-    applyTorPayload(payload)
+      "Tempo esgotado conectando ao Tor. O processo foi iniciado, mas não completou a conexão com a rede.",
+    );
+    applyTorPayload(payload);
   } catch (error) {
-    void window.api.tor.disconnect().catch(() => null)
-    torState.value = { ...torState.value, state: 'disconnected', route: [] }
-    torError.value = error instanceof Error ? error.message : String(error)
+    void window.api.tor.disconnect().catch(() => null);
+    torState.value = { ...torState.value, state: "disconnected", route: [] };
+    torError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    clearInterval(bootstrapPoll)
-    torBootstrap.value = 0
-    torBusy.value = false
+    clearInterval(bootstrapPoll);
+    torBootstrap.value = 0;
+    torBusy.value = false;
   }
 }
 
 async function disconnectTor(): Promise<void> {
-  torBusy.value = true
-  torError.value = ''
-  torState.value = { ...torState.value, state: 'disconnecting' }
+  torBusy.value = true;
+  torError.value = "";
+  torState.value = { ...torState.value, state: "disconnecting" };
   try {
-    const payload = await window.api.tor.disconnect()
-    applyTorPayload(payload)
+    const payload = await window.api.tor.disconnect();
+    applyTorPayload(payload);
   } catch (error) {
-    torError.value = error instanceof Error ? error.message : String(error)
+    torError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    torBusy.value = false
+    torBusy.value = false;
   }
 }
 
 async function testTorConnection(): Promise<void> {
-  torBusy.value = true
-  torError.value = ''
+  torBusy.value = true;
+  torError.value = "";
   try {
     const payload = await withTimeout(
       window.api.tor.testConnection(),
       25_000,
-      'Tempo esgotado testando a conexão Tor.',
-    )
-    applyTorPayload(payload)
+      "Tempo esgotado testando a conexão Tor.",
+    );
+    applyTorPayload(payload);
   } catch (error) {
-    torError.value = error instanceof Error ? error.message : String(error)
+    torError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    torBusy.value = false
+    torBusy.value = false;
   }
 }
 
 async function newTorIdentity(): Promise<void> {
-  torBusy.value = true
-  torError.value = ''
+  torBusy.value = true;
+  torError.value = "";
   try {
     const payload = await withTimeout(
       window.api.tor.newIdentity(),
       35_000,
-      'Tempo esgotado trocando o circuito Tor.',
-    )
-    applyTorPayload(payload)
+      "Tempo esgotado trocando o circuito Tor.",
+    );
+    applyTorPayload(payload);
   } catch (error) {
-    torError.value = error instanceof Error ? error.message : String(error)
+    torError.value = error instanceof Error ? error.message : String(error);
   } finally {
-    torBusy.value = false
+    torBusy.value = false;
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     promise
       .then((value) => {
-        clearTimeout(timer)
-        resolve(value)
+        clearTimeout(timer);
+        resolve(value);
       })
       .catch((error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
-  })
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
 }
 
 async function completeOnboarding(): Promise<void> {
-  showOnboarding.value = false
-  const settings = currentSettings ?? await window.api.settings.load().catch(() => null)
-  if (!settings) return
+  showOnboarding.value = false;
+  const settings =
+    currentSettings ?? (await window.api.settings.load().catch(() => null));
+  if (!settings) return;
   currentSettings = await window.api.settings
     .save({ ...settings, onboardingCompleted: true })
-    .catch(() => settings)
+    .catch(() => settings);
 }
 
 function onStatsTick(event: CustomEvent): void {
   const detail = event.detail as {
-    total_speed_bps?: number
-  }
-  if (typeof detail.total_speed_bps === 'number') currentSpeed.value = detail.total_speed_bps
+    total_speed_bps?: number;
+  };
+  if (typeof detail.total_speed_bps === "number")
+    currentSpeed.value = detail.total_speed_bps;
 }
 
 function onAddingUrls(count: number): void {
   if (skeletonSafetyTimer) {
-    clearTimeout(skeletonSafetyTimer)
-    skeletonSafetyTimer = null
+    clearTimeout(skeletonSafetyTimer);
+    skeletonSafetyTimer = null;
   }
   if (count <= 0) {
-    skeletonCount.value = 0
-    skeletonTargetCount.value = 0
-    skeletonBaseCount.value = downloadCount.value
-    return
+    skeletonCount.value = 0;
+    skeletonTargetCount.value = 0;
+    skeletonBaseCount.value = downloadCount.value;
+    return;
   }
-  skeletonBaseCount.value = downloadCount.value
-  skeletonTargetCount.value = count
-  skeletonCount.value = count
+  skeletonBaseCount.value = downloadCount.value;
+  skeletonTargetCount.value = count;
+  skeletonCount.value = count;
   // Rede de segurança: se por qualquer motivo o skeleton não zerar (duplicados,
   // erro, contagem que não sobe), força limpar após um tempo — nada de skeleton eterno.
   skeletonSafetyTimer = setTimeout(() => {
-    skeletonCount.value = 0
-    skeletonTargetCount.value = 0
-    skeletonBaseCount.value = downloadCount.value
-    skeletonSafetyTimer = null
-  }, 30_000)
+    skeletonCount.value = 0;
+    skeletonTargetCount.value = 0;
+    skeletonBaseCount.value = downloadCount.value;
+    skeletonSafetyTimer = null;
+  }, 30_000);
 }
 
 function onDownloadCountChange(count: number): void {
-  downloadCount.value = count
+  downloadCount.value = count;
   if (skeletonTargetCount.value > 0) {
-    const appeared = Math.max(0, count - skeletonBaseCount.value)
-    skeletonCount.value = Math.max(0, skeletonTargetCount.value - appeared)
+    const appeared = Math.max(0, count - skeletonBaseCount.value);
+    skeletonCount.value = Math.max(0, skeletonTargetCount.value - appeared);
     if (skeletonCount.value === 0) {
-      skeletonTargetCount.value = 0
-      skeletonBaseCount.value = count
+      skeletonTargetCount.value = 0;
+      skeletonBaseCount.value = count;
     }
   }
-  updateTrayStats()
+  updateTrayStats();
 }
 
 function handleAddedToQueue(): void {
-  activeTab.value = 'downloads'
+  activeTab.value = "downloads";
 }
 
-async function onDownloadComplete(payload: DownloadCompletePayload): Promise<void> {
-  const settings = await window.api.settings.load().catch(() => null)
+async function onDownloadComplete(
+  payload: DownloadCompletePayload,
+): Promise<void> {
+  const settings = await window.api.settings.load().catch(() => null);
   if (settings?.nativeNotification) {
-    const title = payload.outputPath.split('/').pop() || payload.outputPath
-    await window.api.system.notify('Download concluído', title).catch(() => false)
+    const title = payload.outputPath.split("/").pop() || payload.outputPath;
+    await window.api.system
+      .notify("Download concluído", title)
+      .catch(() => false);
   }
 
-  const history = await window.api.loadHistory({ pageSize: 500 }).catch(() => [])
-  const existing = history.find((item: DownloadHistoryItem) => item.id === payload.id)
-  if (existing) return
+  const history = await window.api
+    .loadHistory({ pageSize: 500 })
+    .catch(() => []);
+  const existing = history.find(
+    (item: DownloadHistoryItem) => item.id === payload.id,
+  );
+  if (existing) return;
 
   const item = {
     id: payload.id,
-    url: payload.url ?? '',
-    title: payload.title || payload.outputPath.split('/').pop() || payload.outputPath,
-    thumbnail: '',
+    url: payload.url ?? "",
+    title:
+      payload.title ||
+      payload.outputPath.split("/").pop() ||
+      payload.outputPath,
+    thumbnail: "",
     date: new Date().toISOString(),
-    formatId: '',
+    formatId: "",
     outputPath: payload.outputPath,
     sha256Hash: payload.sha256Hash,
-  }
+  };
 
-  await window.api.appendHistory(item).catch(() => null)
+  await window.api.appendHistory(item).catch(() => null);
 }
 </script>
 
@@ -987,7 +1216,11 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 .quick-toggle-btn.active {
-  border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
+  border-color: color-mix(
+    in srgb,
+    var(--accent-color) 48%,
+    var(--border-color)
+  );
   background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card));
   color: var(--accent-color);
 }
@@ -1376,16 +1609,17 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 
 /* Trilho do anel (faint). */
 .tor-icon-busy::before {
-  content: '';
+  content: "";
   position: absolute;
   inset: -3px;
   border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--accent-color, #f59e0b) 22%, transparent);
+  border: 2px solid
+    color-mix(in srgb, var(--accent-color, #f59e0b) 22%, transparent);
 }
 
 /* Preenchimento do anel até a porcentagem do bootstrap. */
 .tor-icon-busy::after {
-  content: '';
+  content: "";
   position: absolute;
   inset: -3px;
   border-radius: 50%;
@@ -1393,8 +1627,16 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
     var(--accent-color, #f59e0b) var(--tor-progress, 0%),
     transparent 0
   );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 2px),
+    #000 calc(100% - 2px)
+  );
   transition: background 0.4s ease;
   animation: tor-ring-sheen 1.4s ease-in-out infinite;
 }
@@ -1488,7 +1730,7 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 .tor-route::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 17%;
   right: 17%;
@@ -1515,7 +1757,9 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   gap: 5px;
   padding: 4px;
   text-align: center;
-  transition: transform 0.25s ease, opacity 0.25s ease;
+  transition:
+    transform 0.25s ease,
+    opacity 0.25s ease;
 }
 
 .tor-node-dot {
@@ -1530,7 +1774,9 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 900;
-  transition: transform 0.25s ease, opacity 0.25s ease;
+  transition:
+    transform 0.25s ease,
+    opacity 0.25s ease;
   overflow: hidden;
 }
 
@@ -1673,7 +1919,11 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
 }
 
 .help-btn:hover {
-  border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
+  border-color: color-mix(
+    in srgb,
+    var(--accent-color) 35%,
+    var(--border-color)
+  );
   color: var(--accent-color);
 }
 
@@ -1956,5 +2206,4 @@ async function onDownloadComplete(payload: DownloadCompletePayload): Promise<voi
     padding: 8px;
   }
 }
-
 </style>

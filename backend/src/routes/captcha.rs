@@ -164,6 +164,7 @@ mod tests {
             channel_name: None,
             channel_thumbnail_url: None,
             auto_tor_on_limit: false,
+            tor_required: false,
         }
     }
 

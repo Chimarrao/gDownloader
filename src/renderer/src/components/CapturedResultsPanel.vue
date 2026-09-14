@@ -152,11 +152,11 @@
             aria-hidden="true"
           ></span>
           <span
-            v-else-if="videoAppIcon(effectiveName(row))"
+            v-else-if="primaryAppIcon(effectiveName(row))"
             class="row-icon row-app-icon"
-            :aria-label="videoAppIcon(effectiveName(row))?.app"
+            :aria-label="primaryAppIcon(effectiveName(row))?.app"
             role="img"
-            v-html="videoAppIcon(effectiveName(row))?.svg"
+            v-html="primaryAppIcon(effectiveName(row))?.svg"
           ></span>
           <span
             v-else
@@ -267,6 +267,18 @@
               >
                 Alterar
               </button>
+              <label
+                class="tor-required-check"
+                title="Kill switch: se marcado, este download nunca roda sem um circuito Tor ativo — nunca cai pra conexão direta silenciosamente."
+              >
+                <input
+                  type="checkbox"
+                  :checked="!!row.torRequired"
+                  @change="onUpdateTorRequired(row, $event)"
+                />
+                <i class="pi pi-shield"></i>
+                <span>Tor obrigatório</span>
+              </label>
             </div>
           </div>
 
@@ -374,6 +386,35 @@
                     @change="onUpdateYouTubeBoolean(row, 'youtubeDownloadSubtitles', $event)"
                   />
                   <span>Legendas</span>
+                </label>
+                <input
+                  v-if="row.youtubeDownloadSubtitles"
+                  type="text"
+                  class="youtube-langs-input"
+                  placeholder="pt,en,es"
+                  title="Idiomas de legenda (códigos separados por vírgula). Vazio usa o padrão das Configurações."
+                  :value="row.youtubeSubLangs ?? ''"
+                  @change="onUpdateYouTubeString(row, 'youtubeSubLangs', $event)"
+                />
+              </div>
+
+              <div class="youtube-extra-group">
+                <span>Organização</span>
+                <label class="youtube-check-option" title="Quebra o vídeo em um arquivo por capítulo, usando os capítulos que o próprio YouTube informa.">
+                  <input
+                    type="checkbox"
+                    :checked="!!row.youtubeSplitChapters"
+                    @change="onUpdateYouTubeBoolean(row, 'youtubeSplitChapters', $event)"
+                  />
+                  <span>Dividir em capítulos</span>
+                </label>
+                <label class="youtube-check-option" title="Baixa vídeo + todas as faixas de áudio + legendas + thumbnail + descrição, como o jDownloader entrega.">
+                  <input
+                    type="checkbox"
+                    :checked="!!row.youtubeDownloadPack"
+                    @change="onUpdateYouTubeBoolean(row, 'youtubeDownloadPack', $event)"
+                  />
+                  <span>Pacote completo</span>
                 </label>
               </div>
             </div>
@@ -578,14 +619,14 @@ const props = defineProps({
   },
 })
 
-function videoAppIcon(filename: string) {
+function primaryAppIcon(filename: string) {
   const icon = getFileTypeAppIcon(filename)
-  return icon?.app === 'video' ? icon : null
+  return icon?.app === 'video' || icon?.app === 'winrar' || icon?.app === 'sevenzip' ? icon : null
 }
 
 function childAppIcon(filename: string) {
   const icon = getFileTypeAppIcon(filename)
-  return icon?.app === 'winrar' || icon?.app === 'video' ? icon : null
+  return icon?.app === 'winrar' || icon?.app === 'video' || icon?.app === 'sevenzip' ? icon : null
 }
 
 const emit = defineEmits<{
@@ -595,7 +636,8 @@ const emit = defineEmits<{
   (e: 'toggle-folder-node', payload: { row: CapturedRow; node: DerivedChildNode<SelectableChild>; checked: boolean }): void
   (e: 'set-row-selection', payload: { row: CapturedRow; checked: boolean }): void
   (e: 'select-youtube-format', payload: { row: CapturedRow; sourceUrl: string }): void
-  (e: 'update-youtube-option', payload: { row: CapturedRow; key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio'; value: string | boolean }): void
+  (e: 'update-youtube-option', payload: { row: CapturedRow; key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio' | 'youtubeSplitChapters' | 'youtubeDownloadPack' | 'youtubeSubLangs'; value: string | boolean }): void
+  (e: 'update-tor-required', payload: { row: CapturedRow; value: boolean }): void
   (e: 'toggle-expanded', row: CapturedRow): void
   (e: 'open-mirrors', row: CapturedRow): void
   (e: 'choose-destination', row: CapturedRow): void
@@ -827,7 +869,7 @@ function onSelectYouTubeFormat(row: CapturedRow, event: Event): void {
 
 function onUpdateYouTubeBoolean(
   row: CapturedRow,
-  key: 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio',
+  key: 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio' | 'youtubeSplitChapters' | 'youtubeDownloadPack',
   event: Event,
 ): void {
   emit('update-youtube-option', {
@@ -837,12 +879,16 @@ function onUpdateYouTubeBoolean(
   })
 }
 
-function onUpdateYouTubeString(row: CapturedRow, key: 'youtubeOutputFormat', event: Event): void {
+function onUpdateYouTubeString(row: CapturedRow, key: 'youtubeOutputFormat' | 'youtubeSubLangs', event: Event): void {
   emit('update-youtube-option', {
     row,
     key,
-    value: (event.target as HTMLSelectElement).value,
+    value: (event.target as HTMLSelectElement | HTMLInputElement).value,
   })
+}
+
+function onUpdateTorRequired(row: CapturedRow, event: Event): void {
+  emit('update-tor-required', { row, value: checkboxValue(event) })
 }
 
 function youtubeFormatLabel(child: SelectableChild): string {
@@ -1239,6 +1285,43 @@ function suffixFps(source: string, label: string): string {
 .hash-chip {
   color: var(--text-primary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.tor-required-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  border: 1px solid rgba(126, 139, 164, 0.22);
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tor-required-check:has(input:checked) {
+  border-color: color-mix(in srgb, #8b5cf6 45%, var(--border-color));
+  color: #8b5cf6;
+  background: color-mix(in srgb, #8b5cf6 10%, transparent);
+}
+
+.tor-required-check input {
+  accent-color: #8b5cf6;
+}
+
+.youtube-langs-input {
+  margin-top: 4px;
+  width: 100%;
+  max-width: 160px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 11px;
+  color: var(--text-primary);
 }
 
 .row-actions {

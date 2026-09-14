@@ -188,8 +188,8 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
               error, retry_count, retry_at, captcha_type, captcha_sitekey,
               captcha_page_url, captcha_token, priority, created_at, started_at,
               completed_at, last_progress_at, pinned, network_route_json, auto_tor_on_limit, duration_secs,
-              thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url, updated_at, error_kind)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?34,?35,?36,?37,?33,?38)
+              thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url, updated_at, error_kind, tor_required)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?34,?35,?36,?37,?33,?38,?39)
          ON CONFLICT(id) DO UPDATE SET
              url                    = excluded.url,
              provider               = excluded.provider,
@@ -221,6 +221,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
              pinned                 = excluded.pinned,
              network_route_json     = excluded.network_route_json,
              auto_tor_on_limit      = excluded.auto_tor_on_limit,
+             tor_required           = excluded.tor_required,
              duration_secs          = excluded.duration_secs,
              thumbnail_url          = excluded.thumbnail_url,
              thumbnail_data         = excluded.thumbnail_data,
@@ -266,6 +267,7 @@ pub fn upsert(conn: &Connection, d: &Download) -> Result<()> {
             d.channel_name,
             d.channel_thumbnail_url,
             d.error_kind,
+            if d.tor_required { 1i64 } else { 0i64 },
         ],
     )?;
     Ok(())
@@ -398,7 +400,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 COALESCE(pinned, 0) as pinned, package_id, network_route_json,
                 COALESCE(auto_tor_on_limit, 0) as auto_tor_on_limit, duration_secs,
                 thumbnail_url, thumbnail_data, channel_name, channel_thumbnail_url,
-                error_kind
+                error_kind, COALESCE(tor_required, 0) as tor_required
          FROM downloads
          ORDER BY priority DESC, created_at DESC",
     )?;
@@ -463,6 +465,7 @@ pub fn load_all_downloads(conn: &Connection) -> Result<Vec<Download>> {
                 channel_name: row.get(35).ok().flatten(),
                 channel_thumbnail_url: row.get(36).ok().flatten(),
                 auto_tor_on_limit: row.get::<_, i64>(31)? != 0,
+                tor_required: row.get::<_, i64>(38).unwrap_or(0) != 0,
             })
         })?
         .filter_map(|row| row.ok())
@@ -1338,6 +1341,7 @@ mod tests {
             channel_name: None,
             channel_thumbnail_url: None,
             auto_tor_on_limit: false,
+            tor_required: false,
         }
     }
 

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppSettingsSnapshot,
   ArchivePassword,
@@ -6,203 +6,239 @@ import type {
   DownloadEvent,
   DuplicateDownload,
   DuplicateGroup,
-} from '../shared/types'
-import { splitSseMessages } from './mirror-sse'
+  TorrentPeerStatus,
+  TorrentStatus,
+} from "../shared/types";
+import { splitSseMessages } from "./mirror-sse";
 
 // Porta do backend Rust (obtida via IPC e cacheada)
-let cachedPort: number | null = null
+let cachedPort: number | null = null;
 
-let cachedGoPort: number | null = null
+let cachedGoPort: number | null = null;
 async function getPort(): Promise<number> {
   if (!cachedPort) {
-    cachedPort = (await ipcRenderer.invoke('backend:getPort')) as number
+    cachedPort = (await ipcRenderer.invoke("backend:getPort")) as number;
   }
-  return cachedPort!
+  return cachedPort!;
 }
 async function getGoPort(): Promise<number | null> {
-  if (cachedGoPort) return cachedGoPort
+  if (cachedGoPort) return cachedGoPort;
   try {
-    cachedGoPort = (await ipcRenderer.invoke('backend:getGoPort')) as number
-    if (cachedGoPort && cachedGoPort > 0) return cachedGoPort
+    cachedGoPort = (await ipcRenderer.invoke("backend:getGoPort")) as number;
+    if (cachedGoPort && cachedGoPort > 0) return cachedGoPort;
   } catch {}
-  return null
+  return null;
 }
-async function fetchBackend(path: string, options?: RequestInit): Promise<Response> {
+async function fetchBackend(
+  path: string,
+  options?: RequestInit,
+): Promise<Response> {
   // Rotas migradas para Go — tenta Go primeiro, fallback para Rust
   // Para /file-info com YouTube, Go pode falhar com "Sign in" se cookies estiverem stale,
   // então faz fallback para Rust que tem retry mais robusto com yt-dlp
   const goRoutes = [
-    '/health',
-    '/config',
-    '/captcha',
-    '/history',
-    '/mirrors',
-    '/stats',
-    '/system',
-    '/hash',
-    '/integrity',
-    '/links',
-    '/packages',
-    '/providers',
-    '/detect',
-    '/intercept',
-  ]
+    "/health",
+    "/config",
+    "/captcha",
+    "/history",
+    "/mirrors",
+    "/stats",
+    "/system",
+    "/hash",
+    "/integrity",
+    "/links",
+    "/packages",
+    "/providers",
+    "/detect",
+    "/intercept",
+  ];
   // /file-info é migrado mas para YouTube faz fallback se Go der erro de sessão
   const isGoRoute = goRoutes.some(
-    (prefix) => path === prefix || path.startsWith(prefix + '/') || path.startsWith(prefix + '?'),
-  )
-  const isFileInfo = path.startsWith('/file-info')
+    (prefix) =>
+      path === prefix ||
+      path.startsWith(prefix + "/") ||
+      path.startsWith(prefix + "?"),
+  );
+  // /file-info só tem implementação de verdade no Go pra alguns hosts (ver o switch
+  // em handler.go: YouTube, Gofile, PixelDrain, MediaFire, Google Drive). Qualquer
+  // outro host (ex.: 1Fichier) cai no "default: fetchDirectHTTPInfo" do Go — um HEAD
+  // genérico que não sabe nada de pasta/restrição/rate-limit e devolve "arquivo, 0 B"
+  // com HTTP 200. Como o fallback abaixo só reage a status >= 400, esse resultado
+  // errado era aceito direto e o Rust (que tem a implementação completa desses hosts)
+  // nunca era consultado. Só manda pro Go quando o host é um dos que ele realmente
+  // implementa.
+  const GO_FILE_INFO_HOSTS =
+    /(?:^|\/\/|\.)(youtube\.com|youtu\.be|music\.youtube\.com|gofile\.io|pixeldrain\.com|mediafire\.com|drive\.google\.com)/i;
+  const fileInfoUrlParam = path.startsWith("/file-info")
+    ? (new URLSearchParams(path.split("?")[1] ?? "").get("url") ?? "")
+    : "";
+  const isFileInfo =
+    path.startsWith("/file-info") && GO_FILE_INFO_HOSTS.test(fileInfoUrlParam);
   if (isGoRoute || isFileInfo) {
-    const goPort = await getGoPort()
+    const goPort = await getGoPort();
     if (goPort) {
       try {
-        const res = await fetch(`http://127.0.0.1:${goPort}${path}`, options)
+        const res = await fetch(`http://127.0.0.1:${goPort}${path}`, options);
         if (res.status === 404) {
           // Rota não migrada em Go, cai para Rust
         } else if (isFileInfo && res.status >= 400) {
           // Para file-info, se Go deu erro de YouTube (ex: Sign in), tenta Rust como fallback
-          const clone = res.clone()
+          const clone = res.clone();
           try {
-            const body = await clone.text()
-            if (body.includes('Sign in') || body.includes('sessão válida') || body.includes('session')) {
-              throw new Error('fallback to Rust for YouTube session')
+            const body = await clone.text();
+            if (
+              body.includes("Sign in") ||
+              body.includes("sessão válida") ||
+              body.includes("session")
+            ) {
+              throw new Error("fallback to Rust for YouTube session");
             }
           } catch {}
-          return res
+          return res;
         } else {
-          return res
+          return res;
         }
       } catch {}
     }
   }
-  const port = await getPort()
-  return fetch(`http://127.0.0.1:${port}${path}`, options)
+  const port = await getPort();
+  return fetch(`http://127.0.0.1:${port}${path}`, options);
 }
 
 // Callbacks registrados para eventos de mirrors (SSE)
 type MirrorStartPayload = {
-  filename: string
-  total: number
-}
+  filename: string;
+  total: number;
+};
 
 type MirrorProgressPayload = {
-  current: number
-  total: number
-  searcher: string
-  phase: string
-  newResults: number
-  totalResults: number
-  rawResults: number
-  rejectedResults: number
-  durationMs: number
-  error?: string | null
-}
+  current: number;
+  total: number;
+  searcher: string;
+  phase: string;
+  newResults: number;
+  totalResults: number;
+  rawResults: number;
+  rejectedResults: number;
+  durationMs: number;
+  error?: string | null;
+};
 
 type MirrorResultPayload = {
-  url: string
-  source: string
-  hoster?: string | null
-  score: number
-}
+  url: string;
+  source: string;
+  hoster?: string | null;
+  score: number;
+};
 
 type MirrorDonePayload = {
-  filename: string
-  searchers: number
-  total: number
-  hosters: number
-  durationMs: number
-}
+  filename: string;
+  searchers: number;
+  total: number;
+  hosters: number;
+  durationMs: number;
+};
 
 type MirrorRendererEvent =
-  | { type: 'start'; payload: MirrorStartPayload }
-  | { type: 'progress'; payload: MirrorProgressPayload }
-  | { type: 'log'; payload: string }
-  | { type: 'result'; payload: MirrorResultPayload }
-  | { type: 'done'; payload: MirrorDonePayload }
-  | { type: 'error'; payload: string }
+  | { type: "start"; payload: MirrorStartPayload }
+  | { type: "progress"; payload: MirrorProgressPayload }
+  | { type: "log"; payload: string }
+  | { type: "result"; payload: MirrorResultPayload }
+  | { type: "done"; payload: MirrorDonePayload }
+  | { type: "error"; payload: string };
 
-const mirrorEventHandlers: Array<(ev: MirrorRendererEvent) => void> = []
-let activeMirrorController: AbortController | null = null
-let activeMirrorSearchSeq = 0
+const mirrorEventHandlers: Array<(ev: MirrorRendererEvent) => void> = [];
+let activeMirrorController: AbortController | null = null;
+let activeMirrorSearchSeq = 0;
 
 type DownloadChannel =
-  | 'download:progress'
-  | 'download:verifying'
-  | 'download:status'
-  | 'download:complete'
-  | 'download:error'
-  | 'download:cancelled'
-  | 'download:duplicate'
+  | "download:progress"
+  | "download:verifying"
+  | "download:status"
+  | "download:complete"
+  | "download:error"
+  | "download:cancelled"
+  | "download:duplicate";
 
 type ClipboardLinkPayload = {
-  url: string
-  urls?: string[]
-  provider: string
-  providerName?: string
-}
+  url: string;
+  urls?: string[];
+  provider: string;
+  providerName?: string;
+};
 
-const downloadListeners: Record<DownloadChannel, Set<(data: unknown) => void>> = {
-  'download:progress': new Set(),
-  'download:verifying': new Set(),
-  'download:status': new Set(),
-  'download:complete': new Set(),
-  'download:error': new Set(),
-  'download:cancelled': new Set(),
-  'download:duplicate': new Set(),
-}
+const downloadListeners: Record<
+  DownloadChannel,
+  Set<(data: unknown) => void>
+> = {
+  "download:progress": new Set(),
+  "download:verifying": new Set(),
+  "download:status": new Set(),
+  "download:complete": new Set(),
+  "download:error": new Set(),
+  "download:cancelled": new Set(),
+  "download:duplicate": new Set(),
+};
 
-let downloadsSocket: WebSocket | null = null
-let downloadsSocketPromise: Promise<void> | null = null
-let downloadsReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let downloadsSocket: WebSocket | null = null;
+let downloadsSocketPromise: Promise<void> | null = null;
+let downloadsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function hasDownloadListeners(): boolean {
-  return Object.values(downloadListeners).some((listeners) => listeners.size > 0)
+  return Object.values(downloadListeners).some(
+    (listeners) => listeners.size > 0,
+  );
 }
 
-function dispatchDownloadEvent(channel: DownloadChannel, payload: unknown): void {
+function dispatchDownloadEvent(
+  channel: DownloadChannel,
+  payload: unknown,
+): void {
   for (const listener of downloadListeners[channel]) {
-    listener(payload)
+    listener(payload);
   }
 }
 
 function routeDownloadEvent(event: Record<string, unknown>): void {
-  if (event.type === 'progress') {
-    dispatchDownloadEvent('download:progress', event)
-    return
+  if (event.type === "progress") {
+    dispatchDownloadEvent("download:progress", event);
+    return;
   }
 
-  if (event.type === 'verifying') {
-    dispatchDownloadEvent('download:verifying', event)
-    return
+  if (event.type === "verifying") {
+    dispatchDownloadEvent("download:verifying", event);
+    return;
   }
 
-  if (event.type === 'status' || event.type === 'status_changed') {
-    dispatchDownloadEvent('download:status', event)
-    if (event.type === 'status' && event.status === 'cancelled') {
-      dispatchDownloadEvent('download:cancelled', event)
+  if (event.type === "status" || event.type === "status_changed") {
+    dispatchDownloadEvent("download:status", event);
+    if (event.type === "status" && event.status === "cancelled") {
+      dispatchDownloadEvent("download:cancelled", event);
     }
-    return
+    return;
   }
 
-  if (event.type === 'complete') {
-    dispatchDownloadEvent('download:complete', event)
-    return
+  if (event.type === "complete") {
+    dispatchDownloadEvent("download:complete", event);
+    return;
   }
 
-  if (event.type === 'error') {
-    dispatchDownloadEvent('download:error', event)
-    return
+  if (event.type === "error") {
+    dispatchDownloadEvent("download:error", event);
+    return;
   }
 
-  if (event.type === 'duplicate_detected') {
-    dispatchDownloadEvent('download:duplicate', event)
-    window.dispatchEvent(new CustomEvent('duplicate-detected', { detail: event }))
-    return
+  if (event.type === "duplicate_detected") {
+    dispatchDownloadEvent("download:duplicate", event);
+    window.dispatchEvent(
+      new CustomEvent("duplicate-detected", { detail: event }),
+    );
+    return;
   }
 
-  if (event.type === 'stats_tick') {
+  if (event.type === "stats_tick") {
     // Dispatch as a custom DOM event so StatsView can listen without extra IPC plumbing
-    window.dispatchEvent(new CustomEvent('stats-tick', { detail: event }))
+    window.dispatchEvent(new CustomEvent("stats-tick", { detail: event }));
   }
 }
 
@@ -212,97 +248,101 @@ async function ensureDownloadsSocket(): Promise<void> {
     (downloadsSocket.readyState === WebSocket.OPEN ||
       downloadsSocket.readyState === WebSocket.CONNECTING)
   ) {
-    return
+    return;
   }
   if (downloadsSocketPromise) {
-    return downloadsSocketPromise
+    return downloadsSocketPromise;
   }
 
   downloadsSocketPromise = (async () => {
-    const goPort = await getGoPort()
-    const rustPort = await getPort()
-    const tryPorts = goPort ? [goPort, rustPort] : [rustPort]
-    let connected = false
+    const goPort = await getGoPort();
+    const rustPort = await getPort();
+    const tryPorts = goPort ? [goPort, rustPort] : [rustPort];
+    let connected = false;
     for (const port of tryPorts) {
-      if (connected) break
+      if (connected) break;
       // Tenta conectar; se falhar, tenta próximo
       await new Promise<void>((resolve) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
-        let settled = false
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+        let settled = false;
         const done = (): void => {
           if (!settled) {
-            settled = true
-            resolve()
+            settled = true;
+            resolve();
           }
-        }
-        downloadsSocket = ws
+        };
+        downloadsSocket = ws;
 
         ws.onopen = () => {
-          connected = true
-          done()
-        }
+          connected = true;
+          done();
+        };
 
         ws.onmessage = (msg) => {
           try {
-            routeDownloadEvent(JSON.parse(msg.data as string) as Record<string, unknown>)
+            routeDownloadEvent(
+              JSON.parse(msg.data as string) as Record<string, unknown>,
+            );
           } catch {
             // ignora mensagens malformadas
           }
-        }
+        };
 
         ws.onerror = () => {
           // Se falhou e ainda não conectou, tenta próximo
           if (!connected) {
-            try { ws.close() } catch {}
-            downloadsSocket = null
+            try {
+              ws.close();
+            } catch {}
+            downloadsSocket = null;
           }
-          done()
-        }
+          done();
+        };
 
         ws.onclose = () => {
-          downloadsSocket = null
+          downloadsSocket = null;
           if (!connected) {
-            done()
-            return
+            done();
+            return;
           }
           if (!hasDownloadListeners()) {
-            return
+            return;
           }
           if (downloadsReconnectTimer !== null) {
-            clearTimeout(downloadsReconnectTimer)
+            clearTimeout(downloadsReconnectTimer);
           }
           downloadsReconnectTimer = setTimeout(() => {
-            downloadsReconnectTimer = null
-            void ensureDownloadsSocket()
-          }, 800)
-        }
-      })
-      if (connected) break
+            downloadsReconnectTimer = null;
+            void ensureDownloadsSocket();
+          }, 800);
+        };
+      });
+      if (connected) break;
     }
     if (!connected && !hasDownloadListeners()) {
       // sem conexão e sem listeners, não agenda reconnect
     }
-  })()
+  })();
 
   try {
-    await downloadsSocketPromise
+    await downloadsSocketPromise;
   } finally {
-    downloadsSocketPromise = null
+    downloadsSocketPromise = null;
   }
 }
 
 function closeDownloadsSocketIfIdle(): void {
   if (hasDownloadListeners()) {
-    return
+    return;
   }
 
   if (downloadsReconnectTimer !== null) {
-    clearTimeout(downloadsReconnectTimer)
-    downloadsReconnectTimer = null
+    clearTimeout(downloadsReconnectTimer);
+    downloadsReconnectTimer = null;
   }
 
-  downloadsSocket?.close()
-  downloadsSocket = null
+  downloadsSocket?.close();
+  downloadsSocket = null;
 }
 
 // API completa exposta para o renderer Vue
@@ -312,44 +352,53 @@ const api = {
     // Lista todos os providers suportados
     list: async () => {
       try {
-        const resp = await fetchBackend('/providers')
-        if (!resp.ok) return []
-        return resp.json()
+        const resp = await fetchBackend("/providers");
+        if (!resp.ok) return [];
+        return resp.json();
       } catch {
-        return []
+        return [];
       }
     },
 
     // Detecta qual provider suporta a URL
     detect: async (url: string) => {
       try {
-        const resp = await fetchBackend(`/detect?url=${encodeURIComponent(url)}`)
-        if (!resp.ok) return null
-        return resp.json()
+        const resp = await fetchBackend(
+          `/detect?url=${encodeURIComponent(url)}`,
+        );
+        if (!resp.ok) return null;
+        return resp.json();
       } catch {
-        return null
+        return null;
       }
     },
 
     // Retorna metadados do arquivo (nome, tamanho)
     fileInfo: async (_moduleId: string, url: string) => {
-      const resp = await fetchBackend(`/file-info?url=${encodeURIComponent(url)}`)
+      const resp = await fetchBackend(
+        `/file-info?url=${encodeURIComponent(url)}`,
+      );
       if (!resp.ok) {
-        const body = await resp.json().catch(() => ({ error: 'Erro desconhecido' }))
-        throw new Error(body.error ?? 'Falha ao obter informações do arquivo')
+        const body = await resp
+          .json()
+          .catch(() => ({ error: "Erro desconhecido" }));
+        throw new Error(body.error ?? "Falha ao obter informações do arquivo");
       }
-      return resp.json()
+      return resp.json();
     },
 
     cachedFileInfo: async (_moduleId: string, url: string) => {
-      const resp = await fetchBackend(`/file-info/cache?url=${encodeURIComponent(url)}`)
+      const resp = await fetchBackend(
+        `/file-info/cache?url=${encodeURIComponent(url)}`,
+      );
       if (!resp.ok) {
-        return null
+        return null;
       }
-      return resp.json()
+      return resp.json();
     },
 
-    isLoggedIn: async (moduleId: string) => ipcRenderer.invoke('auth:isLoggedIn', moduleId),
+    isLoggedIn: async (moduleId: string) =>
+      ipcRenderer.invoke("auth:isLoggedIn", moduleId),
   },
 
   // --- Downloads ---
@@ -363,13 +412,16 @@ const api = {
       destDir: string,
       selectedChildren?: string[],
       expectedHash?: { algorithm: string; value: string },
-      duplicateActionOverride?: 'ask' | 'skip' | 'rename' | 'always_download',
+      duplicateActionOverride?: "ask" | "skip" | "rename" | "always_download",
       filename?: string,
+      torRequired?: boolean,
     ) => {
-      const settings = await ipcRenderer.invoke('settings:load').catch(() => null)
-      const resp = await fetchBackend('/downloads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const settings = await ipcRenderer
+        .invoke("settings:load")
+        .catch(() => null);
+      const resp = await fetchBackend("/downloads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url,
           dest_dir: destDir,
@@ -383,22 +435,31 @@ const api = {
           // global_speed_limit_bps). Não assamos o valor global em cada download; este
           // campo fica para um eventual limite individual (0 = sem limite próprio).
           speed_limit_kib: 0,
-          parallel_parts: _moduleId === 'youtube' ? 1 : settings?.parallelPartsPerDownload ?? 1,
+          parallel_parts:
+            _moduleId === "youtube"
+              ? 1
+              : (settings?.parallelPartsPerDownload ?? 1),
           selected_children: selectedChildren,
           expected_hash: expectedHash,
-          duplicate_action: duplicateActionOverride ?? settings?.duplicateAction ?? 'ask',
+          duplicate_action:
+            duplicateActionOverride ?? settings?.duplicateAction ?? "ask",
+          tor_required: torRequired ?? false,
         }),
-      })
+      });
       if (!resp.ok) {
-        const body = await resp.json().catch(() => ({ error: 'Erro desconhecido' }))
+        const body = await resp
+          .json()
+          .catch(() => ({ error: "Erro desconhecido" }));
         if (resp.status === 409 && body.duplicate) {
-          const duplicate = body.duplicate as DuplicateDownload
-          window.dispatchEvent(new CustomEvent('duplicate-detected', { detail: duplicate }))
+          const duplicate = body.duplicate as DuplicateDownload;
+          window.dispatchEvent(
+            new CustomEvent("duplicate-detected", { detail: duplicate }),
+          );
           const choice = window.prompt(
             `Arquivo já baixado em:\\n${duplicate.path || duplicate.filename}\\n\\n1 = baixar mesmo assim\\n2 = abrir existente\\n3 = salvar com sufixo _2`,
-            '3',
-          )
-          if (choice === '1') {
+            "3",
+          );
+          if (choice === "1") {
             return api.downloads.add(
               url,
               _moduleId,
@@ -407,17 +468,20 @@ const api = {
               destDir,
               selectedChildren,
               expectedHash,
-              'always_download',
+              "always_download",
               filename,
-            )
+              torRequired,
+            );
           }
-          if (choice === '2') {
+          if (choice === "2") {
             if (duplicate.path) {
-              await ipcRenderer.invoke('shell:openPath', duplicate.path).catch(() => null)
+              await ipcRenderer
+                .invoke("shell:openPath", duplicate.path)
+                .catch(() => null);
             }
-            throw new Error('Download ignorado: arquivo existente aberto')
+            throw new Error("Download ignorado: arquivo existente aberto");
           }
-          if (choice === '3' || choice === null) {
+          if (choice === "3" || choice === null) {
             return api.downloads.add(
               url,
               _moduleId,
@@ -426,26 +490,27 @@ const api = {
               destDir,
               selectedChildren,
               expectedHash,
-              'rename',
+              "rename",
               filename,
-            )
+              torRequired,
+            );
           }
         }
-        throw new Error(body.error ?? 'Erro ao adicionar download')
+        throw new Error(body.error ?? "Erro ao adicionar download");
       }
-      const d = await resp.json()
-      return rustDownloadToItem(d)
+      const d = await resp.json();
+      return rustDownloadToItem(d);
     },
 
     // Lista todos os downloads
     list: async () => {
       try {
-        const resp = await fetchBackend('/downloads')
-        if (!resp.ok) return []
-        const downloads = await resp.json()
-        return downloads.map(rustDownloadToItem)
+        const resp = await fetchBackend("/downloads");
+        if (!resp.ok) return [];
+        const downloads = await resp.json();
+        return downloads.map(rustDownloadToItem);
       } catch {
-        return []
+        return [];
       }
     },
 
@@ -453,451 +518,495 @@ const api = {
     // Retorna um mapa url -> { location: 'queue' | 'history', status, filename }.
     checkKnownUrls: async (
       urls: string[],
-    ): Promise<Record<string, { location: string; status: string; filename: string }>> => {
+    ): Promise<
+      Record<string, { location: string; status: string; filename: string }>
+    > => {
       try {
-        if (!urls.length) return {}
-        const resp = await fetchBackend('/downloads/known-urls', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        if (!urls.length) return {};
+        const resp = await fetchBackend("/downloads/known-urls", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ urls }),
-        })
-        if (!resp.ok) return {}
-        const body = await resp.json().catch(() => ({}))
+        });
+        if (!resp.ok) return {};
+        const body = await resp.json().catch(() => ({}));
         return (body?.known ?? {}) as Record<
           string,
           { location: string; status: string; filename: string }
-        >
+        >;
       } catch {
-        return {}
+        return {};
       }
     },
 
     // Cancela um download pelo ID
     cancel: async (id: string) => {
-      await fetchBackend(`/downloads/${id}`, { method: 'DELETE' })
+      await fetchBackend(`/downloads/${id}`, { method: "DELETE" });
     },
 
     pause: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/pause`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/pause`, { method: "POST" });
     },
 
     resume: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/resume`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/resume`, { method: "POST" });
     },
 
     retry: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/retry`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/retry`, { method: "POST" });
     },
 
     restart: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/restart`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/restart`, { method: "POST" });
     },
 
     force: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/force`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/force`, { method: "POST" });
     },
 
     setPriority: async (id: string, priority: number) => {
       await fetchBackend(`/downloads/${id}/priority`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ priority }),
-      })
+      });
     },
 
     setAutoTor: async (id: string, enabled: boolean) => {
       await fetchBackend(`/downloads/${id}/auto-tor`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
-      })
+      });
     },
 
     setSpeedLimit: async (id: string, speedLimitKib: number) => {
       await fetchBackend(`/downloads/${id}/speed-limit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ speed_limit_kib: speedLimitKib }),
-      })
+      });
     },
 
     pauseAll: async (): Promise<{ paused: number }> => {
-      const resp = await fetchBackend('/downloads/pause-all', { method: 'POST' })
-      if (!resp.ok) return { paused: 0 }
-      return resp.json()
+      const resp = await fetchBackend("/downloads/pause-all", {
+        method: "POST",
+      });
+      if (!resp.ok) return { paused: 0 };
+      return resp.json();
     },
 
     resumeAll: async (): Promise<{ resumed: number }> => {
-      const resp = await fetchBackend('/downloads/resume-all', { method: 'POST' })
-      if (!resp.ok) return { resumed: 0 }
-      return resp.json()
+      const resp = await fetchBackend("/downloads/resume-all", {
+        method: "POST",
+      });
+      if (!resp.ok) return { resumed: 0 };
+      return resp.json();
     },
 
     move: async (id: string, destDir: string) => {
       const resp = await fetchBackend(`/downloads/${id}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dest_dir: destDir }),
-      })
+      });
       if (!resp.ok) {
-        const body = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }))
-        throw new Error(body.error ?? `HTTP ${resp.status}`)
+        const body = await resp
+          .json()
+          .catch(() => ({ error: `HTTP ${resp.status}` }));
+        throw new Error(body.error ?? `HTTP ${resp.status}`);
       }
     },
 
     remove: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/remove`, { method: 'DELETE' })
+      await fetchBackend(`/downloads/${id}/remove`, { method: "DELETE" });
     },
 
     removeWithFiles: async (id: string) => {
       await fetchBackend(`/downloads/${id}/remove-with-files`, {
-        method: 'DELETE',
-      })
+        method: "DELETE",
+      });
     },
 
     clearFinished: async () => {
-      await fetchBackend('/downloads/finished', { method: 'DELETE' })
+      await fetchBackend("/downloads/finished", { method: "DELETE" });
     },
 
     togglePin: async (id: string) => {
-      await fetchBackend(`/downloads/${id}/pin`, { method: 'POST' })
+      await fetchBackend(`/downloads/${id}/pin`, { method: "POST" });
     },
 
     duplicates: async (): Promise<DuplicateGroup[]> => {
-      const resp = await fetchBackend('/downloads/duplicates')
-      if (!resp.ok) return []
-      return resp.json()
+      const resp = await fetchBackend("/downloads/duplicates");
+      if (!resp.ok) return [];
+      return resp.json();
     },
 
     events: async (id: string): Promise<DownloadEvent[]> => {
-      const resp = await fetchBackend(`/downloads/${id}/events`)
-      if (!resp.ok) return []
-      const rows = (await resp.json()) as Array<Record<string, unknown>>
+      const resp = await fetchBackend(`/downloads/${id}/events`);
+      if (!resp.ok) return [];
+      const rows = (await resp.json()) as Array<Record<string, unknown>>;
       return rows.map((row) => ({
         id: Number(row.id),
-        downloadId: String(row.download_id ?? row.downloadId ?? ''),
-        kind: String(row.kind ?? ''),
-        message: String(row.message ?? ''),
+        downloadId: String(row.download_id ?? row.downloadId ?? ""),
+        kind: String(row.kind ?? ""),
+        message: String(row.message ?? ""),
         createdAt: Number(row.created_at ?? row.createdAt ?? 0) * 1000,
-      }))
+      }));
     },
 
     // Subscreve a eventos de progresso via WebSocket
     on: (channel: DownloadChannel, cb: (data: unknown) => void) => {
-      downloadListeners[channel].add(cb)
-      void ensureDownloadsSocket()
+      downloadListeners[channel].add(cb);
+      void ensureDownloadsSocket();
 
       return () => {
-        downloadListeners[channel].delete(cb)
-        closeDownloadsSocketIfIdle()
-      }
+        downloadListeners[channel].delete(cb);
+        closeDownloadsSocketIfIdle();
+      };
     },
   },
 
   // --- Settings ---
   settings: {
-    load: (): Promise<AppSettingsSnapshot> => ipcRenderer.invoke('settings:load'),
+    load: (): Promise<AppSettingsSnapshot> =>
+      ipcRenderer.invoke("settings:load"),
     save: (s: AppSettingsSnapshot): Promise<AppSettingsSnapshot> =>
-      ipcRenderer.invoke('settings:save', s),
-    chooseDirectory: (): Promise<string> => ipcRenderer.invoke('dialog:chooseDirectory'),
+      ipcRenderer.invoke("settings:save", s),
+    chooseDirectory: (): Promise<string> =>
+      ipcRenderer.invoke("dialog:chooseDirectory"),
   },
 
   cache: {
     stats: (): Promise<{
-      totalBytes: number
+      totalBytes: number;
       items: Array<{
-        id: string
-        label: string
-        description: string
-        bytes: number
-        entries?: number
-        clearable: boolean
-      }>
-    }> => ipcRenderer.invoke('cache:stats'),
-    clear: (ids: string[]): Promise<{
-      totalBytes: number
+        id: string;
+        label: string;
+        description: string;
+        bytes: number;
+        entries?: number;
+        clearable: boolean;
+      }>;
+    }> => ipcRenderer.invoke("cache:stats"),
+    clear: (
+      ids: string[],
+    ): Promise<{
+      totalBytes: number;
       items: Array<{
-        id: string
-        label: string
-        description: string
-        bytes: number
-        entries?: number
-        clearable: boolean
-      }>
-    }> => ipcRenderer.invoke('cache:clear', ids),
+        id: string;
+        label: string;
+        description: string;
+        bytes: number;
+        entries?: number;
+        clearable: boolean;
+      }>;
+    }> => ipcRenderer.invoke("cache:clear", ids),
   },
 
   remoteAccess: {
     info: (): Promise<{
-      enabled: boolean
-      running: boolean
-      lanIp: string
-      port: number
-      username: string
-      password: string
-      url: string
-      credentialUrl: string
-      qrCodeDataUrl?: string
+      enabled: boolean;
+      running: boolean;
+      lanIp: string;
+      port: number;
+      username: string;
+      password: string;
+      url: string;
+      credentialUrl: string;
+      qrCodeDataUrl?: string;
       sessions: Array<{
-        id: string
-        ip: string
-        userAgent: string
-        createdAt: number
-        lastSeenAt: number
-        current?: boolean
-      }>
-      insecureCredentials: boolean
-      error?: string
-    }> => ipcRenderer.invoke('remote:info'),
-    generateCredentials: (): Promise<NonNullable<AppSettingsSnapshot['remoteAccess']>> =>
-      ipcRenderer.invoke('remote:generateCredentials'),
-    revokeSession: (id: string): Promise<boolean> => ipcRenderer.invoke('remote:revokeSession', id),
+        id: string;
+        ip: string;
+        userAgent: string;
+        createdAt: number;
+        lastSeenAt: number;
+        current?: boolean;
+      }>;
+      insecureCredentials: boolean;
+      error?: string;
+    }> => ipcRenderer.invoke("remote:info"),
+    generateCredentials: (): Promise<
+      NonNullable<AppSettingsSnapshot["remoteAccess"]>
+    > => ipcRenderer.invoke("remote:generateCredentials"),
+    revokeSession: (id: string): Promise<boolean> =>
+      ipcRenderer.invoke("remote:revokeSession", id),
   },
 
   config: {
-    testProxy: (): Promise<{ ip: string; isTor: boolean }> => ipcRenderer.invoke('config:test-proxy'),
+    testProxy: (): Promise<{ ip: string; isTor: boolean }> =>
+      ipcRenderer.invoke("config:test-proxy"),
   },
   tor: {
     status: (): Promise<{
-      state: 'disconnected' | 'connected'
-      host: string
-      port: number
-      route: Array<{ role: string; country: string; code: string }>
-      ip?: string
-      country?: string
-      countryCode?: string
-      isTor?: boolean
-    }> => ipcRenderer.invoke('tor:status'),
+      state: "disconnected" | "connected";
+      host: string;
+      port: number;
+      route: Array<{ role: string; country: string; code: string }>;
+      ip?: string;
+      country?: string;
+      countryCode?: string;
+      isTor?: boolean;
+    }> => ipcRenderer.invoke("tor:status"),
     connect: (): Promise<{
-      state: 'disconnected' | 'connected'
-      host: string
-      port: number
-      route: Array<{ role: string; country: string; code: string }>
-      ip?: string
-      country?: string
-      countryCode?: string
-      isTor?: boolean
-    }> => ipcRenderer.invoke('tor:connect'),
+      state: "disconnected" | "connected";
+      host: string;
+      port: number;
+      route: Array<{ role: string; country: string; code: string }>;
+      ip?: string;
+      country?: string;
+      countryCode?: string;
+      isTor?: boolean;
+    }> => ipcRenderer.invoke("tor:connect"),
     disconnect: (): Promise<{
-      state: 'disconnected' | 'connected'
-      host: string
-      port: number
-      route: Array<{ role: string; country: string; code: string }>
-      ip?: string
-      country?: string
-      countryCode?: string
-      isTor?: boolean
-    }> => ipcRenderer.invoke('tor:disconnect'),
+      state: "disconnected" | "connected";
+      host: string;
+      port: number;
+      route: Array<{ role: string; country: string; code: string }>;
+      ip?: string;
+      country?: string;
+      countryCode?: string;
+      isTor?: boolean;
+    }> => ipcRenderer.invoke("tor:disconnect"),
     testConnection: (): Promise<{
-      state: 'disconnected' | 'connected'
-      host: string
-      port: number
-      route: Array<{ role: string; country: string; code: string }>
-      ip?: string
-      country?: string
-      countryCode?: string
-      isTor?: boolean
-    }> => ipcRenderer.invoke('tor:testConnection'),
+      state: "disconnected" | "connected";
+      host: string;
+      port: number;
+      route: Array<{ role: string; country: string; code: string }>;
+      ip?: string;
+      country?: string;
+      countryCode?: string;
+      isTor?: boolean;
+    }> => ipcRenderer.invoke("tor:testConnection"),
     newIdentity: (): Promise<{
-      state: 'disconnected' | 'connected'
-      host: string
-      port: number
-      route: Array<{ role: string; country: string; code: string }>
-      ip?: string
-      country?: string
-      countryCode?: string
-      isTor?: boolean
-    }> => ipcRenderer.invoke('tor:newIdentity'),
-    bootstrapProgress: (): Promise<number> => ipcRenderer.invoke('tor:bootstrapProgress'),
+      state: "disconnected" | "connected";
+      host: string;
+      port: number;
+      route: Array<{ role: string; country: string; code: string }>;
+      ip?: string;
+      country?: string;
+      countryCode?: string;
+      isTor?: boolean;
+    }> => ipcRenderer.invoke("tor:newIdentity"),
+    bootstrapProgress: (): Promise<number> =>
+      ipcRenderer.invoke("tor:bootstrapProgress"),
     ensureRunning: (): Promise<{ running: boolean; port: number | null }> =>
-      ipcRenderer.invoke('tor:ensureRunning'),
+      ipcRenderer.invoke("tor:ensureRunning"),
     runtimeStatus: (): Promise<{ running: boolean; port: number | null }> =>
-      ipcRenderer.invoke('tor:runtimeStatus'),
+      ipcRenderer.invoke("tor:runtimeStatus"),
   },
   intercept: {
     status: (): Promise<{
-      enabled: boolean
-      proxyAddr: string
-      caCertPath: string
+      enabled: boolean;
+      proxyAddr: string;
+      caCertPath: string;
       history: Array<{
-        id: string
-        url: string
-        filename: string
-        mimeType: string
-        size: number
-        status: string
-        createdAt: number
-      }>
-    }> => ipcRenderer.invoke('intercept:status'),
-    installCa: (): Promise<boolean> => ipcRenderer.invoke('intercept:install-ca'),
-    openProxySettings: (): Promise<boolean> => ipcRenderer.invoke('intercept:open-proxy-settings'),
+        id: string;
+        url: string;
+        filename: string;
+        mimeType: string;
+        size: number;
+        status: string;
+        createdAt: number;
+      }>;
+    }> => ipcRenderer.invoke("intercept:status"),
+    installCa: (): Promise<boolean> =>
+      ipcRenderer.invoke("intercept:install-ca"),
+    openProxySettings: (): Promise<boolean> =>
+      ipcRenderer.invoke("intercept:open-proxy-settings"),
   },
 
   auth: {
     isLoggedIn: (moduleId: string): Promise<boolean> =>
-      ipcRenderer.invoke('auth:isLoggedIn', moduleId),
+      ipcRenderer.invoke("auth:isLoggedIn", moduleId),
     login: (moduleId: string, params: Record<string, string>): Promise<void> =>
-      ipcRenderer.invoke('auth:login', moduleId, params),
-    logout: (moduleId: string): Promise<void> => ipcRenderer.invoke('auth:logout', moduleId),
+      ipcRenderer.invoke("auth:login", moduleId, params),
+    logout: (moduleId: string): Promise<void> =>
+      ipcRenderer.invoke("auth:logout", moduleId),
     accountInfo: (moduleId: string): Promise<unknown> =>
-      ipcRenderer.invoke('auth:accountInfo', moduleId),
+      ipcRenderer.invoke("auth:accountInfo", moduleId),
   },
 
   // --- Histórico ---
-  loadHistory: (filters?: unknown) => ipcRenderer.invoke('history:load', filters),
-  saveHistory: (items: unknown) => ipcRenderer.invoke('history:save', items),
-  appendHistory: (item: unknown) => ipcRenderer.invoke('history:append', item),
-  historyHosts: () => ipcRenderer.invoke('history:hosts'),
-  removeHistoryItem: (id: string) => ipcRenderer.invoke('history:remove', id),
-  clearHistory: () => ipcRenderer.invoke('history:clear'),
+  loadHistory: (filters?: unknown) =>
+    ipcRenderer.invoke("history:load", filters),
+  saveHistory: (items: unknown) => ipcRenderer.invoke("history:save", items),
+  appendHistory: (item: unknown) => ipcRenderer.invoke("history:append", item),
+  historyHosts: () => ipcRenderer.invoke("history:hosts"),
+  removeHistoryItem: (id: string) => ipcRenderer.invoke("history:remove", id),
+  clearHistory: () => ipcRenderer.invoke("history:clear"),
 
   // --- Shell ---
-  openPath: (path: string): Promise<string> => ipcRenderer.invoke('shell:openPath', path),
-  showInFolder: (path: string): Promise<void> => ipcRenderer.invoke('shell:showInFolder', path),
+  openPath: (path: string): Promise<string> =>
+    ipcRenderer.invoke("shell:openPath", path),
+  showInFolder: (path: string): Promise<void> =>
+    ipcRenderer.invoke("shell:showInFolder", path),
   clipboard: {
-    writeText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:writeText', text),
-    onLinkDetected: (cb: (payload: ClipboardLinkPayload) => void): (() => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: ClipboardLinkPayload): void =>
-        cb(payload)
-      ipcRenderer.on('clipboard:link-detected', handler)
-      return () => ipcRenderer.removeListener('clipboard:link-detected', handler)
+    writeText: (text: string): Promise<boolean> =>
+      ipcRenderer.invoke("clipboard:writeText", text),
+    onLinkDetected: (
+      cb: (payload: ClipboardLinkPayload) => void,
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: ClipboardLinkPayload,
+      ): void => cb(payload);
+      ipcRenderer.on("clipboard:link-detected", handler);
+      return () =>
+        ipcRenderer.removeListener("clipboard:link-detected", handler);
     },
   },
   system: {
     notify: (title: string, body?: string): Promise<boolean> =>
-      ipcRenderer.invoke('system:notify', title, body),
-    diskSpace: (path: string): Promise<{ path: string; freeBytes: number; totalBytes: number }> =>
-      ipcRenderer.invoke('system:disk-space', path),
-    metrics: (): Promise<{ memoryUsed: number; memoryTotal: number; cpuPercent: number }> =>
-      ipcRenderer.invoke('system:metrics'),
+      ipcRenderer.invoke("system:notify", title, body),
+    diskSpace: (
+      path: string,
+    ): Promise<{ path: string; freeBytes: number; totalBytes: number }> =>
+      ipcRenderer.invoke("system:disk-space", path),
+    metrics: (): Promise<{
+      memoryUsed: number;
+      memoryTotal: number;
+      cpuPercent: number;
+    }> => ipcRenderer.invoke("system:metrics"),
   },
   logs: {
     tail: (maxLines?: number): Promise<{ path: string; lines: string[] }> =>
-      ipcRenderer.invoke('logs:tail', maxLines),
-    watch: (cb: (payload: { path: string; lines: string[] }) => void): (() => void) => {
+      ipcRenderer.invoke("logs:tail", maxLines),
+    watch: (
+      cb: (payload: { path: string; lines: string[] }) => void,
+    ): (() => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
         payload: { path: string; lines: string[] },
-      ): void => cb(payload)
-      ipcRenderer.on('logs:update', handler)
-      ipcRenderer.send('logs:watch-start')
+      ): void => cb(payload);
+      ipcRenderer.on("logs:update", handler);
+      ipcRenderer.send("logs:watch-start");
       return () => {
-        ipcRenderer.removeListener('logs:update', handler)
-        ipcRenderer.send('logs:watch-stop')
-      }
+        ipcRenderer.removeListener("logs:update", handler);
+        ipcRenderer.send("logs:watch-stop");
+      };
     },
   },
   archive: {
     extract: (archivePath: string): Promise<string> =>
-      ipcRenderer.invoke('archive:extract', archivePath),
+      ipcRenderer.invoke("archive:extract", archivePath),
     autoExtract: (
       archivePath: string,
       passwords: string[],
     ): Promise<{
-      success: boolean
-      outputDir?: string
-      error?: string
-      passwordUsed?: string
-    }> => ipcRenderer.invoke('archive:auto-extract', archivePath, passwords),
+      success: boolean;
+      outputDir?: string;
+      error?: string;
+      passwordUsed?: string;
+    }> => ipcRenderer.invoke("archive:auto-extract", archivePath, passwords),
   },
   archivePasswords: {
     list: async (): Promise<ArchivePassword[]> => {
-      const rows = (await ipcRenderer.invoke('archive-passwords:list')) as Array<
-        Record<string, unknown>
-      >
+      const rows = (await ipcRenderer.invoke(
+        "archive-passwords:list",
+      )) as Array<Record<string, unknown>>;
       return rows.map((row) => ({
-        password: String(row.password ?? ''),
+        password: String(row.password ?? ""),
         successCount: Number(row.successCount ?? row.success_count ?? 0),
         lastUsedAt:
           row.lastUsedAt || row.last_used_at
             ? Number(row.lastUsedAt ?? row.last_used_at) * 1000
             : undefined,
-        source: String(row.source ?? 'manual'),
-      }))
+        source: String(row.source ?? "manual"),
+      }));
     },
     import: (passwords: string[]): Promise<void> =>
-      ipcRenderer.invoke('archive-passwords:import', passwords),
+      ipcRenderer.invoke("archive-passwords:import", passwords),
     forget: (password: string): Promise<void> =>
-      ipcRenderer.invoke('archive-passwords:forget', password),
+      ipcRenderer.invoke("archive-passwords:forget", password),
   },
   packages: {
     list: async () => {
-      const resp = await fetchBackend('/packages')
-      if (!resp.ok) return []
-      return resp.json()
+      const resp = await fetchBackend("/packages");
+      if (!resp.ok) return [];
+      return resp.json();
     },
     create: async (payload: CreateDownloadPackagePayload) => {
-      const resp = await fetchBackend('/packages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const resp = await fetchBackend("/packages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      })
+      });
       if (!resp.ok) {
-        const body = await resp.json().catch(() => ({ error: 'Falha ao criar pacote' }))
-        throw new Error(String(body.error ?? 'Falha ao criar pacote'))
+        const body = await resp
+          .json()
+          .catch(() => ({ error: "Falha ao criar pacote" }));
+        throw new Error(String(body.error ?? "Falha ao criar pacote"));
       }
-      return resp.json()
+      return resp.json();
     },
     remove: async (id: string) => {
       await fetchBackend(`/packages/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      })
+        method: "DELETE",
+      });
     },
     assign: async (packageId: string, downloadId: string) => {
       await fetchBackend(
         `/packages/${encodeURIComponent(packageId)}/assign/${encodeURIComponent(downloadId)}`,
-        { method: 'POST' },
-      )
+        { method: "POST" },
+      );
     },
     unassign: async (downloadId: string) => {
-      await fetchBackend(`/packages/unassign/${encodeURIComponent(downloadId)}`, {
-        method: 'DELETE',
-      })
+      await fetchBackend(
+        `/packages/unassign/${encodeURIComponent(downloadId)}`,
+        {
+          method: "DELETE",
+        },
+      );
     },
   },
   links: {
     importContainer: async (
       file: File,
     ): Promise<Array<{ url: string; filename: string; size: number }>> => {
-      const form = new FormData()
-      form.append('file', file, file.name)
-      const resp = await fetchBackend('/links/import-container', {
-        method: 'POST',
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const resp = await fetchBackend("/links/import-container", {
+        method: "POST",
         body: form,
-      })
+      });
       if (!resp.ok) {
-        const body = await resp.json().catch(() => ({ error: 'Falha ao importar container' }))
-        throw new Error(String(body.error ?? 'Falha ao importar container'))
+        const body = await resp
+          .json()
+          .catch(() => ({ error: "Falha ao importar container" }));
+        throw new Error(String(body.error ?? "Falha ao importar container"));
       }
       const data = (await resp.json()) as {
-        links?: Array<{ url: string; filename: string; size: number }>
-      }
-      return data.links ?? []
+        links?: Array<{ url: string; filename: string; size: number }>;
+      };
+      return data.links ?? [];
     },
   },
   terabox: {
     netRequest: (params: {
-      url: string
-      method?: string
-      headers?: Record<string, string>
-      body?: string
-    }): Promise<unknown> => ipcRenderer.invoke('terabox:net-request', params),
+      url: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+    }): Promise<unknown> => ipcRenderer.invoke("terabox:net-request", params),
   },
   captcha: {
     nopechaSolve: (params: {
-      type: string
-      sitekey: string
-      pageurl: string
-    }): Promise<string | null> => ipcRenderer.invoke('captcha:nopecha-solve', params),
+      type: string;
+      sitekey: string;
+      pageurl: string;
+    }): Promise<string | null> =>
+      ipcRenderer.invoke("captcha:nopecha-solve", params),
     openWindow: (params: {
-      provider?: string
-      pageUrl: string
-      sourceUrl?: string
-    }): Promise<string | null> => ipcRenderer.invoke('captcha:open-window', params),
+      provider?: string;
+      pageUrl: string;
+      sourceUrl?: string;
+    }): Promise<string | null> =>
+      ipcRenderer.invoke("captcha:open-window", params),
     submit: (id: string, token: string): Promise<void> =>
       fetchBackend(`/captcha/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, token }),
       }).then(() => undefined),
   },
@@ -909,169 +1018,171 @@ const api = {
      * Os eventos chegam via onEvent; resolve quando termina.
      */
     search: async (filename: string): Promise<void> => {
-      activeMirrorSearchSeq += 1
-      activeMirrorController?.abort()
-      const controller = new AbortController()
-      const searchSeq = activeMirrorSearchSeq
-      activeMirrorController = controller
-      const goPort = await getGoPort()
-      const rustPort = await getPort()
-      const primaryPort = goPort ?? rustPort
-      const url = `http://127.0.0.1:${primaryPort}/mirrors/search?filename=${encodeURIComponent(filename)}`
-      const fallbackUrl = goPort ? `http://127.0.0.1:${rustPort}/mirrors/search?filename=${encodeURIComponent(filename)}` : null
+      activeMirrorSearchSeq += 1;
+      activeMirrorController?.abort();
+      const controller = new AbortController();
+      const searchSeq = activeMirrorSearchSeq;
+      activeMirrorController = controller;
+      const goPort = await getGoPort();
+      const rustPort = await getPort();
+      const primaryPort = goPort ?? rustPort;
+      const url = `http://127.0.0.1:${primaryPort}/mirrors/search?filename=${encodeURIComponent(filename)}`;
+      const fallbackUrl = goPort
+        ? `http://127.0.0.1:${rustPort}/mirrors/search?filename=${encodeURIComponent(filename)}`
+        : null;
       const emit = (ev: MirrorRendererEvent): void => {
         if (searchSeq !== activeMirrorSearchSeq) {
-          return
+          return;
         }
-        for (const h of mirrorEventHandlers) h(ev)
-      }
+        for (const h of mirrorEventHandlers) h(ev);
+      };
 
       const parseMessage = (payload: string): boolean => {
         if (!payload) {
-          return false
+          return false;
         }
 
         try {
-          const data = JSON.parse(payload) as Record<string, unknown>
-          if (data.type === 'start') {
+          const data = JSON.parse(payload) as Record<string, unknown>;
+          if (data.type === "start") {
             emit({
-              type: 'start',
+              type: "start",
               payload: {
-                filename: String(data.filename ?? ''),
+                filename: String(data.filename ?? ""),
                 total: Number(data.total ?? 0),
               },
-            })
-          } else if (data.type === 'progress') {
+            });
+          } else if (data.type === "progress") {
             emit({
-              type: 'progress',
+              type: "progress",
               payload: {
                 current: Number(data.current ?? 0),
                 total: Number(data.total ?? 0),
-                searcher: String(data.searcher ?? ''),
-                phase: String(data.phase ?? ''),
+                searcher: String(data.searcher ?? ""),
+                phase: String(data.phase ?? ""),
                 newResults: Number(data.newResults ?? 0),
                 totalResults: Number(data.totalResults ?? 0),
                 rawResults: Number(data.rawResults ?? 0),
                 rejectedResults: Number(data.rejectedResults ?? 0),
                 durationMs: Number(data.durationMs ?? 0),
-                error: typeof data.error === 'string' ? data.error : null,
+                error: typeof data.error === "string" ? data.error : null,
               },
-            })
-          } else if (data.type === 'log') {
-            emit({ type: 'log', payload: String(data.payload ?? '') })
-          } else if (data.type === 'result') {
+            });
+          } else if (data.type === "log") {
+            emit({ type: "log", payload: String(data.payload ?? "") });
+          } else if (data.type === "result") {
             emit({
-              type: 'result',
+              type: "result",
               payload: {
-                url: String(data.url ?? ''),
-                source: String(data.source ?? ''),
-                hoster: typeof data.hoster === 'string' ? data.hoster : null,
+                url: String(data.url ?? ""),
+                source: String(data.source ?? ""),
+                hoster: typeof data.hoster === "string" ? data.hoster : null,
                 score: Number(data.score ?? 0),
               },
-            })
-          } else if (data.type === 'done') {
+            });
+          } else if (data.type === "done") {
             emit({
-              type: 'done',
+              type: "done",
               payload: {
-                filename: String(data.filename ?? ''),
+                filename: String(data.filename ?? ""),
                 searchers: Number(data.searchers ?? 0),
                 total: Number(data.total ?? 0),
                 hosters: Number(data.hosters ?? 0),
                 durationMs: Number(data.durationMs ?? 0),
               },
-            })
-            return true
+            });
+            return true;
           }
         } catch {
           // Ignora mensagens SSE malformadas.
         }
 
-        return false
-      }
+        return false;
+      };
 
       const fetchSse = async (targetUrl: string): Promise<Response> =>
         fetch(targetUrl, {
-          headers: { Accept: 'text/event-stream' },
-          cache: 'no-store',
+          headers: { Accept: "text/event-stream" },
+          cache: "no-store",
           signal: controller.signal,
-        })
-      let response: Response | null = null
+        });
+      let response: Response | null = null;
       try {
-        const primary = await fetchSse(url)
+        const primary = await fetchSse(url);
         if (primary.ok && primary.body) {
-          response = primary
+          response = primary;
         } else if (primary.status === 404 && fallbackUrl) {
-          response = await fetchSse(fallbackUrl)
+          response = await fetchSse(fallbackUrl);
         } else {
-          response = primary
+          response = primary;
         }
       } catch (e) {
         if (fallbackUrl && !controller.signal.aborted) {
           try {
-            response = await fetchSse(fallbackUrl)
+            response = await fetchSse(fallbackUrl);
           } catch {}
         }
       }
       try {
         if (!response || !response.ok || !response.body) {
           emit({
-            type: 'error',
-            payload: 'Falha ao iniciar stream de mirrors',
-          })
-          return
+            type: "error",
+            payload: "Falha ao iniciar stream de mirrors",
+          });
+          return;
         }
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-        let doneReceived = false
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let doneReceived = false;
 
         try {
           while (true) {
-            const { done, value } = await reader.read()
+            const { done, value } = await reader.read();
             if (done) {
-              break
+              break;
             }
 
-            buffer += decoder.decode(value, { stream: true })
+            buffer += decoder.decode(value, { stream: true });
 
-            const parsed = splitSseMessages(buffer)
-            buffer = parsed.rest
+            const parsed = splitSseMessages(buffer);
+            buffer = parsed.rest;
 
             for (const message of parsed.messages) {
               if (parseMessage(message.data)) {
-                doneReceived = true
-                await reader.cancel().catch(() => undefined)
-                return
+                doneReceived = true;
+                await reader.cancel().catch(() => undefined);
+                return;
               }
             }
           }
 
-          const trailing = buffer.trim()
+          const trailing = buffer.trim();
           if (trailing && parseMessage(trailing)) {
-            doneReceived = true
+            doneReceived = true;
           }
         } finally {
-          reader.releaseLock()
+          reader.releaseLock();
         }
         if (!doneReceived && !controller.signal.aborted) {
-          emit({ type: 'error', payload: 'Conexão SSE perdida' })
+          emit({ type: "error", payload: "Conexão SSE perdida" });
         }
       } catch {
         if (!controller.signal.aborted) {
-          emit({ type: 'error', payload: 'Conexão SSE perdida' })
+          emit({ type: "error", payload: "Conexão SSE perdida" });
         }
       } finally {
         if (activeMirrorController === controller) {
-          activeMirrorController = null
+          activeMirrorController = null;
         }
       }
     },
 
     abort: (): void => {
-      activeMirrorSearchSeq += 1
-      activeMirrorController?.abort()
-      activeMirrorController = null
+      activeMirrorSearchSeq += 1;
+      activeMirrorController?.abort();
+      activeMirrorController = null;
     },
 
     /**
@@ -1085,190 +1196,340 @@ const api = {
      * Retorna função de cleanup.
      */
     onEvent: (cb: (event: MirrorRendererEvent) => void) => {
-      mirrorEventHandlers.push(cb)
+      mirrorEventHandlers.push(cb);
       return () => {
-        const idx = mirrorEventHandlers.indexOf(cb)
-        if (idx >= 0) mirrorEventHandlers.splice(idx, 1)
-      }
+        const idx = mirrorEventHandlers.indexOf(cb);
+        if (idx >= 0) mirrorEventHandlers.splice(idx, 1);
+      };
     },
   },
 
   // Stats
   getRealtimeStats: async () => {
     try {
-      const resp = await fetchBackend('/stats/realtime')
-      if (!resp.ok) return { ticks: [] }
-      return resp.json()
+      const resp = await fetchBackend("/stats/realtime");
+      if (!resp.ok) return { ticks: [] };
+      return resp.json();
     } catch {
-      return { ticks: [] }
+      return { ticks: [] };
     }
   },
 
   // Espaço em disco do volume da pasta de download (widget informativo no topo).
   getDiskUsage: async (path?: string) => {
     try {
-      const query = path ? `?path=${encodeURIComponent(path)}` : ''
-      const resp = await fetchBackend(`/system/disk${query}`)
-      if (!resp.ok) return { total: 0, available: 0, used: 0, mount: '' }
-      return resp.json()
+      const query = path ? `?path=${encodeURIComponent(path)}` : "";
+      const resp = await fetchBackend(`/system/disk${query}`);
+      if (!resp.ok) return { total: 0, available: 0, used: 0, mount: "" };
+      return resp.json();
     } catch {
-      return { total: 0, available: 0, used: 0, mount: '' }
+      return { total: 0, available: 0, used: 0, mount: "" };
     }
   },
 
   // Lista todos os discos/volumes montados (multi-disco) para o balão do widget.
   getAllDisks: async () => {
     try {
-      const resp = await fetchBackend('/system/disks')
-      if (!resp.ok) return []
-      return resp.json()
+      const resp = await fetchBackend("/system/disks");
+      if (!resp.ok) return [];
+      return resp.json();
     } catch {
-      return []
+      return [];
     }
   },
 
   ytdlp: {
     status: (): Promise<{
-      version: string | null
-      updateAvailable: boolean
-      state: 'ready' | 'downloading' | 'error'
-      error?: string
-    }> => ipcRenderer.invoke('ytdlp:status'),
+      version: string | null;
+      updateAvailable: boolean;
+      state: "ready" | "downloading" | "error";
+      error?: string;
+    }> => ipcRenderer.invoke("ytdlp:status"),
 
     checkUpdate: (): Promise<{
-      version: string | null
-      updateAvailable: boolean
-      state: 'ready' | 'downloading' | 'error'
-      error?: string
-    }> => ipcRenderer.invoke('ytdlp:checkUpdate'),
+      version: string | null;
+      updateAvailable: boolean;
+      state: "ready" | "downloading" | "error";
+      error?: string;
+    }> => ipcRenderer.invoke("ytdlp:checkUpdate"),
 
-    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void): (() => void) => {
+    onProgress: (
+      cb: (e: { bytesDownloaded: number; totalBytes: number }) => void,
+    ): (() => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
         payload: { bytesDownloaded: number; totalBytes: number },
-      ): void => cb(payload)
-      ipcRenderer.on('ytdlp:progress', handler)
-      return () => ipcRenderer.removeListener('ytdlp:progress', handler)
+      ): void => cb(payload);
+      ipcRenderer.on("ytdlp:progress", handler);
+      return () => ipcRenderer.removeListener("ytdlp:progress", handler);
     },
   },
 
   ffmpeg: {
     status: (): Promise<{
-      version: string | null
-      state: 'ready' | 'downloading' | 'absent' | 'error'
-      source: 'system' | 'custom' | 'managed' | 'none'
-      path: string | null
-      error?: string
-    }> => ipcRenderer.invoke('ffmpeg:status'),
+      version: string | null;
+      state: "ready" | "downloading" | "absent" | "error";
+      source: "system" | "custom" | "managed" | "none";
+      path: string | null;
+      error?: string;
+    }> => ipcRenderer.invoke("ffmpeg:status"),
 
     download: (): Promise<{
-      version: string | null
-      state: 'ready' | 'downloading' | 'absent' | 'error'
-      source: 'system' | 'custom' | 'managed' | 'none'
-      path: string | null
-      error?: string
-    }> => ipcRenderer.invoke('ffmpeg:download'),
+      version: string | null;
+      state: "ready" | "downloading" | "absent" | "error";
+      source: "system" | "custom" | "managed" | "none";
+      path: string | null;
+      error?: string;
+    }> => ipcRenderer.invoke("ffmpeg:download"),
 
-    onProgress: (cb: (e: { bytesDownloaded: number; totalBytes: number }) => void): (() => void) => {
+    onProgress: (
+      cb: (e: { bytesDownloaded: number; totalBytes: number }) => void,
+    ): (() => void) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
         payload: { bytesDownloaded: number; totalBytes: number },
-      ): void => cb(payload)
-      ipcRenderer.on('ffmpeg:progress', handler)
-      return () => ipcRenderer.removeListener('ffmpeg:progress', handler)
+      ): void => cb(payload);
+      ipcRenderer.on("ffmpeg:progress", handler);
+      return () => ipcRenderer.removeListener("ffmpeg:progress", handler);
     },
   },
 
   // Solver universal (1,2,3,4) — atualizável como yt-dlp, auto-pull via manifest
   turnstile: {
-    statusAll: (): Promise<Array<{ id: string; name: string; version: string | null; state: string }>> =>
-      ipcRenderer.invoke('turnstile:statusAll'),
-    status: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:status', id),
-    checkUpdate: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:checkUpdate', id),
-    update: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:update', id),
-    ensureReady: (id: string): Promise<unknown> => ipcRenderer.invoke('turnstile:ensureReady', id),
-    solve: (params: { sitekey: string; pageurl: string; proxy?: string; timeoutMs?: number }): Promise<{ token: string }> =>
-      ipcRenderer.invoke('turnstile:solve', params),
-    onProgress: (cb: (e: { solverId: string; bytesDownloaded: number; totalBytes: number; stage: string }) => void): (() => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, payload: { solverId: string; bytesDownloaded: number; totalBytes: number; stage: string }): void => cb(payload)
-      ipcRenderer.on('turnstile:progress', handler)
-      return () => ipcRenderer.removeListener('turnstile:progress', handler)
+    statusAll: (): Promise<
+      Array<{ id: string; name: string; version: string | null; state: string }>
+    > => ipcRenderer.invoke("turnstile:statusAll"),
+    status: (id: string): Promise<unknown> =>
+      ipcRenderer.invoke("turnstile:status", id),
+    checkUpdate: (id: string): Promise<unknown> =>
+      ipcRenderer.invoke("turnstile:checkUpdate", id),
+    update: (id: string): Promise<unknown> =>
+      ipcRenderer.invoke("turnstile:update", id),
+    ensureReady: (id: string): Promise<unknown> =>
+      ipcRenderer.invoke("turnstile:ensureReady", id),
+    solve: (params: {
+      sitekey: string;
+      pageurl: string;
+      proxy?: string;
+      timeoutMs?: number;
+    }): Promise<{ token: string }> =>
+      ipcRenderer.invoke("turnstile:solve", params),
+    onProgress: (
+      cb: (e: {
+        solverId: string;
+        bytesDownloaded: number;
+        totalBytes: number;
+        stage: string;
+      }) => void,
+    ): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: {
+          solverId: string;
+          bytesDownloaded: number;
+          totalBytes: number;
+          stage: string;
+        },
+      ): void => cb(payload);
+      ipcRenderer.on("turnstile:progress", handler);
+      return () => ipcRenderer.removeListener("turnstile:progress", handler);
     },
   },
   // Alias genérico para qualquer hoster (universal)
   solver: {
-    statusAll: (): Promise<unknown> => ipcRenderer.invoke('turnstile:statusAll'),
-    solve: (params: { sitekey: string; pageurl: string; type?: string; provider?: string; proxy?: string }): Promise<{ token: string }> =>
-      ipcRenderer.invoke('turnstile:solve', params),
+    statusAll: (): Promise<unknown> =>
+      ipcRenderer.invoke("turnstile:statusAll"),
+    solve: (params: {
+      sitekey: string;
+      pageurl: string;
+      type?: string;
+      provider?: string;
+      proxy?: string;
+    }): Promise<{ token: string }> =>
+      ipcRenderer.invoke("turnstile:solve", params),
+  },
+
+  // Torrents — feature exclusiva do sidecar Go (anacrolix/torrent), sem equivalente
+  // no Rust. Fala direto com a porta do Go, sem passar por fetchBackend().
+  torrents: {
+    add: async (
+      source: string,
+      destDir: string,
+      torRequired: boolean,
+    ): Promise<TorrentStatus> => {
+      const goPort = await getGoPort();
+      if (!goPort)
+        throw new Error("Serviço de torrents (Go) ainda não está disponível");
+      const resp = await fetch(`http://127.0.0.1:${goPort}/torrents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, destDir, torRequired }),
+      });
+      if (!resp.ok) {
+        const body = await resp
+          .json()
+          .catch(() => ({ error: "Erro desconhecido" }));
+        throw new Error(body.error ?? "Erro ao adicionar torrent");
+      }
+      return resp.json();
+    },
+    list: async (): Promise<TorrentStatus[]> => {
+      const goPort = await getGoPort();
+      if (!goPort) return [];
+      try {
+        const resp = await fetch(`http://127.0.0.1:${goPort}/torrents`);
+        if (!resp.ok) return [];
+        return await resp.json();
+      } catch {
+        return [];
+      }
+    },
+    get: async (id: string): Promise<TorrentStatus | null> => {
+      const goPort = await getGoPort();
+      if (!goPort) return null;
+      const resp = await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}`,
+      );
+      if (!resp.ok) return null;
+      return resp.json();
+    },
+    pause: async (id: string): Promise<void> => {
+      const goPort = await getGoPort();
+      if (!goPort) return;
+      await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}/pause`,
+        { method: "POST" },
+      );
+    },
+    resume: async (id: string): Promise<void> => {
+      const goPort = await getGoPort();
+      if (!goPort) return;
+      await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}/resume`,
+        { method: "POST" },
+      );
+    },
+    recheck: async (id: string): Promise<void> => {
+      const goPort = await getGoPort();
+      if (!goPort) return;
+      await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}/recheck`,
+        { method: "POST" },
+      );
+    },
+    remove: async (id: string, deleteFiles: boolean): Promise<void> => {
+      const goPort = await getGoPort();
+      if (!goPort) return;
+      await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}?deleteFiles=${deleteFiles ? "1" : "0"}`,
+        { method: "DELETE" },
+      );
+    },
+    selectFiles: async (id: string, indices: number[]): Promise<void> => {
+      const goPort = await getGoPort();
+      if (!goPort) return;
+      await fetch(
+        `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}/select-files`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ indices }),
+        },
+      );
+    },
+    peers: async (id: string): Promise<TorrentPeerStatus[]> => {
+      const goPort = await getGoPort();
+      if (!goPort) return [];
+      try {
+        const resp = await fetch(
+          `http://127.0.0.1:${goPort}/torrents/${encodeURIComponent(id)}/peers`,
+        );
+        if (!resp.ok) return [];
+        return await resp.json();
+      } catch {
+        return [];
+      }
+    },
+    pickTorrentFile: (): Promise<string | null> =>
+      ipcRenderer.invoke("torrents:pickFile"),
   },
 
   // Compatibilidade com código antigo
-  getBackendPort: (): Promise<number> => ipcRenderer.invoke('backend:getPort'),
+  getBackendPort: (): Promise<number> => ipcRenderer.invoke("backend:getPort"),
 
   tray: {
     updateStats: (data: { activeCount: number; speed: string }) =>
-      ipcRenderer.send('tray:update-stats', data),
+      ipcRenderer.send("tray:update-stats", data),
   },
-}
+};
 
 // Listen for tray commands and forward as window events
-ipcRenderer.on('tray:pause-all', () => window.dispatchEvent(new Event('tray-pause-all')))
-ipcRenderer.on('tray:resume-all', () => window.dispatchEvent(new Event('tray-resume-all')))
-ipcRenderer.on('tray:set-speed-limit', (_e, limit: number) =>
-  window.dispatchEvent(new CustomEvent('tray-set-speed-limit', { detail: limit })),
-)
+ipcRenderer.on("tray:pause-all", () =>
+  window.dispatchEvent(new Event("tray-pause-all")),
+);
+ipcRenderer.on("tray:resume-all", () =>
+  window.dispatchEvent(new Event("tray-resume-all")),
+);
+ipcRenderer.on("tray:set-speed-limit", (_e, limit: number) =>
+  window.dispatchEvent(
+    new CustomEvent("tray-set-speed-limit", { detail: limit }),
+  ),
+);
 
 function normalizeModuleId(provider: unknown): string {
-  const raw = String(provider ?? '')
+  const raw = String(provider ?? "")
     .trim()
-    .toLowerCase()
+    .toLowerCase();
   switch (raw) {
-    case 'google drive':
-    case 'googledrive':
-    case 'gdrive':
-      return 'gdrive'
-    case 'mediafire':
-      return 'mediafire'
-    case 'mega':
-      return 'mega'
-    case 'pixeldrain':
-      return 'pixeldrain'
-    case '1fichier':
-    case 'fichier':
-      return 'fichier'
-    case 'drime':
-      return 'drime'
-    case 'rapidgator':
-      return 'rapidgator'
-    case 'brfiles':
-      return 'brfiles'
-    case 'moondl':
-      return 'moondl'
-    case 'akirabox':
-      return 'akirabox'
-    case 'katfile':
-      return 'katfile'
-    case 'terabox':
-      return 'terabox'
-    case 'onedrive':
-    case 'one drive':
-      return 'onedrive'
+    case "google drive":
+    case "googledrive":
+    case "gdrive":
+      return "gdrive";
+    case "mediafire":
+      return "mediafire";
+    case "mega":
+      return "mega";
+    case "pixeldrain":
+      return "pixeldrain";
+    case "1fichier":
+    case "fichier":
+      return "fichier";
+    case "drime":
+      return "drime";
+    case "rapidgator":
+      return "rapidgator";
+    case "brfiles":
+      return "brfiles";
+    case "moondl":
+      return "moondl";
+    case "akirabox":
+      return "akirabox";
+    case "katfile":
+      return "katfile";
+    case "terabox":
+      return "terabox";
+    case "onedrive":
+    case "one drive":
+      return "onedrive";
     default:
-      return raw || 'unknown'
+      return raw || "unknown";
   }
 }
 
 // Converte o formato de download do backend Rust para o formato esperado pelo renderer
-function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown> {
-  const size = (d.size as number) ?? 0
-  const bytes = (d.bytes_downloaded as number) ?? 0
+function rustDownloadToItem(
+  d: Record<string, unknown>,
+): Record<string, unknown> {
+  const size = (d.size as number) ?? 0;
+  const bytes = (d.bytes_downloaded as number) ?? 0;
   return {
     id: d.id,
     url: d.url,
     moduleId: normalizeModuleId(d.provider),
     title: d.filename,
     size,
-    durationSecs: typeof d.duration_secs === 'number' ? d.duration_secs : undefined,
+    durationSecs:
+      typeof d.duration_secs === "number" ? d.duration_secs : undefined,
     isFolder: d.is_folder ?? false,
     children: d.children ?? [],
     status: d.status,
@@ -1278,8 +1539,8 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     retryCount: d.retry_count ?? 0,
     maxRetries: d.max_retries ?? 0,
     retryAt: d.retry_at ? (d.retry_at as number) * 1000 : undefined,
-    error: d.error ?? '',
-    errorKind: typeof d.error_kind === 'string' ? d.error_kind : undefined,
+    error: d.error ?? "",
+    errorKind: typeof d.error_kind === "string" ? d.error_kind : undefined,
     expectedHash: d.expected_hash ?? undefined,
     captchaType: d.captcha_type ?? undefined,
     captchaSitekey: d.captcha_sitekey ?? undefined,
@@ -1287,7 +1548,7 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     outputPath: d.dest_path,
     priority: d.priority ?? 0,
     pinned: Boolean(d.pinned),
-    packageId: typeof d.package_id === 'string' ? d.package_id : undefined,
+    packageId: typeof d.package_id === "string" ? d.package_id : undefined,
     parallelParts: Number(d.parallel_parts ?? 1),
     speedLimitKib: Number(d.speed_limit_kib ?? 0),
     sequential: Boolean(d.sequential),
@@ -1295,15 +1556,24 @@ function rustDownloadToItem(d: Record<string, unknown>): Record<string, unknown>
     addedAt: ((d.created_at as number) ?? 0) * 1000,
     startedAt: d.started_at ? (d.started_at as number) * 1000 : undefined,
     completedAt: d.completed_at ? (d.completed_at as number) * 1000 : undefined,
-    lastProgressAt: d.last_progress_at ? (d.last_progress_at as number) * 1000 : undefined,
-    thumbnailUrl: typeof d.thumbnail_url === 'string' ? d.thumbnail_url : undefined,
-    thumbnailData: typeof d.thumbnail_data === 'string' ? d.thumbnail_data : undefined,
-    channelName: typeof d.channel_name === 'string' ? d.channel_name : undefined,
-    channelThumbnailUrl: typeof d.channel_thumbnail_url === 'string' ? d.channel_thumbnail_url : undefined,
+    lastProgressAt: d.last_progress_at
+      ? (d.last_progress_at as number) * 1000
+      : undefined,
+    thumbnailUrl:
+      typeof d.thumbnail_url === "string" ? d.thumbnail_url : undefined,
+    thumbnailData:
+      typeof d.thumbnail_data === "string" ? d.thumbnail_data : undefined,
+    channelName:
+      typeof d.channel_name === "string" ? d.channel_name : undefined,
+    channelThumbnailUrl:
+      typeof d.channel_thumbnail_url === "string"
+        ? d.channel_thumbnail_url
+        : undefined,
     autoTorOnLimit: Boolean(d.auto_tor_on_limit),
-  }
+    torRequired: Boolean(d.tor_required),
+  };
 }
 
 // Não expor electronAPI genérico (invoke/send sem allowlist).
 // Toda comunicação renderer↔main passa por `window.api` tipado abaixo.
-contextBridge.exposeInMainWorld('api', api)
+contextBridge.exposeInMainWorld("api", api);

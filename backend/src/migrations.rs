@@ -122,6 +122,11 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "add_download_error_kind",
         apply: migration_add_download_error_kind,
     },
+    Migration {
+        version: 23,
+        name: "add_download_tor_required",
+        apply: migration_add_download_tor_required,
+    },
 ];
 
 pub(crate) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -291,6 +296,15 @@ fn migration_add_download_auto_tor_on_limit(conn: &Connection) -> Result<()> {
         "downloads",
         "auto_tor_on_limit",
         "ALTER TABLE downloads ADD COLUMN auto_tor_on_limit INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
+fn migration_add_download_tor_required(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "downloads",
+        "tor_required",
+        "ALTER TABLE downloads ADD COLUMN tor_required INTEGER NOT NULL DEFAULT 0",
     )
 }
 

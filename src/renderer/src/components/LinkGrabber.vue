@@ -56,6 +56,7 @@
       @set-row-selection="setRowSelectionChecked"
       @select-youtube-format="selectYouTubeFormat"
       @update-youtube-option="updateYouTubeOption"
+      @update-tor-required="updateTorRequired"
       @toggle-expanded="toggleExpanded"
       @open-mirrors="openMirrors"
       @choose-destination="chooseRowDestination"
@@ -495,6 +496,7 @@ interface QueueEntry {
   selectedChildren?: string[]
   expectedHash?: ExpectedHash
   filename?: string
+  torRequired?: boolean
 }
 
 const selectableRows = computed(() => rows.value.filter((row) => rowSelectableUnitCount(row) > 0))
@@ -529,6 +531,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
             .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
           expectedHash: row.expectedHash,
           filename: row.customName,
+          torRequired: row.torRequired,
         })
         continue
       }
@@ -559,6 +562,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           .filter((sourceUrl): sourceUrl is string => !!sourceUrl),
         expectedHash: row.expectedHash,
         filename: row.customName,
+        torRequired: row.torRequired,
       })
       continue
     }
@@ -573,6 +577,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
         destDir: row.destDir || defaultOutputDir(),
         expectedHash: row.expectedHash,
         filename: row.customName,
+        torRequired: row.torRequired,
       })
     }
   }
@@ -786,6 +791,10 @@ async function detectProviders(): Promise<void> {
     youtubeDownloadThumbnail: false,
     youtubeDownloadSubtitles: false,
     youtubeMultiAudio: false,
+    youtubeSplitChapters: false,
+    youtubeDownloadPack: false,
+    youtubeSubLangs: '',
+    torRequired: false,
   }))
 
   const queue = rows.value.map((_, index) => index)
@@ -991,7 +1000,8 @@ async function addAll(): Promise<void> {
         entry.selectedChildren,
         entry.expectedHash,
         undefined,
-        entry.filename
+        entry.filename,
+        entry.torRequired
       )
       const packageId = packageByEntry.get(entry)
       if (packageId) await window.api.packages.assign(packageId, download.id)
@@ -1208,6 +1218,9 @@ function ensureYouTubeOptions(row: CapturedRow): void {
   row.youtubeDownloadThumbnail = Boolean(row.youtubeDownloadThumbnail)
   row.youtubeDownloadSubtitles = Boolean(row.youtubeDownloadSubtitles)
   row.youtubeMultiAudio = Boolean(row.youtubeMultiAudio)
+  row.youtubeSplitChapters = Boolean(row.youtubeSplitChapters)
+  row.youtubeDownloadPack = Boolean(row.youtubeDownloadPack)
+  row.youtubeSubLangs = (row.youtubeSubLangs ?? '').trim()
   applyYouTubeOutputExtension(row)
 }
 
@@ -1418,7 +1431,7 @@ function selectYouTubeFormat(payload: { row: CapturedRow; sourceUrl: string }): 
 
 function updateYouTubeOption(payload: {
   row: CapturedRow
-  key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio'
+  key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio' | 'youtubeSplitChapters' | 'youtubeDownloadPack' | 'youtubeSubLangs'
   value: string | boolean
 }): void {
   if (!isYouTubeFormatRow(payload.row)) return
@@ -1427,7 +1440,15 @@ function updateYouTubeOption(payload: {
     applyYouTubeOutputExtension(payload.row)
     return
   }
+  if (payload.key === 'youtubeSubLangs') {
+    payload.row.youtubeSubLangs = String(payload.value).trim()
+    return
+  }
   payload.row[payload.key] = Boolean(payload.value)
+}
+
+function updateTorRequired(payload: { row: CapturedRow; value: boolean }): void {
+  payload.row.torRequired = payload.value
 }
 
 function buildYouTubeSelectionUrl(row: CapturedRow, child: SelectableChild): string | undefined {
@@ -1438,6 +1459,9 @@ function buildYouTubeSelectionUrl(row: CapturedRow, child: SelectableChild): str
   if (row.youtubeDownloadThumbnail) params.set('ytdlp_write_thumbnail', '1')
   if (row.youtubeDownloadSubtitles) params.set('ytdlp_write_subs', '1')
   if (row.youtubeMultiAudio) params.set('ytdlp_multi_audio', '1')
+  if (row.youtubeSplitChapters) params.set('ytdlp_split_chapters', '1')
+  if (row.youtubeDownloadPack) params.set('ytdlp_download_pack', '1')
+  if (row.youtubeSubLangs) params.set('ytdlp_sub_langs', row.youtubeSubLangs)
   return `${base}#${params.toString()}`
 }
 

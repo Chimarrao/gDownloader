@@ -1,5 +1,10 @@
 <template>
-  <div class="tour-layer" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+  <div
+    class="tour-layer"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="tour-title"
+  >
     <div class="tour-dim"></div>
     <div
       v-if="targetRect"
@@ -7,11 +12,7 @@
       :style="spotlightStyle"
       aria-hidden="true"
     ></div>
-    <div
-      class="tour-card"
-      :class="`placement-${placement}`"
-      :style="cardStyle"
-    >
+    <div class="tour-card" :class="`placement-${placement}`" :style="cardStyle">
       <div class="tour-kicker">
         <span>Passo {{ stepIndex + 1 }} de {{ steps.length }}</span>
         <button class="tour-skip" @click="finish">Pular</button>
@@ -32,14 +33,18 @@
         ></span>
       </div>
       <div class="tour-actions">
-        <button class="tour-secondary" :disabled="stepIndex === 0" @click="previous">
+        <button
+          class="tour-secondary"
+          :disabled="stepIndex === 0"
+          @click="previous"
+        >
           Voltar
         </button>
         <button class="tour-secondary" @click="refreshTarget">
           Reposicionar
         </button>
         <button class="tour-primary" @click="next">
-          {{ stepIndex === steps.length - 1 ? 'Concluir' : 'Próximo' }}
+          {{ stepIndex === steps.length - 1 ? "Concluir" : "Próximo" }}
         </button>
       </div>
     </div>
@@ -47,265 +52,277 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
-type TourTab = 'downloads' | 'grabber' | 'settings' | 'account' | 'logs'
+type TourTab =
+  | "downloads"
+  | "grabber"
+  | "torrents"
+  | "settings"
+  | "account"
+  | "logs";
 
 interface TourStep {
-  tab: TourTab
-  selector: string
-  title: string
-  body: string
-  checklist?: string[]
+  tab: TourTab;
+  selector: string;
+  title: string;
+  body: string;
+  checklist?: string[];
 }
 
 const props = defineProps<{
-  activeTab: TourTab
-}>()
+  activeTab: TourTab;
+}>();
 
 const emit = defineEmits<{
-  (e: 'navigate', tab: TourTab): void
-  (e: 'complete'): void
-}>()
+  (e: "navigate", tab: TourTab): void;
+  (e: "complete"): void;
+}>();
 
 const steps: TourStep[] = [
   {
-    tab: 'downloads',
+    tab: "downloads",
     selector: '[data-tour="download-queue"]',
-    title: 'Acompanhe a fila',
-    body: 'Veja seus downloads, progresso, velocidade e status em tempo real.',
+    title: "Acompanhe a fila",
+    body: "Veja seus downloads, progresso, velocidade e status em tempo real.",
   },
   {
-    tab: 'grabber',
+    tab: "grabber",
     selector: '[data-tour="link-input"]',
-    title: 'Capture links',
-    body: 'Cole ou arraste links aqui; o app lê os metadados e monta a lista.',
+    title: "Capture links",
+    body: "Cole ou arraste links aqui; o app lê os metadados e monta a lista.",
   },
   {
-    tab: 'grabber',
+    tab: "grabber",
     selector: '[data-tour="captured-results"]',
-    title: 'Resultados capturados',
-    body: 'Escolha o que baixar; só o item selecionado sai do capturador.',
+    title: "Resultados capturados",
+    body: "Escolha o que baixar; só o item selecionado sai do capturador.",
   },
   {
-    tab: 'downloads',
+    tab: "downloads",
     selector: '[data-tour="tab-bar"]',
-    title: 'Navegue pelas abas',
-    body: 'Alterne entre Downloads, Captura, Configurações, Contas e Logs.',
+    title: "Navegue pelas abas",
+    body: "Alterne entre Downloads, Captura, Configurações, Contas e Logs.",
   },
   {
-    tab: 'settings',
+    tab: "settings",
     selector: '[data-tour="youtube-settings"]',
-    title: 'Ajuste o YouTube',
-    body: 'Cookies, formato de merge, legendas e atualização do yt-dlp.',
+    title: "Ajuste o YouTube",
+    body: "Cookies, formato de merge, legendas e atualização do yt-dlp.",
   },
   {
-    tab: 'account',
+    tab: "account",
     selector: '[data-tour="accounts-tab"]',
-    title: 'Conecte contas premium',
-    body: 'Ligue 1fichier e Rapidgator para destravar limites e velocidade.',
+    title: "Conecte contas premium",
+    body: "Ligue 1fichier e Rapidgator para destravar limites e velocidade.",
   },
   {
-    tab: 'downloads',
+    tab: "downloads",
     selector: '[data-tour="tor-widget"]',
-    title: 'Use Tor quando precisar',
-    body: 'Contorne limites de IP com um circuito Tor isolado por download.',
+    title: "Use Tor quando precisar",
+    body: "Contorne limites de IP com um circuito Tor isolado por download.",
   },
   {
-    tab: 'settings',
+    tab: "settings",
     selector: '[data-tour="download-folder"]',
-    title: 'Defina o destino padrão',
-    body: 'Escolha onde os arquivos são salvos por padrão.',
+    title: "Defina o destino padrão",
+    body: "Escolha onde os arquivos são salvos por padrão.",
   },
   {
-    tab: 'settings',
+    tab: "settings",
     selector: '[data-tour="concurrency"]',
-    title: 'Downloads simultâneos',
-    body: 'Controle quantos downloads rodam ao mesmo tempo.',
+    title: "Downloads simultâneos",
+    body: "Controle quantos downloads rodam ao mesmo tempo.",
   },
   {
-    tab: 'settings',
+    tab: "settings",
     selector: '[data-tour="duplicates"]',
-    title: 'Duplicatas',
-    body: 'Decida o que fazer quando um arquivo já existe (padrão: salvar com sufixo).',
+    title: "Duplicatas",
+    body: "Decida o que fazer quando um arquivo já existe (padrão: salvar com sufixo).",
   },
   {
-    tab: 'grabber',
+    tab: "grabber",
     selector: '[data-tour="mirrors"]',
-    title: 'Busca de mirrors',
-    body: 'Encontre espelhos alternativos quando um host está indisponível.',
+    title: "Busca de mirrors",
+    body: "Encontre espelhos alternativos quando um host está indisponível.",
   },
   {
-    tab: 'logs',
+    tab: "logs",
     selector: '[data-tour="logs-panel"]',
-    title: 'Leia os logs',
-    body: 'Acompanhe eventos por nível e módulo; útil para diagnosticar erros.',
+    title: "Leia os logs",
+    body: "Acompanhe eventos por nível e módulo; útil para diagnosticar erros.",
   },
   {
-    tab: 'settings',
+    tab: "settings",
     selector: '[data-tour="remote-access"]',
-    title: 'Acesso remoto',
-    body: 'Controle o app de outro dispositivo na sua rede local.',
+    title: "Acesso remoto",
+    body: "Controle o app de outro dispositivo na sua rede local.",
   },
-]
+];
 
-const stepIndex = ref(0)
-const targetRect = ref<DOMRect | null>(null)
+const stepIndex = ref(0);
+const targetRect = ref<DOMRect | null>(null);
 
-const currentStep = computed(() => steps[stepIndex.value])
+const currentStep = computed(() => steps[stepIndex.value]);
 const spotlightStyle = computed(() => {
-  const rect = targetRect.value
-  if (!rect) return {}
+  const rect = targetRect.value;
+  if (!rect) return {};
   return {
     left: `${Math.max(8, rect.left - 8)}px`,
     top: `${Math.max(8, rect.top - 8)}px`,
     width: `${Math.min(window.innerWidth - 16, rect.width + 16)}px`,
     height: `${Math.min(window.innerHeight - 16, rect.height + 16)}px`,
-  }
-})
+  };
+});
 
 const cardLayout = computed(() => {
-  const rect = targetRect.value
-  const width = 380
+  const rect = targetRect.value;
+  const width = 380;
   if (!rect) {
     return {
-      placement: 'bottom',
+      placement: "bottom",
       style: {
         left: `${Math.max(16, (window.innerWidth - width) / 2)}px`,
-        top: '96px',
+        top: "96px",
       },
-    }
+    };
   }
-  const gap = 16
-  const belowSpace = window.innerHeight - rect.bottom
-  const aboveSpace = rect.top
-  const rightSpace = window.innerWidth - rect.right
+  const gap = 16;
+  const belowSpace = window.innerHeight - rect.bottom;
+  const aboveSpace = rect.top;
+  const rightSpace = window.innerWidth - rect.right;
   if (belowSpace > 240) {
     return {
-      placement: 'bottom',
+      placement: "bottom",
       style: {
         left: `${clamp(rect.left, 16, window.innerWidth - width - 16)}px`,
         top: `${rect.bottom + gap}px`,
       },
-    }
+    };
   }
   if (aboveSpace > 240) {
     return {
-      placement: 'top',
+      placement: "top",
       style: {
         left: `${clamp(rect.left, 16, window.innerWidth - width - 16)}px`,
         top: `${Math.max(16, rect.top - 232)}px`,
       },
-    }
+    };
   }
   if (rightSpace > width + gap) {
     return {
-      placement: 'right',
+      placement: "right",
       style: {
         left: `${rect.right + gap}px`,
         top: `${clamp(rect.top, 16, window.innerHeight - 232)}px`,
       },
-    }
+    };
   }
   return {
-    placement: 'left',
+    placement: "left",
     style: {
       left: `${Math.max(16, rect.left - width - gap)}px`,
       top: `${clamp(rect.top, 16, window.innerHeight - 232)}px`,
     },
-  }
-})
-const placement = computed(() => cardLayout.value.placement)
-const cardStyle = computed(() => cardLayout.value.style)
+  };
+});
+const placement = computed(() => cardLayout.value.placement);
+const cardStyle = computed(() => cardLayout.value.style);
 
 watch(stepIndex, () => {
-  void prepareStep()
-})
+  void prepareStep();
+});
 
 watch(
   () => props.activeTab,
   () => {
-    void refreshTarget()
+    void refreshTarget();
   },
-)
+);
 
 onMounted(() => {
-  window.addEventListener('resize', refreshTarget)
-  window.addEventListener('keydown', onKeydown)
-  void prepareStep()
-})
+  window.addEventListener("resize", refreshTarget);
+  window.addEventListener("keydown", onKeydown);
+  void prepareStep();
+});
 
 onUnmounted(() => {
-  window.removeEventListener('resize', refreshTarget)
-  window.removeEventListener('keydown', onKeydown)
-})
+  window.removeEventListener("resize", refreshTarget);
+  window.removeEventListener("keydown", onKeydown);
+});
 
 async function prepareStep(): Promise<void> {
-  const step = currentStep.value
+  const step = currentStep.value;
   if (props.activeTab !== step.tab) {
-    emit('navigate', step.tab)
+    emit("navigate", step.tab);
   }
-  await nextTick()
-  await wait(90)
-  const target = document.querySelector<HTMLElement>(step.selector)
+  await nextTick();
+  await wait(90);
+  const target = document.querySelector<HTMLElement>(step.selector);
   if (!target) {
     // Selector not found: skip forward (or backward when going back) to next valid step
-    const direction = stepIndex.value < steps.length - 1 ? 1 : -1
-    const next = stepIndex.value + direction
+    const direction = stepIndex.value < steps.length - 1 ? 1 : -1;
+    const next = stepIndex.value + direction;
     if (next >= 0 && next < steps.length) {
-      stepIndex.value = next
+      stepIndex.value = next;
     } else {
-      finish()
+      finish();
     }
-    return
+    return;
   }
-  await refreshTarget()
+  await refreshTarget();
 }
 
 async function refreshTarget(): Promise<void> {
-  await nextTick()
-  const target = document.querySelector<HTMLElement>(currentStep.value.selector)
+  await nextTick();
+  const target = document.querySelector<HTMLElement>(
+    currentStep.value.selector,
+  );
   if (!target) {
-    targetRect.value = null
-    return
+    targetRect.value = null;
+    return;
   }
-  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-  await wait(180)
-  targetRect.value = target.getBoundingClientRect()
+  target.scrollIntoView({
+    block: "center",
+    inline: "center",
+    behavior: "smooth",
+  });
+  await wait(180);
+  targetRect.value = target.getBoundingClientRect();
 }
 
 function previous(): void {
-  stepIndex.value = Math.max(0, stepIndex.value - 1)
+  stepIndex.value = Math.max(0, stepIndex.value - 1);
 }
 
 function next(): void {
   if (stepIndex.value >= steps.length - 1) {
-    finish()
-    return
+    finish();
+    return;
   }
-  stepIndex.value += 1
+  stepIndex.value += 1;
 }
 
 function finish(): void {
-  emit('complete')
+  emit("complete");
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
-    finish()
-  } else if (event.key === 'ArrowRight') {
-    next()
-  } else if (event.key === 'ArrowLeft') {
-    previous()
+  if (event.key === "Escape") {
+    finish();
+  } else if (event.key === "ArrowRight") {
+    next();
+  } else if (event.key === "ArrowLeft") {
+    previous();
   }
 }
 
 function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), Math.max(min, max))
+  return Math.min(Math.max(value, min), Math.max(min, max));
 }
 </script>
 
@@ -340,7 +357,8 @@ function clamp(value: number, min: number, max: number): number {
   z-index: 2;
   width: min(380px, calc(100vw - 32px));
   padding: 18px;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  border: 1px solid
+    color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
   border-radius: 12px;
   background: var(--bg-card);
   color: var(--text-primary);

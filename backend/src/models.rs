@@ -91,6 +91,13 @@ pub struct Download {
     /// Tor e seguir tentando (rotacionando o circuito) até concluir.
     #[serde(default)]
     pub auto_tor_on_limit: bool,
+    /// Kill switch: quando true, este download NUNCA inicia nem continua sem um
+    /// circuito Tor ativo (isolado, por-job). Ao contrário de `auto_tor_on_limit`
+    /// (que é um fallback automático só ao bater rate-limit), aqui a exigência é
+    /// incondicional — se o Tor cair ou não estiver disponível, o download fica
+    /// parado (Pending/erro), nunca cai para conexão direta.
+    #[serde(default)]
+    pub tor_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -380,7 +387,7 @@ impl Default for PublicSettings {
             post_download_action_trigger: "queue_empty".to_string(),
             post_download_command: String::new(),
             post_download_webhook_url: String::new(),
-            auto_extract: false,
+            auto_extract: true,
             password_list: Vec::new(),
             duplicate_action: "ask".to_string(),
             remote_access: RemoteAccessSettings::default(),
@@ -639,6 +646,8 @@ pub struct AddDownloadRequest {
     pub request_headers: Option<HashMap<String, String>>,
     #[serde(default)]
     pub auto_tor_on_limit: Option<bool>,
+    #[serde(default)]
+    pub tor_required: Option<bool>,
 }
 
 // --- Resposta padrão de erro da API ---

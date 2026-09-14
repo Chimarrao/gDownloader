@@ -37,6 +37,10 @@ var Migrations = []Migration{
 	{20, "add_download_thumbnail_columns", migrationAddDownloadThumbnailColumns},
 	{21, "create_resolved_download_link_cache", migrationCreateResolvedDownloadLinkCache},
 	{22, "add_download_error_kind", migrationAddDownloadErrorKind},
+	{23, "add_download_tor_required", migrationAddDownloadTorRequired},
+	// A partir daqui os números só existem no Go (torrents é feature exclusiva
+	// do Go); o Rust nunca aplica nem precisa saber destes.
+	{24, "create_torrents_table", migrationCreateTorrentsTable},
 }
 
 func columnExists(db *sql.DB, table, column string) (bool, error) {
@@ -175,6 +179,28 @@ func migrationAddDownloadNetworkRoute(db *sql.DB) error {
 }
 func migrationAddDownloadAutoTorOnLimit(db *sql.DB) error {
 	return addColumnIfMissing(db, "downloads", "auto_tor_on_limit", "ALTER TABLE downloads ADD COLUMN auto_tor_on_limit INTEGER NOT NULL DEFAULT 0")
+}
+func migrationAddDownloadTorRequired(db *sql.DB) error {
+	return addColumnIfMissing(db, "downloads", "tor_required", "ALTER TABLE downloads ADD COLUMN tor_required INTEGER NOT NULL DEFAULT 0")
+}
+func migrationCreateTorrentsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+          CREATE TABLE IF NOT EXISTS torrents (
+              id                TEXT PRIMARY KEY,
+              info_hash         TEXT NOT NULL DEFAULT '',
+              name              TEXT NOT NULL DEFAULT '',
+              source            TEXT NOT NULL,
+              source_kind       TEXT NOT NULL DEFAULT 'magnet',
+              dest_dir          TEXT NOT NULL,
+              tor_required      INTEGER NOT NULL DEFAULT 0,
+              paused            INTEGER NOT NULL DEFAULT 0,
+              file_selection_json TEXT,
+              created_at        INTEGER NOT NULL,
+              removed_at        INTEGER
+          );
+          CREATE INDEX IF NOT EXISTS idx_torrents_removed_at ON torrents(removed_at);
+        `)
+	return err
 }
 func migrationCreateDownloadIndexes(db *sql.DB) error {
 	_, err := db.Exec(`
