@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,46 @@ func gofileClient() *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 	}
+}
+
+// O Gofile trata a criação de conta de convidado (POST /accounts) como recurso
+// caro e limita agressivamente (HTTP 429) quem cria uma sessão nova a cada
+// captura — era exatamente o que este código fazia antes, sem cachear nada.
+// Ferramentas como yt-dlp/gallery-dl reusam o mesmo guest token por várias
+// requisições; replicamos isso aqui: cacheia em memória e só cria um token
+// novo quando o cache está vazio/velho ou quando o servidor rejeita o
+// token atual (ver GetToken/InvalidateToken abaixo).
+var (
+	gofileTokenMu     sync.Mutex
+	gofileCachedToken string
+	gofileTokenAt     time.Time
+)
+
+const gofileTokenTTL = 6 * time.Hour
+
+func (p GofileProvider) GetToken(client *http.Client) (string, error) {
+	gofileTokenMu.Lock()
+	cached := gofileCachedToken
+	fresh := cached != "" && time.Since(gofileTokenAt) < gofileTokenTTL
+	gofileTokenMu.Unlock()
+	if fresh {
+		return cached, nil
+	}
+	token, err := p.CreateToken(client)
+	if err != nil {
+		return "", err
+	}
+	gofileTokenMu.Lock()
+	gofileCachedToken = token
+	gofileTokenAt = time.Now()
+	gofileTokenMu.Unlock()
+	return token, nil
+}
+
+func (p GofileProvider) InvalidateToken() {
+	gofileTokenMu.Lock()
+	gofileCachedToken = ""
+	gofileTokenMu.Unlock()
 }
 
 func (p GofileProvider) CreateToken(client *http.Client) (string, error) {
@@ -173,11 +214,21 @@ func (p GofileProvider) GetFileInfo(client *http.Client, rawURL string) (string,
 		client = gofileClient()
 		client.Transport = &gofileUATransport{base: http.DefaultTransport}
 	}
-	token, err := p.CreateToken(client)
+	token, err := p.GetToken(client)
 	if err != nil {
 		return "", 0, false, nil, err
 	}
 	data, err := p.FetchContents(client, token, *contentID)
+	if err != nil && (strings.Contains(err.Error(), "notPremium") || strings.Contains(err.Error(), "expirado")) {
+		// Token cacheado pode ter sido revogado do lado do Gofile — descarta e
+		// tenta uma vez com um token novo antes de desistir.
+		p.InvalidateToken()
+		token, err = p.GetToken(client)
+		if err != nil {
+			return "", 0, false, nil, err
+		}
+		data, err = p.FetchContents(client, token, *contentID)
+	}
 	if err != nil {
 		return "", 0, false, nil, err
 	}

@@ -27,7 +27,7 @@
           <span>Velocidade atual</span>
           <span class="stat-icon green"><i class="pi pi-chart-line"></i></span>
         </div>
-        <strong class="stat-value">{{ formatSpeed(statSpeedBps) }}</strong>
+        <strong class="stat-value">{{ formatSpeed(statSpeedSmoothed) }}</strong>
         <span class="stat-sub">Máxima: {{ formatSpeed(statMaxSpeedBps) }}</span>
       </div>
       <div class="stat-card">
@@ -331,9 +331,15 @@
           v-if="packageHeaderFor(item)"
           class="package-parent-row"
           :class="{ 'package-drop-target': packageDropTargetId === item.packageId }"
+          role="button"
+          tabindex="0"
+          :aria-expanded="!isPackageCollapsed(item.packageId)"
           @dragover.prevent="markPackageDropTarget(item.packageId)"
           @dragleave="clearPackageDropTarget(item.packageId)"
           @drop.stop.prevent="dropIntoPackage(item.packageId!, $event)"
+          @click="togglePackage(item.packageId!)"
+          @keydown.enter.prevent="togglePackage(item.packageId!)"
+          @keydown.space.prevent="togglePackage(item.packageId!)"
         >
           <span class="package-tree-stem" aria-hidden="true"><i class="pi pi-sitemap"></i></span>
           <div
@@ -348,8 +354,37 @@
               {{ moduleLabel(item.moduleId) }} · {{ packageItemCount(item.packageId) }} arquivo(s)
             </span>
           </div>
+          <div class="package-parent-actions" @click.stop>
+            <button
+              v-if="packageActions(item.packageId).canPause"
+              class="action-btn"
+              title="Pausar todos os arquivos"
+              aria-label="Pausar todos os arquivos"
+              @click="pausePackage(item.packageId!)"
+            ><i class="pi pi-pause"></i></button>
+            <button
+              v-else-if="packageActions(item.packageId).canResume"
+              class="action-btn"
+              title="Retomar todos os arquivos"
+              aria-label="Retomar todos os arquivos"
+              @click="resumePackage(item.packageId!)"
+            ><i class="pi pi-play"></i></button>
+            <button
+              v-if="packageActions(item.packageId).canCancel"
+              class="action-btn cancel-btn"
+              title="Cancelar todos os arquivos"
+              aria-label="Cancelar todos os arquivos"
+              @click="cancelPackage(item.packageId!)"
+            ><i class="pi pi-times"></i></button>
+            <i
+              class="package-collapse-indicator pi"
+              :class="isPackageCollapsed(item.packageId) ? 'pi-chevron-right' : 'pi-chevron-down'"
+              aria-hidden="true"
+            ></i>
+          </div>
         </div>
         <div
+          v-if="!item.packageId || !isPackageCollapsed(item.packageId)"
           v-memo="rowMemoKey(item)"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id), 'package-child-row': !!item.packageId }]"
@@ -535,22 +570,10 @@
               </div>
             </div>
 
-            <div v-if="showYouTubeStages(item)" class="youtube-stage-strip" aria-label="Etapas do YouTube">
-              <span
-                v-for="stage in youtubeStages(item)"
-                :key="`${item.id}:${stage.label}`"
-                class="youtube-stage"
-                :class="stage.state"
-              >
-                <i :class="stage.icon"></i>
-                {{ stage.label }}
-              </span>
-            </div>
-
             <div class="table-status-cell">
               <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
                 <span class="badge-dot" :class="`dot-${item.status}`"></span>
-                {{ statusTextValue(item) }}
+                {{ showYouTubeStages(item) ? youtubeCurrentStageLabel(item) : statusTextValue(item) }}
               </span>
               <div v-if="hasColumn('progress')" class="progress-track">
                 <div v-if="isDetailExpanded(item.id) && downloadSegments(item)" class="progress-segments">
@@ -1375,6 +1398,7 @@ const packageDropTargetId = ref<string | null>(null)
 const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
+const collapsedPackages = ref<Record<string, boolean>>({})
 type DetailTabId = 'files' | 'general' | 'logs' | 'mirrors' | 'peers' | 'history'
 
 const detailTabs = ref<Record<string, DetailTabId>>({})
@@ -1515,6 +1539,26 @@ function packageNameFor(item: DownloadItem): string {
 function packageItemCount(packageId: string | undefined): number {
   return packageId ? packageMembers.value.get(packageId)?.length ?? 0 : 0
 }
+
+function isPackageCollapsed(packageId: string | undefined): boolean {
+  return !!packageId && !!collapsedPackages.value[packageId]
+}
+
+function togglePackage(packageId: string): void {
+  collapsedPackages.value = {
+    ...collapsedPackages.value,
+    [packageId]: !collapsedPackages.value[packageId],
+  }
+}
+
+function packageActions(packageId: string | undefined): { canPause: boolean; canResume: boolean; canCancel: boolean } {
+  const members = packageId ? packageMembers.value.get(packageId) ?? [] : []
+  return {
+    canPause: members.some((member) => actionsFor(member).canPause),
+    canResume: members.some((member) => actionsFor(member).canResume),
+    canCancel: members.some((member) => actionsFor(member).canCancel),
+  }
+}
 const finishedCount = computed(() =>
   items.value.filter((item) => isClearable(item)).length
 )
@@ -1545,8 +1589,19 @@ const statSpeedChartPath = computed(() => {
 })
 const statSpeedChartArea = computed(() => `${statSpeedChartPath.value} L360 150 L0 150 Z`)
 
+// Amostra 1x/segundo (setInterval) e cada item já chega suavizado por
+// smoothSpeedSample, mas a SOMA de vários itens ainda podia formar onda
+// quadrada no gráfico do card: se downloads entram/saem do set "ativo"
+// entre uma amostra e outra (ex.: um item cai pra 0 e sai da soma bem na
+// hora que outro pula pro valor cheio), o total salta de vez em vez de
+// escorregar. Suaviza o TOTAL também, igual já se fazia por item.
+const statSpeedSmoothed = ref(0)
 function recordStatSpeedSample(speed: number): void {
-  statSpeedHistory.value = [...statSpeedHistory.value.slice(1), Math.max(0, speed)]
+  const raw = Math.max(0, Number.isFinite(speed) ? speed : 0)
+  statSpeedSmoothed.value = statSpeedSmoothed.value > 0
+    ? Math.round(statSpeedSmoothed.value * 0.72 + raw * 0.28)
+    : raw
+  statSpeedHistory.value = [...statSpeedHistory.value.slice(1), statSpeedSmoothed.value]
 }
 
 watch(statSpeedBps, (value) => {
@@ -2679,6 +2734,13 @@ function mergeHydratedDownload(existing: DownloadItem, fresh: DownloadItem): Dow
     percent: Math.max(existing.percent ?? 0, fresh.percent ?? 0),
     speedBps: Math.max(existing.speedBps ?? 0, fresh.speedBps ?? 0),
     etaSec: fresh.etaSec || existing.etaSec,
+    // O hydrate de reconciliação (a cada 15s) lia lastProgressAt do snapshot do
+    // backend, que só tem resolução de segundo e atualiza por tick de progresso
+    // do provider — menos preciso que o Date.now() já aplicado a cada mensagem
+    // do WebSocket. Sobrescrever com o valor mais antigo derrubava a velocidade
+    // pra 0 ("Conectando") por um instante a cada hydrate, mesmo com o download
+    // ativo — sempre fica com o mais recente dos dois.
+    lastProgressAt: Math.max(existing.lastProgressAt ?? 0, fresh.lastProgressAt ?? 0) || undefined,
     children: mergeHydratedChildren(existing.children, fresh.children),
   }
 }
@@ -2865,6 +2927,36 @@ async function pause(id: string): Promise<void> {
 
 async function resume(id: string): Promise<void> {
   await window.api.downloads.resume(id).catch(() => null)
+  await hydrate()
+}
+
+async function pausePackage(packageId: string): Promise<void> {
+  const members = packageMembers.value.get(packageId) ?? []
+  await Promise.all(
+    members
+      .filter((member) => actionsFor(member).canPause)
+      .map((member) => window.api.downloads.pause(member.id).catch(() => null)),
+  )
+  await hydrate()
+}
+
+async function resumePackage(packageId: string): Promise<void> {
+  const members = packageMembers.value.get(packageId) ?? []
+  await Promise.all(
+    members
+      .filter((member) => actionsFor(member).canResume)
+      .map((member) => window.api.downloads.resume(member.id).catch(() => null)),
+  )
+  await hydrate()
+}
+
+async function cancelPackage(packageId: string): Promise<void> {
+  const members = packageMembers.value.get(packageId) ?? []
+  await Promise.all(
+    members
+      .filter((member) => actionsFor(member).canCancel)
+      .map((member) => window.api.downloads.cancel(member.id).catch(() => null)),
+  )
   await hydrate()
 }
 
@@ -3385,6 +3477,14 @@ function youtubeStages(item: DownloadItem): Array<{ label: string; state: YouTub
           : 'pi pi-circle',
     }
   })
+}
+
+// Etapa atual pro selo de status, no lugar da faixa separada de baixando
+// vídeo/áudio/mesclando que ficava embaixo do nome (ocupava espaço à toa
+// e duplicava a mesma informação que já cabe no selo).
+function youtubeCurrentStageLabel(item: DownloadItem): string {
+  const current = youtubeStages(item).find((stage) => stage.state === 'current')
+  return current?.label ?? statusTextValue(item)
 }
 
 function isWaitingRetryNow(item: DownloadItem): boolean {
@@ -4857,44 +4957,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   gap: 3px;
 }
 
-.youtube-stage-strip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-height: 24px;
-}
-
-.youtube-stage {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-primary));
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.youtube-stage.done {
-  border-color: color-mix(in srgb, #22c55e 42%, var(--border-color));
-  color: #22c55e;
-  background: color-mix(in srgb, #22c55e 10%, transparent);
-}
-
-.youtube-stage.current {
-  border-color: color-mix(in srgb, var(--accent-color) 58%, var(--border-color));
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
-}
-
-.youtube-stage.pending {
-  opacity: 0.72;
-}
-
 /* ── Item body ──────────────────────────────────────────────── */
 .item-body {
   flex: 1;
@@ -5702,15 +5764,10 @@ button.meta-path {
   display: none;
 }
 
-.youtube-stage-strip,
 .tor-limit-chip,
 .folder-children,
 .download-detail-panel {
   grid-column: 1 / -1;
-}
-
-.youtube-stage-strip {
-  grid-row: 3;
 }
 
 @media (max-width: 1320px) {
@@ -6428,7 +6485,13 @@ button.meta-path {
   border-top: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--border-color) 66%, transparent);
   background: color-mix(in srgb, var(--surface-section, var(--bg-card)) 78%, var(--bg-card));
+  cursor: pointer;
   transition: background .14s ease, box-shadow .14s ease;
+}
+
+.package-parent-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-color) 70%, transparent);
+  outline-offset: -2px;
 }
 
 .package-parent-row.package-drop-target {
@@ -6468,6 +6531,19 @@ button.meta-path {
 .package-parent-copy span {
   color: var(--text-muted);
   font-size: 10.5px;
+}
+
+.package-parent-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.package-collapse-indicator {
+  width: 22px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .package-child-row {

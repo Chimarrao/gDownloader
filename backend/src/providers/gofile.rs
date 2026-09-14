@@ -2,9 +2,11 @@ use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::models::{FileChildInfo, FileInfo};
 use super::{
@@ -48,6 +50,49 @@ impl GofileProvider {
 
     fn client() -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder().user_agent(GOFILE_UA).build()?)
+    }
+
+    // O Gofile limita agressivamente (HTTP 429) a criação de conta de convidado
+    // (POST /accounts) — criar uma sessão nova a cada captura, como o código
+    // fazia antes, esgota essa cota rápido. Cacheia em memória e só cria um
+    // token novo quando o cache expira ou o servidor rejeita o atual.
+    fn token_cache() -> &'static AsyncMutex<Option<(String, Instant)>> {
+        static CACHE: OnceLock<AsyncMutex<Option<(String, Instant)>>> = OnceLock::new();
+        CACHE.get_or_init(|| AsyncMutex::new(None))
+    }
+
+    async fn get_token(client: &reqwest::Client) -> Result<String> {
+        const TTL: Duration = Duration::from_secs(6 * 60 * 60);
+        {
+            let cache = Self::token_cache().lock().await;
+            if let Some((token, at)) = cache.as_ref() {
+                if at.elapsed() < TTL {
+                    return Ok(token.clone());
+                }
+            }
+        }
+        let token = Self::create_token(client).await?;
+        *Self::token_cache().lock().await = Some((token.clone(), Instant::now()));
+        Ok(token)
+    }
+
+    async fn invalidate_token() {
+        *Self::token_cache().lock().await = None;
+    }
+
+    async fn fetch_contents_with_retry(
+        client: &reqwest::Client,
+        token: &str,
+        content_id: &str,
+    ) -> Result<Value> {
+        match Self::fetch_contents(client, token, content_id).await {
+            Err(e) if e.to_string().contains("notPremium") || e.to_string().contains("expirado") => {
+                Self::invalidate_token().await;
+                let fresh_token = Self::get_token(client).await?;
+                Self::fetch_contents(client, &fresh_token, content_id).await
+            }
+            other => other,
+        }
     }
 
     async fn create_token(client: &reqwest::Client) -> Result<String> {
@@ -163,8 +208,8 @@ impl Provider for GofileProvider {
             let content_id = Self::content_id(url)
                 .ok_or_else(|| anyhow!("URL do Gofile inválida: {url}"))?;
             let client = Self::client()?;
-            let token = Self::create_token(&client).await?;
-            let data = Self::fetch_contents(&client, &token, &content_id).await?;
+            let token = Self::get_token(&client).await?;
+            let data = Self::fetch_contents_with_retry(&client, &token, &content_id).await?;
             let files = Self::collect_files(&data);
 
             if files.is_empty() {
@@ -225,8 +270,8 @@ impl Provider for GofileProvider {
             let content_id = Self::content_id(url)
                 .ok_or_else(|| anyhow!("URL do Gofile inválida: {url}"))?;
             let client = Self::client()?;
-            let token = Self::create_token(&client).await?;
-            let data = Self::fetch_contents(&client, &token, &content_id).await?;
+            let token = Self::get_token(&client).await?;
+            let data = Self::fetch_contents_with_retry(&client, &token, &content_id).await?;
             let mut files = Self::collect_files(&data);
 
             if files.is_empty() {

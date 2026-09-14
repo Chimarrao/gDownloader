@@ -35,7 +35,9 @@ func detectProviderName(rawURL string) string {
 		return ""
 	}
 	host := strings.ToLower(u.Hostname())
-	// Map host to provider name similar to Rust order
+	// Mirror Rust detect_provider order; YouTube check must be exactly Rust matches logic
+	youtubeMatches := host == "youtu.be" || host == "youtube.com" || host == "music.youtube.com" || strings.HasSuffix(host, ".youtube.com")
+	// Map host to provider name similar to Rust order — non-youtube providers first, then youtube
 	checks := []struct {
 		hosts []string
 		name  string
@@ -48,7 +50,21 @@ func detectProviderName(rawURL string) string {
 		{[]string{"transfer.it", "www.transfer.it"}, "Transfer.it"},
 		{[]string{"send.now", "www.send.now"}, "Send.now"},
 		{[]string{"archive.org", "www.archive.org"}, "Internet Archive"},
-		{[]string{"youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"}, "YouTube"},
+	}
+	for _, c := range checks {
+		for _, h := range c.hosts {
+			if host == h || strings.HasSuffix(host, "."+h) {
+				return c.name
+			}
+		}
+	}
+	if youtubeMatches {
+		return "YouTube"
+	}
+	rest := []struct {
+		hosts []string
+		name  string
+	}{
 		{[]string{"sharepoint.com"}, "OneDrive"},
 		{[]string{"drive.google.com"}, "Google Drive"},
 		{[]string{"gofile.io", "www.gofile.io"}, "Gofile"},
@@ -61,7 +77,7 @@ func detectProviderName(rawURL string) string {
 		{[]string{"katfile.com", "katfile.ws"}, "Katfile"},
 		{[]string{"onedrive.live.com", "1drv.ms"}, "OneDrive"},
 	}
-	for _, c := range checks {
+	for _, c := range rest {
 		for _, h := range c.hosts {
 			if host == h || strings.HasSuffix(host, "."+h) {
 				return c.name
@@ -168,12 +184,13 @@ func GetFileInfo(w http.ResponseWriter, r *http.Request, database *sql.DB) {
 	if cached, err := db.LoadCachedFileInfo(database, rawURL); err == nil && cached != nil {
 		cachedThumb = cached.ChannelThumbnailURL
 	}
-	_ = cachedThumb // for future use with youtube provider
 
 	// Attempt provider-specific fetch where available, otherwise generic HEAD
 	var info models.FileInfo
 	var err error
 	switch name {
+	case "YouTube":
+		info, err = fetchYouTubeInfo(rawURL, database, cachedThumb)
 	case "Gofile":
 		info, err = fetchGofileInfo(rawURL)
 	case "PixelDrain":
@@ -454,7 +471,19 @@ func fetchPixelDrainInfo(rawURL string) (models.FileInfo, error) {
 					sz = uint64(v)
 				}
 				total += sz
-				files = append(files, models.FileChildInfo{Filename: name, Size: sz})
+				child := models.FileChildInfo{Filename: name, Size: sz}
+				// Sem SourceURL o front não consegue selecionar/baixar arquivos
+				// individuais da pasta (ver LinkGrabber.vue selectableChildren,
+				// que filtra por child.sourceUrl) — mesmo padrão do provider Rust
+				// (pixeldrain.rs): https://pixeldrain.com/u/{id}.
+				if id, ok := m["id"].(string); ok && id != "" {
+					src := "https://pixeldrain.com/u/" + id
+					child.SourceURL = &src
+				}
+				if mime, ok := m["mime_type"].(string); ok && mime != "" {
+					child.MimeType = &mime
+				}
+				files = append(files, child)
 			}
 		}
 	}
@@ -504,6 +533,36 @@ func fetchGDriveInfo(rawURL string) (models.FileInfo, error) {
 		return models.FileInfo{Filename: SanitizeFilename(*fid, "pasta"), IsFolder: true, Size: 0}, nil
 	}
 	return fetchDirectHTTPInfo(rawURL)
+}
+
+func fetchYouTubeInfo(rawURL string, database *sql.DB, cachedThumb *string) (models.FileInfo, error) {
+	p := YouTubeProvider{}
+	// Build DownloadContext from PublicSettings like Rust does (DownloadContext::default + public settings)
+	ctx := DefaultDownloadContext()
+	ctx.CachedChannelThumbnailURL = cachedThumb
+	if database != nil {
+		if pub, err := db.LoadPublicSettings(database); err == nil {
+			ctx.ProxyMode = pub.ProxyMode
+			ctx.ProxyHost = pub.ProxyHost
+			ctx.ProxyPort = pub.ProxyPort
+			if pub.ProxyUsername != nil {
+				ctx.ProxyUsername = pub.ProxyUsername
+			}
+			if pub.ProxyPassword != nil {
+				ctx.ProxyPassword = pub.ProxyPassword
+			}
+			ctx.YoutubeUseCookies = pub.YoutubeUseCookies
+			ctx.YoutubeCookieBrowser = pub.YoutubeCookieBrowser
+			ctx.YoutubeCookiesFile = pub.YoutubeCookiesFile
+			ctx.YoutubeMergeFormat = pub.YoutubeMergeFormat
+			ctx.YoutubeDownloadSubs = pub.YoutubeDownloadSubs
+			ctx.YoutubeSubLangs = pub.YoutubeSubLangs
+			ctx.YoutubeEmbedSubs = pub.YoutubeEmbedSubs
+			ctx.YoutubeSplitChapters = pub.YoutubeSplitChapters
+			ctx.YoutubeDownloadPack = pub.YoutubeDownloadPack
+		}
+	}
+	return p.InfoFor(rawURL, &ctx)
 }
 
 var _ = fmt.Sprintf
