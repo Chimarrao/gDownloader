@@ -81,6 +81,11 @@ O `settings.json` legado só é lido para migração. O app atual usa SQLite com
 - `Internet Archive`: URLs de item (`/download/<identificador>`) mostram os arquivos originais como grupo; URLs de arquivo continuam disponíveis individualmente.
 - **Novos hosters:** basta adicionar o host em `providers/mod.rs` e, se tiver captcha, chamar `turnstileService.solve({sitekey, pageurl, type, provider})` — o manifesto `resources/solver-manifest.json` permite adicionar novo solver sem release do app.
 
+### Ícones de formatos
+
+- Arquivos `.7z` usam o ícone do **7-Zip**, em alto contraste para continuar legível nas linhas compactas do capturador.
+- Arquivos `.rar`/`.r00`/`.r01` usam o WinRAR; vídeos usam o cone do VLC.
+
 ## Captcha, solver universal e rate-limit
 
 - **Solver universal (1,2,3,4) — atualizável como `yt-dlp`:** `EzSolver` (107★), `Icemellow V2` (dual `nodriver`+`camoufox`), `Surafel` (`patchright`) e `FlareSolverr` (15k★) ficam em `userData/turnstile/<id>/` com `venv` isolado. Cada solver é baixado como zip do GitHub (`main`/`master`) e instalado via `pip` exatamente como `yt-dlp` (`ytdlp-service.ts:121` `fetchLatestVersion`/`downloadBin`). `resources/solver-manifest.json` permite **auto-pull** de novos solvers sem atualizar o app — basta adicionar o repo ao manifesto e o próximo `ensureReady` baixa (mesmo `6h` cache do `yt-dlp`).

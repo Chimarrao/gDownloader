@@ -11,6 +11,7 @@ logs.txt
 docs/
 poc/
 tsconfig.web.tsbuildinfo
+tsconfig.node.tsbuildinfo
 backend/.env.test.local
 settings.json
 *.sqlite

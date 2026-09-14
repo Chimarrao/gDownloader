@@ -11,7 +11,7 @@ describe('file-type app icons', () => {
   it('mapeia arquivos compactados', () => {
     expect(getFileTypeAppIcon('pacote.rar')?.app).toBe('winrar')
     expect(getFileTypeAppIcon('backup.zip')?.app).toBe('zip')
-    expect(getFileTypeAppIcon('x.7z')?.app).toBe('zip')
+    expect(getFileTypeAppIcon('x.7z')?.app).toBe('sevenzip')
   })
 
   it('mapeia documentos e instaladores', () => {
