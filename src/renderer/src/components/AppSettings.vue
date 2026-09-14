@@ -348,6 +348,63 @@
       </div>
     </div>
 
+    <!-- Captcha solvers section -->
+    <div class="settings-section">
+      <h3 class="section-title">Solvers de captcha</h3>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Atualizar automaticamente</span>
+          <span class="setting-desc">Verifica e baixa novas versões dos solvers (EzSolver, Icemellow, Surafel, FlareSolverr) ao abrir o app</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.turnstileAutoUpdate" @change="save" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Usar solvers de captcha</span>
+          <span class="setting-desc">Desative para nunca acionar os solvers (o download fica pendente ao encontrar um captcha)</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.turnstileEnabled" @change="save" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row" v-for="solver in solverStatuses" :key="solver.id">
+        <div class="setting-info">
+          <span class="setting-label">{{ solver.name }}</span>
+          <span class="setting-desc" v-if="solver.state === 'ready'">
+            v{{ solver.version ?? '?' }}<span v-if="solver.updateAvailable"> · atualização disponível ({{ solver.latestVersion }})</span>
+          </span>
+          <span class="setting-desc" v-else-if="solver.state === 'downloading' || solver.state === 'updating'">
+            <span v-if="solverProgress[solver.id]">
+              Baixando... {{ Math.round((solverProgress[solver.id].bytesDownloaded / Math.max(solverProgress[solver.id].totalBytes, 1)) * 100) }}%
+            </span>
+            <span v-else>Instalando...</span>
+          </span>
+          <span class="setting-desc" v-else-if="solver.state === 'error'" style="color: var(--color-error, #e74c3c)">
+            Erro: {{ solver.error ?? 'falha ao obter o solver' }}
+          </span>
+          <span class="setting-desc" v-else>Não instalado</span>
+        </div>
+        <button
+          class="btn-secondary"
+          :disabled="!!solverUpdating[solver.id] || solver.state === 'downloading' || solver.state === 'updating'"
+          @click="solver.state === 'absent' || solver.state === 'error' ? updateSolver(solver.id) : checkSolverUpdate(solver.id)"
+        >
+          {{ solverUpdating[solver.id] ? 'Verificando...' : (solver.state === 'absent' || solver.state === 'error') ? 'Instalar' : 'Verificar agora' }}
+        </button>
+      </div>
+    </div>
+
     <!-- Appearance section -->
     <div class="settings-section">
       <h3 class="section-title">{{ t('appearance') }}</h3>
@@ -678,6 +735,19 @@
 
       <div class="setting-row">
         <div class="setting-info">
+          <span class="setting-label">Extrair automaticamente</span>
+          <span class="setting-desc">Ao concluir, extrai .zip/.rar/.7z (bundlado, sem depender do sistema) — respeita grupos multi-parte, só extrai quando todas as partes chegarem</span>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" v-model="settings.autoExtract" @change="save" />
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-info">
           <span class="setting-label">Lista aprendida</span>
           <span class="setting-desc">A extração tenta primeiro as 20 senhas com mais acertos</span>
         </div>
@@ -883,6 +953,50 @@ async function onFfmpegPathChange(): Promise<void> {
   await loadFfmpegStatus()
 }
 
+interface SolverStatus {
+  id: string
+  name: string
+  version: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+  state: 'ready' | 'downloading' | 'error' | 'absent' | 'updating'
+  error?: string
+}
+
+const solverStatuses = ref<SolverStatus[]>([])
+const solverProgress = ref<Record<string, { bytesDownloaded: number; totalBytes: number }>>({})
+const solverUpdating = ref<Record<string, boolean>>({})
+let solverProgressCleanup: (() => void) | null = null
+
+async function loadSolverStatuses(): Promise<void> {
+  try {
+    solverStatuses.value = (await window.api.turnstile.statusAll()) as unknown as SolverStatus[]
+  } catch {
+    // ignora
+  }
+}
+
+async function updateSolver(id: string): Promise<void> {
+  solverUpdating.value = { ...solverUpdating.value, [id]: true }
+  try {
+    const result = (await window.api.turnstile.update(id)) as unknown as SolverStatus
+    solverStatuses.value = solverStatuses.value.map((s) => (s.id === id ? result : s))
+  } finally {
+    solverUpdating.value = { ...solverUpdating.value, [id]: false }
+    solverProgress.value = { ...solverProgress.value, [id]: undefined as never }
+  }
+}
+
+async function checkSolverUpdate(id: string): Promise<void> {
+  solverUpdating.value = { ...solverUpdating.value, [id]: true }
+  try {
+    const result = (await window.api.turnstile.checkUpdate(id)) as unknown as SolverStatus
+    if (result) solverStatuses.value = solverStatuses.value.map((s) => (s.id === id ? result : s))
+  } finally {
+    solverUpdating.value = { ...solverUpdating.value, [id]: false }
+  }
+}
+
 let saveFeedbackTimer: ReturnType<typeof setTimeout> | null = null
 const saveFeedback = ref('')
 const saveFeedbackError = ref(false)
@@ -934,6 +1048,10 @@ onMounted(async () => {
     ffmpegProgress.value = e
     ffmpegStatus.value = { ...ffmpegStatus.value, state: 'downloading' }
   })
+  await loadSolverStatuses()
+  solverProgressCleanup = window.api.turnstile.onProgress((e) => {
+    solverProgress.value = { ...solverProgress.value, [e.solverId]: e }
+  })
 })
 
 onUnmounted(() => {
@@ -943,6 +1061,7 @@ onUnmounted(() => {
   )
   ytdlpProgressCleanup?.()
   ffmpegProgressCleanup?.()
+  solverProgressCleanup?.()
 })
 
 function onExternalSettingsUpdated(event: CustomEvent<AppSettingsSnapshot>): void {

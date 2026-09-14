@@ -19,6 +19,7 @@ export const defaultPublicSettings: PersistedSettings = {
   clipboardMonitorEnabled: false,
   accentColor: undefined,
   duplicateAction: 'rename',
+  autoExtract: true,
   uiDensity: 'comfortable',
   reorderAnimations: true,
   interceptMode: 'off',
