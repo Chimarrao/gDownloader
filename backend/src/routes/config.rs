@@ -38,6 +38,10 @@ pub async fn update_tor_runtime(
     Json(req): Json<TorRuntimeRequest>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     *state.isolated_tor_port.lock().await = req.socks_port.filter(|port| *port > 0);
+    // Sem isso, ligar o Tor nunca acordava sozinho os downloads que estavam
+    // esperando por ele (tor_required/auto_tor_on_limit) — só eram pegos na
+    // próxima vez que ALGO MAIS disparasse o scheduler.
+    schedule_pending_downloads(state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
