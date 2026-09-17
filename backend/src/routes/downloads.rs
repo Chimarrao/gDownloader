@@ -2420,7 +2420,12 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                         }
                         let _ = rotate_download_tor_route(&state, &id, &settings).await;
                     }
-                    let retry_delay_secs = if isolated_tor_retry { 3 } else { retry_policy.retry_delay_secs };
+                    // 3s era rápido demais: cada rotação de circuito Tor nem tinha tempo
+                    // de terminar de estabelecer antes de já ser abandonada pela próxima
+                    // tentativa — visto ao vivo passando de 100 trocas de circuito em
+                    // minutos sem NUNCA baixar um byte sequer. Dá um respiro de verdade
+                    // pra cada circuito novo tentar.
+                    let retry_delay_secs = if isolated_tor_retry { 20 } else { retry_policy.retry_delay_secs };
                     let retry_at = current_unix_secs().saturating_add(retry_delay_secs);
                     let wait_status = if is_rate_limit && !isolated_tor_retry { DownloadStatus::RateLimited } else { DownloadStatus::Pending };
                     // `retry_at` sempre agenda o próximo teste interno, mas não é
@@ -2706,7 +2711,11 @@ pub async fn enforce_tor_kill_switch(state: &AppState) {
 }
 
 /// Teto de tentativas no modo Tor isolado antes de desistir e marcar erro.
-const TOR_LIMIT_MAX_RETRIES: u32 = 50;
+// Com o intervalo de 20s entre rotações, 300 tentativas ~= 100min de
+// persistência real antes de desistir — hosts como o Mega bloqueiam bastante
+// IP de saída do Tor (compartilhado por muita gente), então é normal levar
+// bem mais que algumas tentativas até cair numa saída limpa.
+const TOR_LIMIT_MAX_RETRIES: u32 = 300;
 
 /// Puro e testável: indica se o modo Tor esgotou o teto de tentativas.
 fn tor_limit_retry_exhausted(tor_limit_retries: u32) -> bool {
