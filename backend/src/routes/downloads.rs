@@ -596,7 +596,10 @@ pub async fn add_download_internal(
         thumbnail_data: None,
         channel_name: file_info.channel_name,
         channel_thumbnail_url: file_info.channel_thumbnail_url,
-        auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(false),
+        // Padrão ligado: se o download bater rate-limit e o Tor estiver
+        // disponível, usa um circuito isolado (com rotação) automaticamente em
+        // vez de ficar reusando a mesma rota/IP já bloqueado pelo host.
+        auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(true),
         tor_required: req.tor_required.unwrap_or(false),
     };
 
@@ -1180,6 +1183,18 @@ pub async fn retry_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    // Item marcado como corrompido: os bytes já baixados FALHARAM na verificação
+    // de integridade, então "retentar" preservando-os nunca resolve — o arquivo
+    // final continua corrompido. Trata como reinício do zero nesse caso.
+    let is_corrupted = {
+        let map = state.downloads.lock().await;
+        map.get(&id)
+            .map(|download| matches!(download.status, DownloadStatus::Corrupted))
+            .unwrap_or(false)
+    };
+    if is_corrupted {
+        return restart_download_internal(state, id, true, true).await;
+    }
     // Retentar preserva o progresso parcial (retoma) e não apaga o arquivo.
     restart_download_internal(state, id, false, false).await
 }
@@ -2357,27 +2372,35 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                 // Flag por-download: "usar Tor ao atingir o limite". Só entra em
                 // cena DEPOIS de esgotar as tentativas normais (attempt >= max_retries):
                 // primeiro tenta o máximo pela rede normal, só então troca pro Tor.
-                let (download_auto_tor, max_retries) = {
+                let (download_auto_tor, download_tor_required, max_retries) = {
                     let map = state.downloads.lock().await;
                     match map.get(&id) {
                         // Relê `max_retries` do registro a cada decisão para que mudar
                         // o limite de tentativas nas configurações valha AO VIVO,
                         // inclusive para downloads que já estavam rodando.
-                        Some(d) => (d.auto_tor_on_limit, d.max_retries),
-                        None => (false, max_retries),
+                        Some(d) => (d.auto_tor_on_limit, d.tor_required, d.max_retries),
+                        None => (false, false, max_retries),
                     }
                 };
                 let isolated_tor_port = *state.isolated_tor_port.lock().await;
                 let normal_retries_exhausted = attempt >= max_retries;
-                let isolated_tor_retry = should_assign_isolated_route(download_auto_tor, isolated_tor_port)
-                    && normal_retries_exhausted
+                let wants_tor = should_assign_isolated_route(download_auto_tor, isolated_tor_port)
+                    || should_assign_isolated_route(download_tor_required, isolated_tor_port);
+                // Rate-limit (cota/limite do host) não melhora com "mais uma tentativa
+                // normal" — o mesmo IP só vai levar o mesmo bloqueio de novo. Com
+                // max_retries=infinito (sentinela u32::MAX), "esgotar tentativas
+                // normais" nunca acontecia de verdade, e a rotação de circuito Tor
+                // nunca era acionada. Para rate-limit, escala pro Tor na hora; para
+                // outros erros, mantém a regra original (só escala depois de esgotar).
+                let isolated_tor_retry = wants_tor
+                    && (is_rate_limit || normal_retries_exhausted)
                     && !is_permanent;
                 // Retenta enquanto: for rate-limit, ainda houver orçamento normal, ou
                 // o download estiver marcado p/ Tor (segue tentando até o Tor entrar).
                 // Nunca retenta erros permanentes (removed/premium/unsupported).
                 let should_retry = !is_permanent
                     && !is_premium_required
-                    && (is_rate_limit || attempt < max_retries || download_auto_tor);
+                    && (is_rate_limit || attempt < max_retries || download_auto_tor || download_tor_required);
                 if should_retry {
                     let settings = state.db.lock().ok()
                         .and_then(|db| crate::db::load_public_settings(&db).ok())
@@ -2640,6 +2663,48 @@ fn tor_required_ready(tor_required: bool, isolated_tor_port: Option<u16>) -> boo
     !tor_required || isolated_tor_port.is_some()
 }
 
+/// Rede de segurança do kill switch: roda a cada 1s (ver lib.rs). O filtro em
+/// `schedule_pending_downloads` só impede um download `tor_required` de ser
+/// SELECIONADO pra começar — mas não cobre um download que já estava rodando
+/// quando a flag foi ligada, nem o caso do próprio provider reconectar sozinho
+/// (loop de retry de rede) sem re-checar a rota. Este sweep varre TODOS os
+/// downloads Downloading a cada tick e aborta/pausa na hora qualquer um que
+/// esteja com tor_required=true mas sem estar de fato roteado via Tor —
+/// garantindo que a promessa "nunca sem Tor" vale sempre, não só no início.
+pub async fn enforce_tor_kill_switch(state: &AppState) {
+    let offending: Vec<String> = {
+        let map = state.downloads.lock().await;
+        map.values()
+            .filter(|d| {
+                d.status == DownloadStatus::Downloading
+                    && d.tor_required
+                    && d
+                        .network_route
+                        .as_ref()
+                        .map(|route| route.mode != "tor")
+                        .unwrap_or(true)
+            })
+            .map(|d| d.id.clone())
+            .collect()
+    };
+    for id in offending {
+        pause_one(
+            state,
+            &id,
+            "Kill switch Tor: conexão sem circuito Tor detectada, pausando imediatamente",
+        )
+        .await;
+        let mut map = state.downloads.lock().await;
+        if let Some(dl) = map.get_mut(&id) {
+            dl.status = DownloadStatus::Pending;
+            dl.error = Some("Aguardando Tor (kill switch ativo para este download)".to_string());
+            dl.error_kind = Some("tor_required".to_string());
+        }
+        drop(map);
+        persist_download_snapshot(state, &id).await;
+    }
+}
+
 /// Teto de tentativas no modo Tor isolado antes de desistir e marcar erro.
 const TOR_LIMIT_MAX_RETRIES: u32 = 50;
 
@@ -2658,6 +2723,7 @@ async fn ensure_download_network_route(
     let global_tor = settings.proxy_mode == "tor" && settings.start_tor;
 
     let mut changed = false;
+    let mut cleared_stale_route = false;
     let route = {
         let mut map = state.downloads.lock().await;
         let Some(download) = map.get_mut(id) else {
@@ -2668,19 +2734,32 @@ async fn ensure_download_network_route(
         let want_isolated = should_assign_isolated_route(download.auto_tor_on_limit, isolated_port)
             || should_assign_isolated_route(download.tor_required, isolated_port);
         if !global_tor && !want_isolated {
-            return None;
+            // Limpa uma rota Tor antiga que sobrou de quando a flag estava ligada —
+            // sem isso a UI continuava mostrando "Tor isolado" com um IP antigo
+            // mesmo depois do usuário desligar, embora a conexão real já caísse
+            // pra direta (o campo só ficava desatualizado, não afetava o download).
+            if download.network_route.take().is_some() {
+                cleared_stale_route = true;
+            }
+            None
+        } else {
+            let needs_new = download
+                .network_route
+                .as_ref()
+                .map(|route| route.mode != "tor" || route.proxy_username.is_none() || route.proxy_password.is_none())
+                .unwrap_or(true);
+            if needs_new {
+                download.network_route = Some(new_tor_route(id, settings, 0, isolated_port));
+                changed = true;
+            }
+            download.network_route.clone()
         }
-        let needs_new = download
-            .network_route
-            .as_ref()
-            .map(|route| route.mode != "tor" || route.proxy_username.is_none() || route.proxy_password.is_none())
-            .unwrap_or(true);
-        if needs_new {
-            download.network_route = Some(new_tor_route(id, settings, 0, isolated_port));
-            changed = true;
-        }
-        download.network_route.clone()
     };
+
+    if cleared_stale_route {
+        persist_download_snapshot(state, id).await;
+        return None;
+    }
 
     if changed {
         persist_download_snapshot(state, id).await;
@@ -3986,8 +4065,13 @@ fn has_server_reported_wait(message: &str) -> bool {
         || providers::extract_wait_seconds_from_text(message).is_some()
 }
 
-fn provider_parallel_limit(provider: &str) -> Option<usize> {
-    providers::capabilities_for_provider_name(provider).max_parallel_downloads_free
+// Usuário pediu explicitamente: o limite de downloads simultâneos configurado
+// (ex.: 10) deve valer por inteiro, sem nenhum provider capando sozinho em 1
+// (Mega, 1Fichier, Katfile etc. tinham essa trava pra evitar 509/bloqueio por
+// conexões paralelas — mantém o dado em capabilities_for_provider_name caso
+// precise voltar, só não aplica mais como hard-cap aqui).
+fn provider_parallel_limit(_provider: &str) -> Option<usize> {
+    None
 }
 
 fn parse_premium_required_error(message: &str) -> Option<String> {
@@ -4395,6 +4479,52 @@ pub async fn set_auto_tor(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(serde::Deserialize)]
+pub struct TorRequiredRequest {
+    pub enabled: bool,
+}
+
+/// Liga/desliga o kill switch de Tor de um download já existente (ex.: o usuário
+/// marcou "Tor obrigatório" na captura mas o download já tinha sido criado sem
+/// isso). Ligar aqui não mata uma conexão direta já aberta sozinho — por isso
+/// forçamos um "retentar" (preserva bytes) logo em seguida, que reavalia a rota
+/// de rede no início do próximo ciclo e já entra isolado no Tor.
+pub async fn set_tor_required(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TorRequiredRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let was_downloading = {
+        let mut map = state.downloads.lock().await;
+        let Some(dl) = map.get_mut(&id) else {
+            return Err((StatusCode::NOT_FOUND, Json(ApiError::new("Download não encontrado"))));
+        };
+        dl.tor_required = req.enabled;
+        matches!(dl.status, DownloadStatus::Downloading)
+    };
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(
+        &state,
+        &id,
+        "network",
+        if req.enabled {
+            "Tor obrigatório: ativado para este download (kill switch)"
+        } else {
+            "Tor obrigatório: desativado para este download"
+        },
+    );
+    // Se ligou o kill switch num download que já está baixando fora do Tor,
+    // aborta a conexão em andamento e reinicia (preservando os bytes) pra
+    // forçar a reavaliação da rota AGORA, em vez de só valer na próxima queda.
+    // restart_download_internal recusa reiniciar algo com status Downloading,
+    // então pausamos (aborta a task) antes.
+    if req.enabled && was_downloading {
+        pause_one(&state, &id, "Kill switch Tor: reiniciando rota de rede").await;
+        return restart_download_internal(state, id, false, false).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4476,20 +4606,24 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_respects_provider_parallel_limit() {
-        let active = std::collections::HashMap::from([(String::from("BRFiles"), 1usize)]);
+    fn scheduler_has_no_hard_provider_cap() {
+        // Usuário pediu explicitamente: o limite configurado (ex.: 10) vale por
+        // inteiro, sem nenhum provider capando sozinho em 1 conexão simultânea —
+        // mesmo hosts que antes tinham essa trava (Mega, BRFiles) agora só
+        // entram na ordenação de fairness, não num hard-cap.
+        let active = std::collections::HashMap::from([(String::from("Mega"), 1usize)]);
         let selected = select_downloads_to_start(
             vec![
-                candidate("a", "BRFiles", 10, 0),
-                candidate("b", "BRFiles", 11, 0),
-                candidate("c", "Mega", 12, 0),
+                candidate("a", "Mega", 10, 0),
+                candidate("b", "Mega", 11, 0),
+                candidate("c", "BRFiles", 12, 0),
             ],
             &active,
             3,
         );
 
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["c".to_string()]);
+        assert_eq!(ids, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
     }
 
     #[test]
@@ -4506,12 +4640,12 @@ mod tests {
         );
 
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["b".to_string()]);
+        assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
     }
 
     #[test]
-    fn mega_free_queue_uses_one_stream_per_ip() {
-        assert_eq!(provider_parallel_limit("Mega"), Some(1));
+    fn mega_free_queue_has_no_hard_provider_cap() {
+        assert_eq!(provider_parallel_limit("Mega"), None);
     }
 
     #[test]
@@ -4786,9 +4920,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_respects_host_parallel_cap() {
+    fn scheduler_has_no_host_parallel_cap() {
+        // 1Fichier já tinha 1 ativo, mas sem hard-cap por provider ambos entram
+        // (limitados só pelo slots/prioridade globais).
         let mut active = std::collections::HashMap::new();
-        active.insert("1Fichier".to_string(), 1); // cap free = 1
+        active.insert("1Fichier".to_string(), 1);
 
         let selected = select_downloads_to_start(
             vec![
@@ -4800,7 +4936,7 @@ mod tests {
         );
 
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["b".to_string()]);
+        assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
     }
 
     #[test]

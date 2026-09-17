@@ -184,6 +184,7 @@ interface RendererApi {
     force: (id: string) => Promise<void>;
     setPriority: (id: string, priority: number) => Promise<void>;
     setAutoTor: (id: string, enabled: boolean) => Promise<void>;
+    setTorRequired: (id: string, enabled: boolean) => Promise<void>;
     setSpeedLimit: (id: string, speedLimitKib: number) => Promise<void>;
     pauseAll: () => Promise<{ paused: number }>;
     resumeAll: () => Promise<{ resumed: number }>;

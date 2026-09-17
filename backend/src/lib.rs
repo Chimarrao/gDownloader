@@ -117,6 +117,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
             loop {
                 interval.tick().await;
+                routes::downloads::enforce_tor_kill_switch(&state_clone).await;
                 let (total_speed, per_host) = {
                     let downloads = state_clone.downloads.lock().await;
                     let mut total = 0u64;
@@ -207,6 +208,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/downloads/:id", delete(routes::downloads::cancel_download))
         .route("/downloads/:id/pin", post(routes::downloads::toggle_pin_download))
         .route("/downloads/:id/auto-tor", post(routes::downloads::set_auto_tor))
+        .route("/downloads/:id/tor-required", post(routes::downloads::set_tor_required))
         .route("/captcha", get(routes::captcha::captcha_page))
         .route("/captcha/submit", post(routes::captcha::submit_captcha))
         .route("/mirrors/search", get(routes::mirrors::search_mirrors))

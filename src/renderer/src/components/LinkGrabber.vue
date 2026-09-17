@@ -546,6 +546,7 @@ const selectedEntries = computed<QueueEntry[]>(() => {
           destDir: row.destDir || defaultOutputDir(),
           expectedHash: row.expectedHash,
           filename: row.customName,
+          torRequired: row.torRequired,
         })
         continue
       }

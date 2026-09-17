@@ -180,34 +180,7 @@
               </template>
               <template v-else>
                 <div class="row-title" :title="effectiveName(row)">{{ effectiveName(row) }}</div>
-                <button
-                  class="row-name-btn"
-                  type="button"
-                  title="Renomear arquivo antes de baixar"
-                  @click.stop="startRename(row)"
-                >
-                  <i class="pi pi-pencil"></i>
-                </button>
-                <button
-                  class="row-name-btn"
-                  type="button"
-                  :title="copiedUrl === row.url ? 'Copiado!' : 'Copiar nome do arquivo'"
-                  @click.stop="copyName(row)"
-                >
-                  <i class="pi" :class="copiedUrl === row.url ? 'pi-check' : 'pi-copy'"></i>
-                </button>
               </template>
-              <span
-                class="row-badge"
-                :class="{
-                  'is-loading': row.loading,
-                  'is-online': !row.loading && !row.error && !!row.module,
-                  'is-error': !!row.error,
-                  'is-folder': row.info?.isFolder,
-                }"
-              >
-                {{ rowBadgeLabel(row) }}
-              </span>
               <span
                 v-if="row.alreadyKnown"
                 class="row-badge is-known"
@@ -267,6 +240,38 @@
               >
                 Alterar
               </button>
+            </div>
+          </div>
+
+          <div class="row-actions">
+            <div class="row-actions-top">
+              <button
+                class="row-name-btn"
+                type="button"
+                title="Renomear arquivo antes de baixar"
+                @click.stop="startRename(row)"
+              >
+                <i class="pi pi-pencil"></i>
+              </button>
+              <button
+                class="row-name-btn"
+                type="button"
+                :title="copiedUrl === row.url ? 'Copiado!' : 'Copiar nome do arquivo'"
+                @click.stop="copyName(row)"
+              >
+                <i class="pi" :class="copiedUrl === row.url ? 'pi-check' : 'pi-copy'"></i>
+              </button>
+              <span
+                class="row-badge"
+                :class="{
+                  'is-loading': row.loading,
+                  'is-online': !row.loading && !row.error && !!row.module,
+                  'is-error': !!row.error,
+                  'is-folder': row.info?.isFolder,
+                }"
+              >
+                {{ rowBadgeLabel(row) }}
+              </span>
               <label
                 class="tor-required-check"
                 title="Kill switch: se marcado, este download nunca roda sem um circuito Tor ativo — nunca cai pra conexão direta silenciosamente."
@@ -276,31 +281,30 @@
                   :checked="!!row.torRequired"
                   @change="onUpdateTorRequired(row, $event)"
                 />
-                <i class="pi pi-shield"></i>
-                <span>Tor obrigatório</span>
+                <span class="tor-required-icon" v-html="torIconSvg"></span>
+                <span>Tor</span>
               </label>
             </div>
-          </div>
-
-          <div class="row-actions">
-            <button
-              v-if="canSearchMirrors(row)"
-              class="row-action-btn is-mirror"
-              :class="{ 'is-active': activeMirrorRowUrl === row.url }"
-              :title="t('linkGrabberOpenMirrorsTitle')"
-              data-tour="mirrors"
-              @click="emit('open-mirrors', row)"
-            >
-              <i class="pi pi-sitemap"></i>
-            </button>
-            <button
-              v-if="(supportsChildSelection(row) && (row.info?.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
-              class="row-action-btn expand-btn"
-              :title="row.expanded ? t('closeDetails') : t('openDetails')"
-              @click="emit('toggle-expanded', row)"
-            >
-              <i class="pi" :class="row.expanded ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
-            </button>
+            <div class="row-actions-bottom">
+              <button
+                v-if="canSearchMirrors(row)"
+                class="row-action-btn is-mirror"
+                :class="{ 'is-active': activeMirrorRowUrl === row.url }"
+                :title="t('linkGrabberOpenMirrorsTitle')"
+                data-tour="mirrors"
+                @click="emit('open-mirrors', row)"
+              >
+                <i class="pi pi-sitemap"></i>
+              </button>
+              <button
+                v-if="(supportsChildSelection(row) && (row.info?.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
+                class="row-action-btn expand-btn"
+                :title="row.expanded ? t('closeDetails') : t('openDetails')"
+                @click="emit('toggle-expanded', row)"
+              >
+                <i class="pi" :class="row.expanded ? 'pi-chevron-up' : 'pi-chevron-down'"></i>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -519,6 +523,7 @@ import VirtualRows from './VirtualRows.vue'
 import type { CapturedRow, SelectableChild } from './link-grabber-model'
 import { effectiveSize } from '../utils/display-size'
 import { formatMediaDuration } from '../utils/format'
+import torIconSvg from '../assets/tor.svg?raw'
 
 const props = defineProps({
   rows: {
@@ -1312,6 +1317,17 @@ function suffixFps(source: string, label: string): string {
   accent-color: #8b5cf6;
 }
 
+.tor-required-icon {
+  display: inline-flex;
+  width: 13px;
+  height: 13px;
+}
+
+.tor-required-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
+}
+
 .youtube-langs-input {
   margin-top: 4px;
   width: 100%;
@@ -1325,10 +1341,20 @@ function suffixFps(source: string, label: string): string {
 }
 
 .row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.row-actions-top,
+.row-actions-bottom {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
 }
 
 .row-action-btn {

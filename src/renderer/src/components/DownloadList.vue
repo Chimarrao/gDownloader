@@ -348,11 +348,50 @@
             :style="leadingIconStyle(item)"
             :title="moduleLabel(item.moduleId)"
           ></div>
+          <div class="package-parent-data">
           <div class="package-parent-copy">
             <strong>{{ packageNameFor(item) }}</strong>
             <span>
               {{ moduleLabel(item.moduleId) }} · {{ packageItemCount(item.packageId) }} arquivo(s)
             </span>
+          </div>
+          <div class="package-parent-size">
+            <template v-if="packageAggregate(item.packageId).totalSize > 0">
+              {{ formatBytes(packageAggregate(item.packageId).totalDownloaded) }} /
+              {{ formatBytes(packageAggregate(item.packageId).totalSize) }}
+            </template>
+            <template v-else>—</template>
+          </div>
+          <div class="package-parent-status">
+            <span
+              class="status-badge"
+              :class="packageAggregate(item.packageId).mixed ? 'badge-mixed' : `badge-${packageAggregate(item.packageId).representativeMember?.status}`"
+            >
+              <span
+                class="badge-dot"
+                :class="packageAggregate(item.packageId).mixed ? 'dot-mixed' : `dot-${packageAggregate(item.packageId).representativeMember?.status}`"
+              ></span>
+              {{ packageAggregate(item.packageId).mixed
+                ? 'Misto'
+                : (packageAggregate(item.packageId).representativeMember
+                    ? statusTextValue(packageAggregate(item.packageId).representativeMember!)
+                    : '—') }}
+            </span>
+            <div class="progress-track">
+              <div
+                class="progress-fill"
+                :style="{ width: packageAggregate(item.packageId).percent + '%', background: packageProgressColor(packageAggregate(item.packageId)) }"
+              ></div>
+            </div>
+          </div>
+          <div class="package-parent-speed">
+            {{ packageAggregate(item.packageId).totalSpeedBps > 0 ? formatSpeed(packageAggregate(item.packageId).totalSpeedBps) : '—' }}
+          </div>
+          <div class="package-parent-eta">
+            {{ packageAggregate(item.packageId).maxEtaSec > 0 ? `${formatEta(packageAggregate(item.packageId).maxEtaSec)} restante` : '—' }}
+          </div>
+          <div class="package-parent-date">
+            {{ packageAggregate(item.packageId).latestAddedAt ? formatDateTime(packageAggregate(item.packageId).latestAddedAt) : '—' }}
           </div>
           <div class="package-parent-actions" @click.stop>
             <button
@@ -381,6 +420,7 @@
               :class="isPackageCollapsed(item.packageId) ? 'pi-chevron-right' : 'pi-chevron-down'"
               aria-hidden="true"
             ></i>
+          </div>
           </div>
         </div>
         <div
@@ -571,8 +611,15 @@
             </div>
 
             <div class="table-status-cell">
-              <span v-if="hasColumn('status')" class="status-badge" :class="`badge-${item.status}`">
-                <span class="badge-dot" :class="`dot-${item.status}`"></span>
+              <span
+                v-if="hasColumn('status')"
+                class="status-badge"
+                :class="[`badge-${item.status}`, { 'badge-connecting-tor': isConnectingViaTorNow(item, nowTick) }]"
+              >
+                <span
+                  class="badge-dot"
+                  :class="[`dot-${item.status}`, { 'dot-connecting-tor': isConnectingViaTorNow(item, nowTick) }]"
+                ></span>
                 {{ showYouTubeStages(item) ? youtubeCurrentStageLabel(item) : statusTextValue(item) }}
               </span>
               <div v-if="hasColumn('progress')" class="progress-track">
@@ -1009,21 +1056,11 @@
 
               <div v-else-if="activeDetailTab(item.id) === 'general'" class="detail-grid">
                 <div><span>ID</span><strong>{{ item.id }}</strong></div>
-                <div><span>Host</span><strong>{{ moduleLabel(item.moduleId) }}</strong></div>
-                <div>
-                  <span>Status</span>
-                  <strong class="status-detail-value" :style="{ color: statusColor(item.status) }">
-                    {{ statusTextValue(item) }} · {{ statusColor(item.status) }}
-                  </strong>
-                </div>
                 <div><span>Tamanho</span><strong>{{ formatBytes(item.size) }}</strong></div>
                 <div v-if="item.durationSecs"><span>Duração</span><strong>{{ formatMediaDuration(item.durationSecs) }}</strong></div>
-                <div><span>Speed</span><strong>{{ formatSpeed(effectiveSpeedValue(item)) }}</strong></div>
-                <div><span>ETA</span><strong>{{ effectiveEtaValue(item) > 0 ? formatEta(effectiveEtaValue(item)) : '-' }}</strong></div>
                 <div><span>Rede</span><strong>{{ networkRouteLabel(item) }}</strong></div>
                 <div v-if="item.networkRoute?.isolated"><span>Circuito</span><strong>{{ item.networkRoute.proxyUsername ?? 'Isolado' }} · {{ item.networkRoute.circuitChanges ?? 0 }} troca(s)</strong></div>
                 <div><span>Adicionado</span><strong>{{ formatDateTime(item.addedAt) }}</strong></div>
-                <div><span>Destino</span><strong>{{ item.outputPath || '-' }}</strong></div>
                 <div v-if="itemMayNeedArchivePassword(item)" class="detail-wide archive-password-editor">
                   <span>Senha do arquivo</span>
                   <div>
@@ -1151,6 +1188,10 @@
       <button @click="toggleContextAutoTor">
         <span class="ctx-tor-icon" v-html="torIconSvg"></span>
         {{ contextMenuItem.autoTorOnLimit ? 'Desativar Tor ao atingir limite' : 'Usar Tor ao atingir limite' }}
+      </button>
+      <button @click="toggleContextTorRequired" :title="'Kill switch: nunca roda sem um circuito Tor ativo'">
+        <span class="ctx-tor-icon" v-html="torIconSvg"></span>
+        {{ contextMenuItem.torRequired ? 'Desativar Tor obrigatório' : 'Tor obrigatório (kill switch)' }}
       </button>
       <button v-if="contextCan('canOpenCaptcha')" @click="openContextCaptcha"><i class="pi pi-shield"></i>Resolver captcha</button>
       <button v-if="contextMenuItem.status === 'complete' && contextMenuItem.outputPath && isExtractableArchive(contextMenuItem.outputPath)" @click="extractContextArchive">
@@ -1303,13 +1344,13 @@ import {
   errorKindI18nKey,
   getDownloadActions,
   isClearable,
+  isConnectingViaTorNow,
   itemNeedsCountdown,
   resolveErrorKind,
   statusTextKey,
   isTerminal,
   isWaitingRetry,
   retryCountdown,
-  STATUS_COLORS,
   type DownloadSortMode,
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatMediaDuration, formatSpeed } from '../utils/format'
@@ -1345,10 +1386,42 @@ const emit = defineEmits<{
   (e: 'queued-bytes', bytes: number): void
   (e: 'open-grabber'): void
   (e: 'tor-changed'): void
+  // Algum download com kill switch (tor_required) está bloqueado esperando Tor.
+  (e: 'tor-required-blocked', blocked: boolean): void
 }>()
 
 // ── State ──────────────────────────────────────────────────
 const items = ref<DownloadItem[]>([])
+// Kill switch (tor_required) bloqueado esperando o Tor conectar — avisa o App
+// pra ligar o Tor automaticamente (usuário pediu: não faz sentido ficar
+// parado esperando clique manual).
+const hasTorRequiredBlocked = computed(() =>
+  items.value.some((item) => item.errorKind === 'tor_required'),
+)
+watch(hasTorRequiredBlocked, (blocked) => emit('tor-required-blocked', blocked))
+
+// Avisa (notificação nativa) quando um download entra em rate-limit real do
+// host (ex.: cota de tráfego do Mega) — o app continua tentando sozinho
+// (auto_tor_on_limit), mas o usuário pediu pra não ficar silencioso sobre isso.
+const rateLimitNotified = new Set<string>()
+watch(items, (list) => {
+  const stillLimited = new Set<string>()
+  for (const item of list) {
+    if (item.errorKind === 'rate_limit' || item.errorKind === 'rate_limit_server') {
+      stillLimited.add(item.id)
+      if (!rateLimitNotified.has(item.id)) {
+        rateLimitNotified.add(item.id)
+        void window.api.system.notify(
+          'Limite do servidor atingido',
+          `${item.title || item.url}: ${item.error || 'aguardando liberação, tentando automaticamente'}`,
+        ).catch(() => null)
+      }
+    }
+  }
+  for (const id of [...rateLimitNotified]) {
+    if (!stillLimited.has(id)) rateLimitNotified.delete(id)
+  }
+}, { deep: true })
 // Throttle da EXIBIÇÃO de tempo/velocidade por download (id → último update ms).
 // O percent/barra atualiza sempre; os NÚMEROS (velocidade e ETA) só a cada ~1.2s,
 // pra não ficarem piscando — inclusive com várias partes (mostra o ETA agregado).
@@ -1540,6 +1613,58 @@ function packageItemCount(packageId: string | undefined): number {
   return packageId ? packageMembers.value.get(packageId)?.length ?? 0 : 0
 }
 
+interface PackageAggregate {
+  totalSize: number
+  totalDownloaded: number
+  percent: number
+  mixed: boolean
+  representativeMember: DownloadItem | null
+  totalSpeedBps: number
+  maxEtaSec: number
+  latestAddedAt: number
+}
+
+// Resumo do pacote a partir dos filhos: tamanho somado, percentual médio
+// (ponderado por tamanho), status "misto" quando os filhos divergem, velocidade
+// somada dos que estão baixando agora e o tempo restante do filho mais lento
+// (o pacote só termina quando o último arquivo terminar).
+function packageAggregate(packageId: string | undefined): PackageAggregate {
+  const members = packageId ? packageMembers.value.get(packageId) ?? [] : []
+  const totalSize = members.reduce((sum, member) => sum + displayTotal(member), 0)
+  const totalDownloaded = members.reduce(
+    (sum, member) => sum + Math.floor((member.percent / 100) * displayTotal(member)),
+    0,
+  )
+  const percent = totalSize > 0 ? Math.min(100, Math.round((totalDownloaded / totalSize) * 100)) : 0
+  const statuses = new Set(members.map((member) => member.status))
+  const totalSpeedBps = members.reduce(
+    (sum, member) => sum + (member.status === 'downloading' ? effectiveSpeedValue(member) : 0),
+    0,
+  )
+  const maxEtaSec = members.reduce(
+    (max, member) => (member.status === 'downloading' ? Math.max(max, effectiveEtaValue(member)) : max),
+    0,
+  )
+  const latestAddedAt = members.reduce((max, member) => Math.max(max, member.addedAt || 0), 0)
+  return {
+    totalSize,
+    totalDownloaded,
+    percent,
+    mixed: statuses.size > 1,
+    representativeMember: members[0] ?? null,
+    totalSpeedBps,
+    maxEtaSec,
+    latestAddedAt,
+  }
+}
+
+// Mesma paleta de status usada nos filhos (getProgressColor) — "Misto" fica
+// neutro porque não representa nenhum status específico.
+function packageProgressColor(agg: PackageAggregate): string {
+  if (agg.mixed || !agg.representativeMember) return 'linear-gradient(90deg, #8b5cf6, #a78bfa)'
+  return getProgressColor(agg.representativeMember)
+}
+
 function isPackageCollapsed(packageId: string | undefined): boolean {
   return !!packageId && !!collapsedPackages.value[packageId]
 }
@@ -1598,9 +1723,14 @@ const statSpeedChartArea = computed(() => `${statSpeedChartPath.value} L360 150 
 const statSpeedSmoothed = ref(0)
 function recordStatSpeedSample(speed: number): void {
   const raw = Math.max(0, Number.isFinite(speed) ? speed : 0)
-  statSpeedSmoothed.value = statSpeedSmoothed.value > 0
-    ? Math.round(statSpeedSmoothed.value * 0.72 + raw * 0.28)
-    : raw
+  // raw=0 (nada mais baixando agora) some direto pra 0 — a suavização é só pra
+  // evitar onda quadrada ENTRE downloads ativos, não pra atrasar o card
+  // mostrando velocidade fantasma por ~13s depois que tudo já terminou/pausou.
+  statSpeedSmoothed.value = raw === 0
+    ? 0
+    : statSpeedSmoothed.value > 0
+      ? Math.round(statSpeedSmoothed.value * 0.72 + raw * 0.28)
+      : raw
   statSpeedHistory.value = [...statSpeedHistory.value.slice(1), statSpeedSmoothed.value]
 }
 
@@ -1959,9 +2089,11 @@ function smoothSpeedSample(id: string, rawSpeed: number): number {
   rawSpeeds.value = { ...rawSpeeds.value, [id]: Math.max(0, Number.isFinite(rawSpeed) ? rawSpeed : 0) }
   const previous = smoothedSpeeds.value[id] ?? 0
   if (!Number.isFinite(rawSpeed) || rawSpeed <= 0) {
-    const decayed = previous > 1024 ? Math.round(previous * 0.82) : 0
-    smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: decayed }
-    return decayed
+    // rawSpeed=0 (progresso realmente parou) some direto — decair aos poucos
+    // fazia o card mostrar velocidade residual por vários segundos mesmo
+    // depois do download/pasta já ter terminado.
+    smoothedSpeeds.value = { ...smoothedSpeeds.value, [id]: 0 }
+    return 0
   }
   const cappedRaw = Math.min(rawSpeed, 200 * 1024 * 1024)
   const spikeLimited = previous > 0 ? Math.min(cappedRaw, previous * 3 + 512 * 1024) : cappedRaw
@@ -3186,6 +3318,15 @@ async function toggleContextPin(): Promise<void> {
   if (item) await togglePin(item.id)
 }
 
+async function toggleContextTorRequired(): Promise<void> {
+  const item = contextMenuItem.value
+  closeContextMenu()
+  if (!item) return
+  const next = !item.torRequired
+  await window.api.downloads.setTorRequired(item.id, next).catch(() => null)
+  item.torRequired = next
+}
+
 async function toggleContextAutoTor(): Promise<void> {
   const item = contextMenuItem.value
   closeContextMenu()
@@ -3522,10 +3663,6 @@ function sameYouTubeSelection(left: string, right: string): boolean {
 function youtubeFragmentValue(url: string, key: string): string {
   const fragment = url.split('#')[1] ?? ''
   return new URLSearchParams(fragment).get(key) ?? ''
-}
-
-function statusColor(status: DownloadItem['status']): string {
-  return STATUS_COLORS[status] ?? '#64748b'
 }
 
 function actionsFor(item: DownloadItem): Record<string, boolean> {
@@ -5051,6 +5188,11 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   color: var(--status-downloading);
 }
 
+.badge-connecting-tor {
+  background: rgba(139, 92, 246, 0.16);
+  color: #8b5cf6;
+}
+
 .badge-verifying {
   background: rgba(56, 189, 248, 0.15);
   color: #38bdf8;
@@ -5087,6 +5229,10 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 .dot-pending { background: var(--status-pending); }
 .dot-downloading {
   background: var(--status-downloading);
+  animation: pulse-glow 1.2s ease-in-out infinite;
+}
+.dot-connecting-tor {
+  background: #8b5cf6;
   animation: pulse-glow 1.2s ease-in-out infinite;
 }
 .dot-verifying {
@@ -6477,7 +6623,13 @@ button.meta-path {
 
 .package-parent-row {
   display: grid;
-  grid-template-columns: 30px 52px minmax(0, 1fr) auto;
+  /* Mesma estrutura ANINHADA do .download-card (3 colunas fora: stem/ícone/
+     resto), em vez de tentar replicar as 9 colunas num grid único — isso
+     garante por construção que o conteúdo bate pixel a pixel com as linhas
+     filhas, já que usam literalmente o mesmo grid interno (.package-parent-data
+     abaixo espelha .item-body). Tentar igualar os dois grids "na mão" nunca
+     alinhava de verdade (subpixel/gap acumulado entre níveis diferentes). */
+  grid-template-columns: 30px 52px minmax(0, 1fr);
   align-items: center;
   column-gap: 8px;
   min-height: 50px;
@@ -6487,6 +6639,75 @@ button.meta-path {
   background: color-mix(in srgb, var(--surface-section, var(--bg-card)) 78%, var(--bg-card));
   cursor: pointer;
   transition: background .14s ease, box-shadow .14s ease;
+}
+
+.package-parent-data {
+  grid-column: 3;
+  display: grid;
+  grid-template-columns: minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) var(--download-table-actions-width);
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.package-parent-size,
+.package-parent-speed,
+.package-parent-eta,
+.package-parent-date {
+  min-width: 0;
+  padding: 0 8px 0 16px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.package-parent-size {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+.package-parent-speed {
+  color: var(--accent-color);
+  font-weight: 700;
+}
+
+.package-parent-status {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px 0 16px;
+}
+
+.package-parent-status .status-badge {
+  align-self: flex-start;
+}
+
+.package-parent-status .progress-track {
+  width: 100%;
+}
+
+.status-badge.badge-mixed {
+  background: color-mix(in srgb, #8b5cf6 18%, transparent);
+  color: #a78bfa;
+}
+
+.badge-dot.dot-mixed {
+  background: #8b5cf6;
+}
+
+@media (max-width: 1320px) {
+  .package-parent-size,
+  .package-parent-status,
+  .package-parent-speed,
+  .package-parent-eta,
+  .package-parent-date {
+    display: none;
+  }
 }
 
 .package-parent-row:focus-visible {
@@ -6516,7 +6737,9 @@ button.meta-path {
   display: flex;
   min-width: 0;
   flex-direction: column;
+  justify-content: center;
   gap: 2px;
+  padding: 0 8px;
 }
 
 .package-parent-copy strong {

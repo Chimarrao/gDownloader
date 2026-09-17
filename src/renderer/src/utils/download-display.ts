@@ -128,16 +128,28 @@ export function effectiveEta(item: DownloadItem, nowTick: number): number {
   return effectiveSpeed(item, nowTick) > 0 ? item.etaSec ?? 0 : 0
 }
 
+/** Só true quando o download está de fato roteado via Tor (não apenas marcado). */
+function isConnectingViaTor(item: DownloadItem): boolean {
+  return item.networkRoute?.mode === 'tor'
+}
+
+/** Usado pela UI pra pintar o badge/status de roxo quando é "Conectando com Tor". */
+export function isConnectingViaTorNow(item: DownloadItem, nowTick: number): boolean {
+  return item.status === DownloadStatus.Downloading
+    && effectiveSpeed(item, nowTick) <= 0
+    && isConnectingViaTor(item)
+}
+
 export function statusText(item: DownloadItem, nowTick: number): string {
   if (item.status === DownloadStatus.Downloading && effectiveSpeed(item, nowTick) <= 0) {
-    return 'Conectando'
+    return isConnectingViaTor(item) ? 'Conectando com Tor' : 'Conectando'
   }
   return STATUS_LABELS[item.status] ?? item.status
 }
 
 export function statusTextKey(item: DownloadItem, nowTick: number): string {
   if (item.status === DownloadStatus.Downloading && effectiveSpeed(item, nowTick) <= 0) {
-    return 'statusConnecting'
+    return isConnectingViaTor(item) ? 'statusConnectingTor' : 'statusConnecting'
   }
   return STATUS_I18N_KEYS[item.status] ?? 'statusPending'
 }

@@ -272,6 +272,7 @@
   "statusWaitingCaptcha": "Captcha",
   "statusDiskFull": "Disco cheio",
   "statusConnecting": "Conectando",
+  "statusConnectingTor": "Conectando com Tor",
   "sortNewest": "Mais recentes",
   "sortOldest": "Mais antigos",
   "sortActiveFirst": "Ativos primeiro",

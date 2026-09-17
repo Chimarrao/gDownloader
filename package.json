@@ -15,7 +15,7 @@
     "dev:backend:go": "cd backend-go && go run . ../backend/database/gdownloader.db",
     "dev:backend": "concurrently --kill-others \"npm run dev:backend:rust\" \"npm run dev:backend:go\"",
     "dev:frontend": "electron-vite dev",
-    "dev": "concurrently --kill-others \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "concurrently --kill-others-on-fail \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build:go": "cd backend-go && go build -o ../out/gdownloader-go .",
     "build": "npm run typecheck && electron-vite build && cd backend && cargo build --release && npm run build:go",
     "postinstall": "electron-builder install-app-deps",

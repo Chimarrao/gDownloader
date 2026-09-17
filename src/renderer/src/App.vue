@@ -375,6 +375,7 @@
             @queued-bytes="onQueuedBytes"
             @open-grabber="activeTab = 'grabber'"
             @tor-changed="refreshTorStatus"
+            @tor-required-blocked="onTorRequiredBlocked"
           />
         </section>
 
@@ -915,6 +916,31 @@ async function refreshTorStatus(): Promise<void> {
 function toggleTorPanel(): void {
   torPanelOpen.value = !torPanelOpen.value;
   if (torPanelOpen.value) void refreshTorStatus();
+}
+
+// Usuário pediu explicitamente: se um download com kill switch (tor_required)
+// fica esperando o Tor, o app liga o Tor sozinho em vez de ficar parado
+// esperando um clique manual. Usa cooldown (não trava num único disparo): se o
+// Tor cair de novo depois (ex.: máquina dormiu por dias) enquanto o bloqueio
+// nunca chegou a ficar "false" no meio tempo, o watcher de mudança de valor
+// nunca dispararia de novo — por isso reavalia periodicamente também.
+let hasTorRequiredBlockedNow = false;
+let lastTorAutoConnectAttemptAt = 0;
+const TOR_AUTO_CONNECT_COOLDOWN_MS = 5 * 60 * 1000;
+function maybeAutoConnectTor(): void {
+  if (!hasTorRequiredBlockedNow) return;
+  if (torState.value.state !== "disconnected") return;
+  if (Date.now() - lastTorAutoConnectAttemptAt < TOR_AUTO_CONNECT_COOLDOWN_MS) return;
+  lastTorAutoConnectAttemptAt = Date.now();
+  void window.api.system
+    .notify("Tor obrigatório", "Ligando o Tor automaticamente para retomar downloads bloqueados pelo kill switch")
+    .catch(() => null);
+  void connectTor();
+}
+setInterval(maybeAutoConnectTor, 60_000);
+function onTorRequiredBlocked(blocked: boolean): void {
+  hasTorRequiredBlockedNow = blocked;
+  if (blocked) maybeAutoConnectTor();
 }
 
 async function connectTor(): Promise<void> {

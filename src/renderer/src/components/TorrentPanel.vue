@@ -292,174 +292,302 @@ onUnmounted(() => {
 .torrent-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: 14px;
+  padding: 20px;
   height: 100%;
   overflow-y: auto;
 }
+
 .torrent-add-box {
   display: flex;
   gap: 8px;
   align-items: center;
 }
+
 .torrent-magnet-input {
   flex: 1;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #333);
-  background: var(--input-bg, transparent);
-  color: inherit;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s ease;
 }
+
+.torrent-magnet-input:focus {
+  border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+}
+
+/* Botões pill no mesmo padrão do topbar (.quick-toggle-btn / .tor-main-btn). */
+.btn-secondary {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: border-color 0.15s ease;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
+}
+
+.btn-primary {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: var(--accent-color);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tor-required-check {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.tor-required-check:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-card));
+  color: var(--accent-color);
+}
+
+.tor-required-check input {
+  accent-color: var(--accent-color);
+}
+
 .torrent-picked-file {
-  font-size: 0.85em;
-  opacity: 0.8;
+  font-size: 12px;
+  color: var(--text-secondary);
   display: flex;
   gap: 6px;
   align-items: center;
 }
+
 .torrent-add-error {
-  color: var(--color-error, #e74c3c);
-  font-size: 0.85em;
+  color: #ef4444;
+  font-size: 12px;
 }
+
 .torrent-empty {
-  opacity: 0.6;
-  padding: 24px;
+  color: var(--text-muted);
+  padding: 32px;
   text-align: center;
+  font-size: 13px;
 }
+
 .torrent-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+
 .torrent-row {
-  border: 1px solid var(--border-color, #333);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 12px 14px;
+  background: var(--bg-card);
 }
+
 .torrent-row-main {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
 }
+
 .torrent-row-info {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  gap: 2px;
 }
+
 .torrent-name {
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 480px;
 }
+
 .torrent-meta {
-  font-size: 0.8em;
-  opacity: 0.7;
+  font-size: 11px;
+  color: var(--text-muted);
   display: flex;
   gap: 6px;
   align-items: center;
 }
+
 .torrent-row-actions {
   display: flex;
   gap: 4px;
 }
+
+/* Mesmo padrão dos botões de ação por linha da lista de downloads (.action-btn). */
 .icon-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: transparent;
-  border: 1px solid var(--border-color, #444);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  padding: 4px 8px;
+  color: var(--text-muted);
   cursor: pointer;
-  color: inherit;
+  font-size: 11px;
+  transition: all 0.15s ease;
 }
+
+.icon-btn:hover {
+  background: color-mix(in srgb, var(--accent-color) 15%, transparent);
+  color: var(--accent-color);
+  border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
+}
+
 .icon-btn.danger:hover {
-  color: #e74c3c;
-  border-color: #e74c3c;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.4);
 }
+
 .torrent-progress-bar {
   height: 6px;
   border-radius: 4px;
-  background: rgba(127, 127, 127, 0.25);
-  margin-top: 8px;
+  background: color-mix(in srgb, var(--border-color) 60%, transparent);
+  margin-top: 10px;
   overflow: hidden;
 }
+
 .torrent-progress-fill {
   height: 100%;
-  background: #7c6fff;
+  background: var(--accent-color);
   transition: width 0.4s ease;
 }
+
 .torrent-stats {
   display: flex;
   gap: 14px;
-  font-size: 0.8em;
-  opacity: 0.75;
-  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  margin-top: 7px;
   flex-wrap: wrap;
 }
+
 .torrent-error {
-  color: var(--color-error, #e74c3c);
-  font-size: 0.8em;
-  margin-top: 4px;
+  color: #ef4444;
+  font-size: 11px;
+  margin-top: 6px;
 }
+
 .torrent-files,
 .torrent-peers {
-  margin-top: 8px;
-  border-top: 1px dashed var(--border-color, #333);
-  padding-top: 8px;
+  margin-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  padding-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   max-height: 220px;
   overflow-y: auto;
 }
+
 .torrent-file-row {
   display: flex;
   gap: 8px;
   align-items: center;
-  font-size: 0.82em;
+  font-size: 11.5px;
+  color: var(--text-secondary);
 }
+
+.torrent-file-row input {
+  accent-color: var(--accent-color);
+}
+
 .torrent-file-path {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.torrent-file-size {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
 .torrent-peer-row {
   display: grid;
   grid-template-columns: 1fr 1fr 60px 100px;
   gap: 8px;
-  font-size: 0.8em;
-  opacity: 0.85;
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
+
 .torrent-peers-empty {
-  font-size: 0.8em;
-  opacity: 0.6;
+  font-size: 11.5px;
+  color: var(--text-muted);
 }
-.tor-required-check {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.85em;
-  padding: 4px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border-color, #444);
-  cursor: pointer;
-}
-.tor-required-check:has(input:checked) {
-  border-color: #8b5cf6;
-  color: #8b5cf6;
-}
+
 .torrent-tor-badge {
-  color: #8b5cf6;
+  color: var(--accent-color);
 }
+
 .link-btn {
   background: none;
   border: none;
-  color: inherit;
+  color: var(--text-muted);
   text-decoration: underline;
   cursor: pointer;
-  opacity: 0.7;
-  font-size: 0.85em;
+  font-size: 11.5px;
+}
+
+.link-btn:hover {
+  color: var(--text-primary);
 }
 </style>

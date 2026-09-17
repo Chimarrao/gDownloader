@@ -60,15 +60,16 @@ async function fetchBackend(
       path.startsWith(prefix + "?"),
   );
   // /file-info só tem implementação de verdade no Go pra alguns hosts (ver o switch
-  // em handler.go: YouTube, Gofile, PixelDrain, MediaFire, Google Drive). Qualquer
-  // outro host (ex.: 1Fichier) cai no "default: fetchDirectHTTPInfo" do Go — um HEAD
-  // genérico que não sabe nada de pasta/restrição/rate-limit e devolve "arquivo, 0 B"
-  // com HTTP 200. Como o fallback abaixo só reage a status >= 400, esse resultado
-  // errado era aceito direto e o Rust (que tem a implementação completa desses hosts)
-  // nunca era consultado. Só manda pro Go quando o host é um dos que ele realmente
-  // implementa.
+  // em handler.go: YouTube, Gofile, PixelDrain, Google Drive). Qualquer outro host
+  // (ex.: 1Fichier, MediaFire — fetchMediaFireInfo no Go é só um stub que cai no
+  // "default: fetchDirectHTTPInfo", sem noção de pasta) cai nesse mesmo HEAD
+  // genérico, que não sabe nada de pasta/restrição/rate-limit e devolve "arquivo,
+  // 0 B" com HTTP 200. Como o fallback abaixo só reage a status >= 400, esse
+  // resultado errado era aceito direto e o Rust (que tem a implementação completa
+  // desses hosts, incluindo pastas do MediaFire) nunca era consultado. Só manda
+  // pro Go quando o host é um dos que ele realmente implementa.
   const GO_FILE_INFO_HOSTS =
-    /(?:^|\/\/|\.)(youtube\.com|youtu\.be|music\.youtube\.com|gofile\.io|pixeldrain\.com|mediafire\.com|drive\.google\.com)/i;
+    /(?:^|\/\/|\.)(youtube\.com|youtu\.be|music\.youtube\.com|gofile\.io|pixeldrain\.com|drive\.google\.com)/i;
   const fileInfoUrlParam = path.startsWith("/file-info")
     ? (new URLSearchParams(path.split("?")[1] ?? "").get("url") ?? "")
     : "";
@@ -257,7 +258,13 @@ async function ensureDownloadsSocket(): Promise<void> {
   downloadsSocketPromise = (async () => {
     const goPort = await getGoPort();
     const rustPort = await getPort();
-    const tryPorts = goPort ? [goPort, rustPort] : [rustPort];
+    // O scheduler de downloads (progresso, velocidade, status) só roda no Rust —
+    // o hub WS do Go aceita a conexão normalmente mas nunca emite eventos de
+    // progresso (backend-go/internal/ws/handler.go é só compatibilidade/keepalive).
+    // Conectar no Go primeiro fazia a UI nunca receber updates em tempo real,
+    // sobrevivendo só do hydrate REST a cada 15s — daí a velocidade "puxar e
+    // zerar" o tempo todo e o status ficar preso em "Conectando".
+    const tryPorts = goPort ? [rustPort, goPort] : [rustPort];
     let connected = false;
     for (const port of tryPorts) {
       if (connected) break;
@@ -574,6 +581,14 @@ const api = {
 
     setAutoTor: async (id: string, enabled: boolean) => {
       await fetchBackend(`/downloads/${id}/auto-tor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+    },
+
+    setTorRequired: async (id: string, enabled: boolean) => {
+      await fetchBackend(`/downloads/${id}/tor-required`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
