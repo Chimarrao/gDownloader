@@ -507,6 +507,26 @@
       </div>
       </template>
     </VirtualRows>
+
+    <div v-if="megaTorConfirmRow" class="mega-tor-backdrop" role="presentation" @click.self="cancelMegaTorRequired">
+      <div class="mega-tor-modal" role="dialog" aria-modal="true">
+        <div class="mega-tor-header">
+          <i class="pi pi-exclamation-triangle"></i>
+          <strong>Mega costuma bloquear o Tor</strong>
+        </div>
+        <p>
+          O Mega bloqueia praticamente toda a rede Tor no plano grátis — mesmo
+          trocando de circuito várias vezes, a chance de achar uma saída que
+          funcione é baixa. Marcar "Tor obrigatório" aqui pode deixar esse
+          download preso esperando um circuito que talvez nunca funcione.
+          Quer marcar mesmo assim?
+        </p>
+        <div class="mega-tor-actions">
+          <button class="toolbar-btn" @click="cancelMegaTorRequired">Cancelar</button>
+          <button class="toolbar-btn mega-tor-confirm" @click="confirmMegaTorRequired">Marcar mesmo assim</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -892,8 +912,31 @@ function onUpdateYouTubeString(row: CapturedRow, key: 'youtubeOutputFormat' | 'y
   })
 }
 
+// Mega bloqueia praticamente toda a rede Tor pro free tier (confirmado ao
+// vivo: 100+ trocas de circuito, todas batendo 509) — avisa antes de marcar
+// Tor obrigatório num download desse provider, pra não travar sem explicação.
+const megaTorConfirmRow = ref<CapturedRow | null>(null)
+
 function onUpdateTorRequired(row: CapturedRow, event: Event): void {
-  emit('update-tor-required', { row, value: checkboxValue(event) })
+  const checked = checkboxValue(event)
+  const target = event.target as HTMLInputElement
+  if (checked && row.module?.id === 'mega') {
+    target.checked = false
+    megaTorConfirmRow.value = row
+    return
+  }
+  emit('update-tor-required', { row, value: checked })
+}
+
+function confirmMegaTorRequired(): void {
+  const row = megaTorConfirmRow.value
+  megaTorConfirmRow.value = null
+  if (!row) return
+  emit('update-tor-required', { row, value: true })
+}
+
+function cancelMegaTorRequired(): void {
+  megaTorConfirmRow.value = null
 }
 
 function youtubeFormatLabel(child: SelectableChild): string {
@@ -1838,5 +1881,71 @@ function suffixFps(source: string, label: string): string {
   .youtube-option-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.mega-tor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.mega-tor-modal {
+  width: min(420px, 90vw);
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+}
+
+.mega-tor-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #f59e0b;
+}
+
+.mega-tor-header strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.mega-tor-modal p {
+  margin: 0 0 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.mega-tor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mega-tor-actions .toolbar-btn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mega-tor-actions .toolbar-btn:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 40%, var(--border-color));
+}
+
+.mega-tor-confirm {
+  background: color-mix(in srgb, #f59e0b 15%, var(--bg-card));
+  border-color: color-mix(in srgb, #f59e0b 40%, var(--border-color)) !important;
+  color: #f59e0b;
 }
 </style>

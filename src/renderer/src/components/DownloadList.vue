@@ -868,35 +868,16 @@
               </span>
             </div>
 
-            <!-- ErrorState for specific error types -->
-            <ErrorState
-              v-if="item.status === 'disk_full'"
-              :title="t('diskFullTitle')"
-              :description="item.error || t('diskFullDesc')"
-              icon="pi pi-database"
-              :actions="[
-                { label: t('changeFolder'), icon: 'pi pi-folder', variant: 'primary', handler: () => chooseOutputDir() },
-                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
-              ]"
-            />
-            <ErrorState
-              v-else-if="item.status === 'corrupted'"
-              :title="t('corruptedTitle')"
-              :description="item.error || t('corruptedDesc')"
-              icon="pi pi-shield"
-              :actions="[
-                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'primary', handler: () => retry(item.id) },
-              ]"
-            />
-            <ErrorState
-              v-else-if="item.status === 'error' && item.error"
-              :title="errorKindLabel(item) || item.error"
-              :description="errorKindLabel(item) ? item.error : undefined"
-              icon="pi pi-exclamation-circle"
-              :actions="[
-                { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
-              ]"
-            />
+            <!-- Flag compacta em vez do card gigante: clique abre popup com detalhe/ações. -->
+            <button
+              v-if="errorStateFor(item)"
+              type="button"
+              class="error-flag"
+              @click.stop="openErrorPopup(item)"
+            >
+              <i class="pi pi-exclamation-circle"></i>
+              <span>{{ errorStateFor(item)?.title }}</span>
+            </button>
 
             <!-- Tor ao atingir limite: chip discreto (engajamento automático) -->
             <div v-if="item.autoTorOnLimit && showTorLimitHint(item)" class="tor-limit-chip">
@@ -1290,6 +1271,36 @@
       </div>
     </div>
 
+    <!-- Popup de erro (substitui o card gigante inline por uma flag + popup) -->
+    <div
+      v-if="errorPopup"
+      class="confirm-modal-backdrop"
+      role="presentation"
+      @click.self="closeErrorPopup"
+    >
+      <div class="confirm-modal" role="dialog" aria-modal="true" tabindex="-1">
+        <div class="confirm-modal-header">
+          <strong>{{ errorPopup.title }}</strong>
+          <button class="action-btn" :title="t('close')" @click="closeErrorPopup">
+            <i class="pi pi-times"></i>
+          </button>
+        </div>
+        <p v-if="errorPopup.description" class="confirm-modal-body">{{ errorPopup.description }}</p>
+        <div class="confirm-modal-actions">
+          <button
+            v-for="action in errorPopup.actions"
+            :key="action.label"
+            class="toolbar-btn"
+            :class="{ 'confirm-danger': action.variant === 'primary' }"
+            @click="runErrorPopupAction(action)"
+          >
+            <i v-if="action.icon" :class="action.icon"></i>
+            {{ action.label }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Confirm dialog (acessível) -->
     <div
       v-if="confirmDialog.visible"
@@ -1358,7 +1369,6 @@ import { effectiveSize } from '../utils/display-size'
 import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 import { flagClass } from '../utils/flag'
-import ErrorState from './ErrorState.vue'
 import VirtualRows from './VirtualRows.vue'
 
 interface ModuleSummary {
@@ -1527,6 +1537,59 @@ const confirmDialog = ref<{
   resolve: ((ok: boolean) => void) | null
 }>({ visible: false, title: '', body: '', confirmLabel: '', resolve: null })
 const confirmDialogRef = ref<HTMLElement | null>(null)
+
+interface ErrorFlagAction {
+  label: string
+  icon?: string
+  variant?: 'primary' | 'secondary' | 'danger'
+  handler: () => void
+}
+const errorPopup = ref<{ title: string; description?: string; actions: ErrorFlagAction[] } | null>(null)
+
+// Mesma lógica que antes decidia qual <ErrorState> inline mostrar — agora só
+// monta os dados; quem renderiza é o popup (ver openErrorPopup).
+function errorStateFor(item: DownloadItem): { title: string; description?: string; actions: ErrorFlagAction[] } | null {
+  if (item.status === 'disk_full') {
+    return {
+      title: t('diskFullTitle'),
+      description: item.error || t('diskFullDesc'),
+      actions: [
+        { label: t('changeFolder'), icon: 'pi pi-folder', variant: 'primary', handler: () => chooseOutputDir() },
+        { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+      ],
+    }
+  }
+  if (item.status === 'corrupted') {
+    return {
+      title: t('corruptedTitle'),
+      description: item.error || t('corruptedDesc'),
+      actions: [
+        { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'primary', handler: () => retry(item.id) },
+      ],
+    }
+  }
+  if (item.status === 'error' && item.error) {
+    return {
+      title: errorKindLabel(item) || item.error,
+      description: errorKindLabel(item) ? item.error : undefined,
+      actions: [
+        { label: t('retryAction'), icon: 'pi pi-refresh', variant: 'secondary', handler: () => retry(item.id) },
+      ],
+    }
+  }
+  return null
+}
+
+function openErrorPopup(item: DownloadItem): void {
+  errorPopup.value = errorStateFor(item)
+}
+function closeErrorPopup(): void {
+  errorPopup.value = null
+}
+function runErrorPopupAction(action: ErrorFlagAction): void {
+  closeErrorPopup()
+  action.handler()
+}
 // Set of download IDs that recently changed status (for flash animation)
 const flashingIds = ref<Set<string>>(new Set())
 // Só estes status disparam o flash (evita piscar no ciclo de auto-retry).
@@ -5407,6 +5470,32 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 /* ── Chip discreto "Contornando limite via Tor" ───────────────── */
+.error-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.error-flag span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-flag:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
 .tor-limit-chip {
   display: inline-flex;
   align-items: center;
