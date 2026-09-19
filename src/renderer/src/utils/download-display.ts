@@ -175,7 +175,9 @@ export function isWaitingRetry(item: DownloadItem, nowTick: number): boolean {
 
 /** True when the row needs a live clock (countdown / connecting stale speed). */
 export function itemNeedsCountdown(item: DownloadItem, nowTick: number): boolean {
-  if (item.status === DownloadStatus.RateLimited) return item.errorKind === 'rate_limit_server'
+  // Todo RateLimited tem um retry_at agendado (servidor confirmou ou não) — a
+  // UI agora mostra a contagem regressiva pra ambos os casos.
+  if (item.status === DownloadStatus.RateLimited) return true
   if (item.status === DownloadStatus.WaitingCaptcha) return true
   if (isWaitingRetry(item, nowTick)) return true
   if (item.status === DownloadStatus.Downloading) {

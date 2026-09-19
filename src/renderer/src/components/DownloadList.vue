@@ -668,7 +668,11 @@
               {{ item.status === 'downloading' ? formatSpeed(effectiveSpeedValue(item)) : '—' }}
             </div>
             <div class="table-eta-cell">
-              {{ item.status === 'downloading' ? `${formatEta(effectiveEtaValue(item))} restante` : '—' }}
+              {{ item.status === 'downloading'
+                ? `${formatEta(effectiveEtaValue(item))} restante`
+                : (item.status === 'rate_limited' && item.retryAt && item.retryAt > nowTick
+                    ? t('waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
+                    : '—') }}
             </div>
             <div class="table-date-cell">
               {{ item.status === 'complete' && item.completedAt ? formatDateTime(item.completedAt) : (item.addedAt ? formatDateTime(item.addedAt) : '—') }}
@@ -746,8 +750,8 @@
               <template v-else-if="item.status === 'rate_limited'">
                 <span class="meta-chip meta-wait">
                   <i class="pi pi-clock"></i>
-                  {{ hasServerReportedWait(item) && item.retryAt && item.retryAt > nowTick
-                    ? t('rateLimitCountdown', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
+                  {{ item.retryAt && item.retryAt > nowTick
+                    ? t(hasServerReportedWait(item) ? 'rateLimitCountdown' : 'waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
                     : t('rateLimitRevalidation') }}
                 </span>
               </template>
