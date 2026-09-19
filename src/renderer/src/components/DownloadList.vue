@@ -671,7 +671,7 @@
               {{ item.status === 'downloading'
                 ? `${formatEta(effectiveEtaValue(item))} restante`
                 : (item.status === 'rate_limited' && item.retryAt && item.retryAt > nowTick
-                    ? t('waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
+                    ? t(hasServerReportedWait(item) ? 'rateLimitCountdown' : 'waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
                     : '—') }}
             </div>
             <div class="table-date-cell">
