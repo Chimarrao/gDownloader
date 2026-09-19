@@ -3277,6 +3277,28 @@ async function force(id: string): Promise<void> {
 }
 
 async function restart(id: string): Promise<void> {
+  // Zera o progresso NA HORA (otimista): "reiniciar do zero" apaga o arquivo e
+  // reseta os bytes no backend, mas o valor antigo (~100%) ficava exibido até o
+  // primeiro evento de progresso real chegar, porque tanto o handler de WS quanto
+  // o merge do hydrate() nunca deixam o percent/bytes CAIR enquanto o status
+  // segue "downloading" (proteção anti-flicker). Resetar aqui evita essa janela.
+  const idx = itemIndexById.value[id] ?? -1
+  if (idx >= 0) {
+    const current = items.value[idx]
+    patchItemAt(idx, {
+      percent: 0,
+      speedBps: 0,
+      etaSec: 0,
+      status: DownloadStatusEnum.Pending,
+      children: current.children?.map((child) => ({
+        ...child,
+        bytesDownloaded: 0,
+        speedBps: 0,
+        etaSec: 0,
+        status: DownloadStatusEnum.Pending,
+      })),
+    })
+  }
   await window.api.downloads.restart(id).catch(() => null)
   await hydrate()
 }
