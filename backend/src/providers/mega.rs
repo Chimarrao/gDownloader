@@ -504,6 +504,12 @@ impl MegaProvider {
 
         let result = &resp[0];
         if let Some(err_code) = result.as_i64() {
+            tracing::warn!(
+                target: "gdownloader_backend::providers::mega",
+                err_code,
+                raw_response = %resp,
+                "Mega API 'g' respondeu código de erro ao resolver arquivo da pasta"
+            );
             return Err(anyhow!(
                 "Mega retornou erro {err_code} ao obter um arquivo da pasta pública"
             ));
@@ -567,8 +573,10 @@ impl MegaProvider {
                     .get(&download_url)
                     .header("Range", format!("bytes={start}-{end}"))
                     .send()
-                    .await?
-                    .error_for_status()?;
+                    .await?;
+                if !resp.status().is_success() {
+                    return Err(super::describe_response_error(resp).await);
+                }
 
                 if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
                     return Err(anyhow!("Mega não aceitou download em partes"));
@@ -743,7 +751,10 @@ impl Provider for MegaProvider {
                     if existing_bytes > 0 {
                         request = request.header("Range", format!("bytes={existing_bytes}-"));
                     }
-                    let resp = request.send().await?.error_for_status()?;
+                    let resp = request.send().await?;
+                    if !resp.status().is_success() {
+                        return Err(super::describe_response_error(resp).await);
+                    }
                     let resumed = existing_bytes > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
                     if resumed {
                         downloaded_total += existing_bytes;

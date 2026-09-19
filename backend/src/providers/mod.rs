@@ -75,6 +75,63 @@ pub(crate) fn current_task_proxy_url() -> Option<String> {
     }
 }
 
+/// Lê status/headers/corpo de uma resposta HTTP de erro antes de descartá-la —
+/// `error_for_status()` sozinho joga tudo fora sem nunca inspecionar headers.
+/// Foi assim que descobrimos que o CDN do Mega manda o tempo real de liberação
+/// da cota no header `x-mega-time-left` (segundos) num 509: se algum host
+/// informar isso (esse header ou `Retry-After`), vira um `RATE_LIMIT:{secs}:...`
+/// que `classify_retry_policy` já sabe tratar como prazo confirmado pelo
+/// servidor — em vez do backoff de 5-30min só de palpite que era usado antes
+/// pra QUALQUER 509, mesmo quando o host informava a hora exata.
+pub(crate) async fn describe_response_error(resp: reqwest::Response) -> anyhow::Error {
+    let status = resp.status();
+    let retry_after_secs = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    let mega_time_left = resp
+        .headers()
+        .get("x-mega-time-left")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+    let headers_dump = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v.to_str().unwrap_or("<bin>")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body = resp.text().await.unwrap_or_default();
+    let snippet: String = body.chars().take(500).collect();
+
+    if let Some(secs) = mega_time_left.or(retry_after_secs) {
+        let human_wait = if secs >= 3600 {
+            format!("{}h {:02}min", secs / 3600, (secs % 3600) / 60)
+        } else if secs >= 60 {
+            format!("{}min", secs / 60)
+        } else {
+            format!("{secs}s")
+        };
+        return anyhow!(
+            "RATE_LIMIT:{secs}:O host confirmou {human_wait} até liberar o download (HTTP {})",
+            status.as_u16()
+        );
+    }
+
+    tracing::warn!(
+        target: "gdownloader_backend::providers",
+        status = status.as_u16(),
+        headers = %headers_dump,
+        body_snippet = %snippet,
+        "Resposta de erro HTTP sem tempo de espera informado pelo host"
+    );
+    anyhow!(
+        "Servidor respondeu HTTP {} (corpo: {})",
+        status.as_u16(),
+        if snippet.trim().is_empty() { "vazio".to_string() } else { snippet }
+    )
+}
+
 pub fn update_global_proxy(mode: String, host: String, port: u16, username: Option<String>, password: Option<String>) {
     let lock = GLOBAL_PROXY.get_or_init(|| RwLock::new(ProxyConfig::default()));
     if let Ok(mut proxy) = lock.write() {
@@ -458,7 +515,11 @@ pub trait ProviderDefaults {
     {
         Box::pin(async move {
             if existing_bytes == 0 {
-                return Ok((client.get(url).send().await?.error_for_status()?, false));
+                let resp = client.get(url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(describe_response_error(resp).await);
+                }
+                return Ok((resp, false));
             }
 
             let ranged = client
@@ -476,11 +537,17 @@ pub trait ProviderDefaults {
                 reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::RANGE_NOT_SATISFIABLE
             ) {
                 let _ = tokio::fs::remove_file(dest_path).await;
-                let fresh = client.get(url).send().await?.error_for_status()?;
+                let fresh = client.get(url).send().await?;
+                if !fresh.status().is_success() {
+                    return Err(describe_response_error(fresh).await);
+                }
                 return Ok((fresh, false));
             }
 
-            Ok((ranged.error_for_status()?, false))
+            if !ranged.status().is_success() {
+                return Err(describe_response_error(ranged).await);
+            }
+            Ok((ranged, false))
         })
     }
 }
