@@ -104,7 +104,15 @@ pub(crate) async fn describe_response_error(resp: reqwest::Response) -> anyhow::
     let body = resp.text().await.unwrap_or_default();
     let snippet: String = body.chars().take(500).collect();
 
-    if let Some(secs) = mega_time_left.or(retry_after_secs) {
+    if let Some(raw_secs) = mega_time_left.or(retry_after_secs) {
+        // Visto ao vivo: perto do instante exato em que a cota libera, o Mega
+        // chega a mandar `x-mega-time-left: 0` várias vezes seguidas ainda
+        // dentro da janela bloqueada (ruído de borda). Sem um piso mínimo,
+        // isso vira delay=0 → tentativa imediata → 509 de novo → tentativa
+        // imediata... um loop que martela o servidor várias vezes por
+        // segundo (visto: ~20 tentativas em 10s) até o Mega bater de volta
+        // com um bloqueio bem mais longo, provavelmente por abuso percebido.
+        let secs = raw_secs.max(10);
         let human_wait = if secs >= 3600 {
             format!("{}h {:02}min", secs / 3600, (secs % 3600) / 60)
         } else if secs >= 60 {
