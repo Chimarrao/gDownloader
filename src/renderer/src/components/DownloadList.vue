@@ -668,11 +668,7 @@
               {{ item.status === 'downloading' ? formatSpeed(effectiveSpeedValue(item)) : '—' }}
             </div>
             <div class="table-eta-cell">
-              {{ item.status === 'downloading'
-                ? `${formatEta(effectiveEtaValue(item))} restante`
-                : (item.status === 'rate_limited' && item.retryAt && item.retryAt > nowTick
-                    ? t(hasServerReportedWait(item) ? 'rateLimitCountdown' : 'waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
-                    : '—') }}
+              {{ item.status === 'downloading' ? `${formatEta(effectiveEtaValue(item))} restante` : '—' }}
             </div>
             <div class="table-date-cell">
               {{ item.status === 'complete' && item.completedAt ? formatDateTime(item.completedAt) : (item.addedAt ? formatDateTime(item.addedAt) : '—') }}
@@ -747,15 +743,6 @@
                 </span>
               </template>
 
-              <template v-else-if="item.status === 'rate_limited'">
-                <span class="meta-chip meta-wait">
-                  <i class="pi pi-clock"></i>
-                  {{ item.retryAt && item.retryAt > nowTick
-                    ? t(hasServerReportedWait(item) ? 'rateLimitCountdown' : 'waitingRetryIn', { time: formatEta(Math.ceil((item.retryAt - nowTick) / 1000)) })
-                    : t('rateLimitRevalidation') }}
-                </span>
-              </template>
-
               <template v-else-if="item.status === 'waiting_captcha'">
                 <span class="meta-chip meta-captcha-wait">
                   <i class="pi pi-shield"></i>
@@ -769,15 +756,6 @@
                 </span>
                 <span v-else-if="item.captchaSitekey" class="meta-chip meta-captcha-wait" style="opacity:0.7">
                   {{ item.captchaSitekey.slice(0, 12) }}...
-                </span>
-              </template>
-
-              <template v-else-if="isWaitingRetryNow(item)">
-                <span class="meta-chip meta-wait">
-                  <i class="pi pi-clock"></i>
-                  {{ hasServerReportedWait(item)
-                    ? t('waitingRetryIn', { time: formatEta(retryCountdownNow(item)) })
-                    : t('rateLimitRevalidation') }}
                 </span>
               </template>
 
@@ -1365,7 +1343,6 @@ import {
   statusTextKey,
   isTerminal,
   isWaitingRetry,
-  retryCountdown,
   type DownloadSortMode,
 } from '../utils/download-display'
 import { formatBytes, formatEta, formatMediaDuration, formatSpeed } from '../utils/format'
@@ -2253,10 +2230,19 @@ function isPremiumProvider(moduleId: string): boolean {
 function providerWaitNotice(item: DownloadItem): { label: string; title: string } | null {
   const waitingForProvider = item.status === DownloadStatusEnum.RateLimited
     || (item.status === DownloadStatusEnum.Pending && isWaitingRetryNow(item))
+    || item.errorKind === 'provider_limit'
   if (!waitingForProvider) return null
 
   const provider = moduleLabel(item.moduleId)
   const details = item.error?.trim() || `O ${provider} pediu uma nova tentativa.`
+
+  // Só um download do host por vez (ex.: Mega): não é cota, é a vez dele —
+  // mensagem diferente da de rate-limit pra não confundir os dois motivos.
+  if (item.errorKind === 'provider_limit') {
+    const label = `${provider}: aguardando a vez (1 por vez)`
+    return { label, title: details }
+  }
+
   const knownLimits: Record<string, string> = {
     mega: 'Mega: cota de tráfego por IP',
     fichier: '1Fichier: janela gratuita por IP',
@@ -2265,8 +2251,14 @@ function providerWaitNotice(item: DownloadItem): { label: string; title: string 
     rapidgator: 'Rapidgator: limite do plano gratuito',
     brupload: 'BRUpload: limite temporário',
   }
-  const label = knownLimits[item.moduleId] ?? `${provider}: aguardando liberação do host`
-  return { label, title: `${label}. ${details}` }
+  const fallbackLabel = knownLimits[item.moduleId] ?? `${provider}: aguardando liberação do host`
+  // Quando o host confirma um prazo real, mostra o número em vez do texto
+  // genérico — repetir "Xh Ym para desbloquear" na coluna Tempo restante E
+  // aqui embaixo do status era redundante.
+  const label = hasServerReportedWait(item) && item.retryAt && item.retryAt > nowTick.value
+    ? t('rateLimitCountdown', { time: formatEta(Math.ceil((item.retryAt - nowTick.value) / 1000)) })
+    : fallbackLabel
+  return { label, title: `${fallbackLabel}. ${details}` }
 }
 
 function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
@@ -3719,10 +3711,6 @@ function youtubeCurrentStageLabel(item: DownloadItem): string {
 
 function isWaitingRetryNow(item: DownloadItem): boolean {
   return isWaitingRetry(item, nowTick.value)
-}
-
-function retryCountdownNow(item: DownloadItem): number {
-  return retryCountdown(item, nowTick.value)
 }
 
 // retryAt também é usado pelo scheduler para decidir *quando testar de novo*.
