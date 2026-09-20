@@ -3401,6 +3401,10 @@ pub async fn schedule_pending_downloads(state: AppState) {
             })
             .collect::<Vec<_>>();
 
+        let pending_meta: Vec<(String, String)> = pending
+            .iter()
+            .map(|candidate| (candidate.id.clone(), candidate.provider.clone()))
+            .collect();
         let selected = select_downloads_to_start(pending, &active_by_provider, slots);
         if selected.is_empty() {
             schedule_next_retry_wakeup(state.clone(), &map);
@@ -3410,6 +3414,29 @@ pub async fn schedule_pending_downloads(state: AppState) {
                 "scheduler selecionou downloads {:?}",
                 selected.iter().map(|item| item.id.as_str()).collect::<Vec<_>>()
             );
+        }
+
+        // Avisa na UI por que um download elegível não entrou: preso no limite
+        // por-provedor (ex.: Mega=1), não no limite geral. Sem isso ficava
+        // "Aguardando" sem explicação enquanto outro do mesmo host baixava.
+        let selected_ids: std::collections::HashSet<&str> =
+            selected.iter().map(|candidate| candidate.id.as_str()).collect();
+        for (id, provider) in &pending_meta {
+            let Some(download) = map.get_mut(id) else { continue };
+            let blocked_by_provider_limit =
+                !selected_ids.contains(id.as_str()) && provider_parallel_limit(provider).is_some();
+            let hint = format!(
+                "Aguardando outro download do {provider} terminar (limite de 1 por vez para este host)"
+            );
+            if blocked_by_provider_limit {
+                if download.error.as_deref() != Some(hint.as_str()) {
+                    download.error = Some(hint);
+                    download.error_kind = Some("provider_limit".to_string());
+                }
+            } else if download.error_kind.as_deref() == Some("provider_limit") {
+                download.error = None;
+                download.error_kind = None;
+            }
         }
 
         for candidate in &selected {
@@ -4079,8 +4106,18 @@ fn has_server_reported_wait(message: &str) -> bool {
 // (Mega, 1Fichier, Katfile etc. tinham essa trava pra evitar 509/bloqueio por
 // conexões paralelas — mantém o dado em capabilities_for_provider_name caso
 // precise voltar, só não aplica mais como hard-cap aqui).
-fn provider_parallel_limit(_provider: &str) -> Option<usize> {
-    None
+//
+// EXCEÇÃO reintroduzida pro Mega (visto ao vivo): a cota por IP é curta e
+// única — assim que libera, 4 downloads grandes disparando juntos consomem
+// a cota inteira antes de qualquer um progredir de verdade, e o próprio
+// bloqueio some de novo sem ninguém ter baixado nada. Limitar a 1 por vez dá
+// chance de pelo menos um progredir enquanto a janela está aberta.
+fn provider_parallel_limit(provider: &str) -> Option<usize> {
+    if provider.eq_ignore_ascii_case("mega") {
+        Some(1)
+    } else {
+        None
+    }
 }
 
 fn parse_premium_required_error(message: &str) -> Option<String> {
@@ -4600,11 +4637,13 @@ mod tests {
 
     #[test]
     fn scheduler_respects_priority_before_created_at() {
+        // Provider sem cap (MediaFire) — testa só a ordenação por prioridade,
+        // sem interferência do limite de 1 do Mega.
         let selected = select_downloads_to_start(
             vec![
-                candidate("low", "Mega", 10, 0),
-                candidate("high", "Mega", 20, 5),
-                candidate("mid", "Mega", 5, 2),
+                candidate("low", "MediaFire", 10, 0),
+                candidate("high", "MediaFire", 20, 5),
+                candidate("mid", "MediaFire", 5, 2),
             ],
             &std::collections::HashMap::new(),
             2,
@@ -4615,11 +4654,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_has_no_hard_provider_cap() {
+    fn scheduler_has_no_hard_provider_cap_except_mega() {
         // Usuário pediu explicitamente: o limite configurado (ex.: 10) vale por
         // inteiro, sem nenhum provider capando sozinho em 1 conexão simultânea —
-        // mesmo hosts que antes tinham essa trava (Mega, BRFiles) agora só
-        // entram na ordenação de fairness, não num hard-cap.
+        // EXCETO o Mega, reintroduzido depois (visto ao vivo: cota curta por IP,
+        // 4 downloads simultâneos consumiam a janela inteira sem nenhum progredir).
         let active = std::collections::HashMap::from([(String::from("Mega"), 1usize)]);
         let selected = select_downloads_to_start(
             vec![
@@ -4631,8 +4670,10 @@ mod tests {
             3,
         );
 
+        // Mega já está em 1 (no limite) — "a" e "b" ficam de fora; BRFiles não
+        // tem cap e entra normalmente.
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
+        assert_eq!(ids, vec!["c".to_string()]);
     }
 
     #[test]
@@ -4648,13 +4689,17 @@ mod tests {
             2,
         );
 
+        // Mega (cap=1) pega só "b" (o primeiro por fairness/FIFO); "c" fica de
+        // fora pelo cap, e o slot restante vai pro BRFiles sem cap.
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
+        assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
     }
 
     #[test]
-    fn mega_free_queue_has_no_hard_provider_cap() {
-        assert_eq!(provider_parallel_limit("Mega"), None);
+    fn mega_has_hard_provider_cap_of_one() {
+        assert_eq!(provider_parallel_limit("Mega"), Some(1));
+        assert_eq!(provider_parallel_limit("mega"), Some(1));
+        assert_eq!(provider_parallel_limit("MediaFire"), None);
     }
 
     #[test]
