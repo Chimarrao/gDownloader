@@ -13,6 +13,9 @@ name = "gdownloader-backend"
 path = "src/main.rs"
 
 [dependencies]
+# Trava de arquivo (flock) pra garantir instância única do backend — o SO libera
+# sozinho se o processo morrer (crash/SIGKILL), sem deixar lock "preso".
+fs2 = "0.4"
 # Servidor HTTP assíncrono (equivalente a Express no Node.js)
 axum = { version = "0.7", features = ["ws", "multipart"] }
 # Runtime assíncrono — permite usar async/await no Rust (equivalente a Node.js event loop)

@@ -65,6 +65,25 @@ async fn async_main() -> anyhow::Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     std::fs::create_dir_all(&db_parent).ok();
 
+    // Instância única a nível de backend: sem isso, duas instâncias do Electron
+    // (ou um reinício que não matou a anterior a tempo) sobem dois processos
+    // Rust escrevendo no MESMO SQLite ao mesmo tempo — DB inconsistente, WS
+    // duplicado, downloads escalonados duas vezes. flock() é liberado pelo SO
+    // mesmo se o processo morrer sem aviso (crash/SIGKILL), então nunca fica
+    // "preso" travando o próximo início de verdade.
+    let lock_path = db_parent.join(".gdownloader.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+    if fs2::FileExt::try_lock_exclusive(&lock_file).is_err() {
+        eprintln!(
+            "Já existe uma instância do gDownloader rodando (lock: {}). Encerrando esta.",
+            lock_path.display()
+        );
+        std::process::exit(1);
+    }
+
     // Diretório de logs: mesmo nível do banco de dados → backend/logs/
     let log_dir = if db_parent
         .file_name()
@@ -83,24 +102,11 @@ async fn async_main() -> anyhow::Result<()> {
     let app_appender = tracing_appender::rolling::daily(&log_dir, "app.log");
     let (app_writer, _app_guard) = tracing_appender::non_blocking(app_appender);
 
-    // Writer para mirrors.log (rotação diária)
-    let mirrors_appender = tracing_appender::rolling::daily(&log_dir, "mirrors.log");
-    let (mirrors_writer, _mirrors_guard) = tracing_appender::non_blocking(mirrors_appender);
-
     // Layer de app.log — captura tudo (info+)
     let app_layer = fmt::layer()
         .with_writer(app_writer)
         .with_ansi(false)
         .with_target(true);
-
-    // Layer de mirrors.log — só logs com target "mirrors"
-    let mirrors_layer = fmt::layer()
-        .with_writer(mirrors_writer)
-        .with_ansi(false)
-        .with_target(true)
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-            meta.target().starts_with("mirrors")
-        }));
 
     // O terminal é lento para processar um grande volume de texto e o Electron já
     // persiste os logs em arquivo. Portanto, só avisos e erros chegam ao stderr,
@@ -113,11 +119,10 @@ async fn async_main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,gdownloader_backend=info,mirrors=info")),
+                .unwrap_or_else(|_| EnvFilter::new("info,gdownloader_backend=info")),
         )
         .with(stderr_layer)
         .with(app_layer)
-        .with(mirrors_layer)
         .init();
 
     let state = create_state(&db_path)?;

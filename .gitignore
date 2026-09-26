@@ -24,6 +24,7 @@ backend/target/
 backend/logs/
 logs/
 backend/backend/
+backend/database/.gdownloader.lock
 
 # Documentos de trabalho locais (não versionados)
 melhorias.odt
