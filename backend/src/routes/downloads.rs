@@ -3737,6 +3737,13 @@ pub async fn recover_downloads_from_db(state: AppState) {
         // marcava vídeos válidos como corrompidos. Revalida somente esse caso
         // específico usando assinatura/magic bytes, sem apagar nem baixar de novo.
         restore_katfile_rounded_size_false_positive(&mut download).await;
+        // `check_completed_download_integrity` usava `child.path` (relativo)
+        // direto, sem juntar com `dest_path`, então TODO download em pasta
+        // (Mega, MediaFire) que terminasse de baixar 100% certo era marcado
+        // "corrompido: arquivo inacessível" — a checagem olhava pro lugar
+        // errado. Revalida com o caminho correto; se os bytes batem de
+        // verdade, recupera pra Completo sem apagar nem baixar de novo.
+        restore_folder_child_path_false_positive(&mut download).await;
 
         if matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying) {
             download.status = DownloadStatus::Pending;
@@ -3885,17 +3892,19 @@ async fn check_completed_download_integrity(
             .map(str::to_string);
     }
 
+    let root = FsPath::new(dest_path);
     for child in children.unwrap_or_default() {
         if child.is_folder {
             continue;
         }
-        let child_path = child.path.clone().unwrap_or_else(|| {
-            FsPath::new(dest_path)
-                .join(&child.filename)
-                .to_string_lossy()
-                .into_owned()
-        });
-        if let Some(reason) = crate::integrity::check_file(&child_path, 0)
+        // `child.path` é relativo a `dest_path` (é assim que o download real
+        // escreve o arquivo — ver `child_artifact_path`). Usá-lo direto, sem
+        // juntar com `dest_path`, fazia a checagem olhar pro lugar errado e
+        // declarar "arquivo inacessível" em downloads que na verdade
+        // terminaram 100% certos.
+        let child_path = child_artifact_path(root, child);
+        let child_path_str = child_path.to_string_lossy();
+        if let Some(reason) = crate::integrity::check_file(&child_path_str, 0)
             .await
             .reason()
         {
@@ -3978,6 +3987,51 @@ fn restore_legacy_fichier_temporary_link_failure(download: &mut Download, now: u
 /// arquivo completo com um número de bytes diferente. Esta rotina é restrita a
 /// erros de divergência de tamanho desse provider; qualquer outra suspeita de
 /// integridade continua exigindo uma nova tentativa explícita do usuário.
+/// Reavalia downloads em pasta marcados "corrompido: arquivo inacessível" pelo
+/// bug do caminho relativo em `check_completed_download_integrity` (corrigido
+/// nesta versão). Se os arquivos batem certinho com o caminho correto
+/// (`dest_path` + `child.path`), recupera pra Completo — sem apagar nem
+/// baixar de novo, já que os bytes sempre estiveram lá.
+async fn restore_folder_child_path_false_positive(download: &mut Download) -> bool {
+    let is_candidate = matches!(download.status, DownloadStatus::Corrupted)
+        && download.is_folder
+        && download.error_kind.as_deref() == Some("integrity")
+        && download
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("arquivo inacessível"));
+    if !is_candidate {
+        return false;
+    }
+
+    let still_broken = check_completed_download_integrity(
+        &download.dest_path,
+        download.bytes_downloaded,
+        true,
+        download.children.as_deref(),
+    )
+    .await;
+    if still_broken.is_some() {
+        return false;
+    }
+
+    download.status = DownloadStatus::Complete;
+    download.speed_bps = 0;
+    download.eta_secs = 0;
+    download.retry_at = None;
+    download.error = None;
+    download.error_kind = None;
+    if let Some(children) = download.children.as_mut() {
+        for child in children.iter_mut() {
+            child.status = Some(DownloadStatus::Complete);
+        }
+    }
+    if download.completed_at.is_none() {
+        download.completed_at = Some(current_unix_secs());
+    }
+    true
+}
+
 async fn restore_katfile_rounded_size_false_positive(download: &mut Download) -> bool {
     let is_rounded_size_false_positive = download.provider.eq_ignore_ascii_case("katfile")
         && matches!(download.status, DownloadStatus::Corrupted)
@@ -4900,6 +4954,81 @@ mod tests {
         assert_eq!(download.status, DownloadStatus::Corrupted);
         assert!(download.error.as_deref().is_some_and(|error| error.contains("página de verificação")));
         let _ = tokio::fs::remove_dir_all(sendnow_dir).await;
+    }
+
+    #[tokio::test]
+    async fn restore_folder_child_path_false_positive_recovers_real_files() {
+        // Reproduz o bug: os arquivos existem em `dest_path/child.path`, mas a
+        // checagem antiga usava `child.path` sozinho (sem juntar com
+        // `dest_path`) e nunca os encontrava — marcando "corrompido" um
+        // download que na verdade terminou 100% certo.
+        let dir = std::env::temp_dir().join(format!("gdl_folder_fp_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let child_bytes = [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00];
+        tokio::fs::write(dir.join("filme.parte1.rar"), child_bytes).await.unwrap();
+
+        let mut download = Download {
+            id: "mega-folder".to_string(),
+            url: "https://mega.nz/folder/abc#key".to_string(),
+            provider: "Mega".to_string(),
+            identity_key: "mega:abc".to_string(),
+            filename: "filme".to_string(),
+            size: child_bytes.len() as u64,
+            dest_path: dir.to_string_lossy().to_string(),
+            status: DownloadStatus::Corrupted,
+            bytes_downloaded: child_bytes.len() as u64,
+            speed_bps: 0,
+            eta_secs: 0,
+            duration_secs: None,
+            is_folder: true,
+            children: Some(vec![FileChildInfo {
+                filename: "filme.parte1.rar".to_string(),
+                size: child_bytes.len() as u64,
+                mime_type: None,
+                is_folder: false,
+                path: Some("filme.parte1.rar".to_string()),
+                source_url: None,
+                bytes_downloaded: Some(child_bytes.len() as u64),
+                speed_bps: Some(0),
+                eta_secs: Some(0),
+                status: Some(DownloadStatus::Complete),
+            }]),
+            retry_count: 0,
+            max_retries: 0,
+            speed_limit_kib: 0,
+            parallel_parts: 1,
+            selected_children: None,
+            expected_hash: None,
+            retry_at: None,
+            captcha_type: None,
+            captcha_sitekey: None,
+            captcha_page_url: None,
+            captcha_token: None,
+            error: Some("Arquivo possivelmente corrompido: filme.parte1.rar: arquivo inacessível: No such file or directory (os error 2)".to_string()),
+            error_kind: Some("integrity".to_string()),
+            priority: 0,
+            created_at: 0,
+            started_at: None,
+            completed_at: None,
+            last_progress_at: None,
+            pinned: false,
+            package_id: None,
+            request_headers: None,
+            network_route: None,
+            thumbnail_url: None,
+            thumbnail_data: None,
+            channel_name: None,
+            channel_thumbnail_url: None,
+            auto_tor_on_limit: false,
+            tor_required: false,
+        };
+
+        assert!(restore_folder_child_path_false_positive(&mut download).await);
+        assert_eq!(download.status, DownloadStatus::Complete);
+        assert_eq!(download.error, None);
+        assert_eq!(download.error_kind, None);
+
+        let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
     #[test]
