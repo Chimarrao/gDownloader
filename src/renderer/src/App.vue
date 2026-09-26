@@ -248,8 +248,14 @@
             <div v-if="torPanelOpen" class="tor-panel">
               <div class="tor-panel-head">
                 <div>
-                  <strong>{{ torPanelTitle }}</strong>
-                  <span>{{ torEndpointLabel }}</span>
+                  <strong>Rede Tor</strong>
+                  <span class="tor-status-line">
+                    <span
+                      class="tor-status-dot"
+                      :class="torState.state"
+                    ></span>
+                    {{ torConnectionStateLabel }}
+                  </span>
                 </div>
                 <button
                   class="tor-power-btn"
@@ -270,58 +276,86 @@
                   <span>{{ torPowerLabel }}</span>
                 </button>
               </div>
-              <div
-                class="tor-route"
-                :class="{ empty: torRouteNodes.length === 0 }"
-              >
+              <div class="tor-route-wrap">
+                <span class="tor-route-label">Rota da conexão</span>
                 <div
-                  v-for="(node, index) in torRouteNodes"
-                  :key="node.role"
-                  class="tor-node"
-                  :class="{
-                    active:
-                      torState.state === 'connected' ||
-                      torState.state === 'connecting',
-                    pulse:
-                      torState.state === 'connecting' &&
-                      index === torPulseIndex,
-                  }"
+                  class="tor-route"
+                  :class="{ empty: torRouteNodes.length === 0 }"
                 >
-                  <span class="tor-node-dot">
-                    <span
-                      v-if="flagClass(node.code)"
-                      :class="flagClass(node.code)"
-                    ></span>
-                    <span v-else>{{ node.code }}</span>
-                  </span>
-                  <strong>{{ node.role }}</strong>
-                  <em>{{ node.country }}</em>
-                </div>
-                <div v-if="torRouteNodes.length === 0" class="tor-empty-state">
-                  <strong>{{
-                    torState.state === "connected"
-                      ? "Circuito confirmado"
-                      : "Não conectado"
-                  }}</strong>
-                  <span>{{
-                    torState.state === "connected"
-                      ? "Saída validada; rota detalhada indisponível"
-                      : "Nenhum circuito Tor ativo"
-                  }}</span>
+                  <template v-for="(node, index) in torRouteNodes" :key="node.role + index">
+                    <i v-if="index > 0" class="pi pi-angle-right tor-route-arrow"></i>
+                    <div
+                      class="tor-node"
+                      :class="{
+                        active:
+                          torState.state === 'connected' ||
+                          torState.state === 'connecting',
+                        pulse:
+                          torState.state === 'connecting' &&
+                          index === torPulseIndex,
+                        exit: index === torRouteNodes.length - 1,
+                      }"
+                    >
+                      <span
+                        v-if="index === torRouteNodes.length - 1"
+                        class="tor-node-badge"
+                        >Saída</span
+                      >
+                      <span class="tor-node-dot">
+                        <span
+                          v-if="flagClass(node.code)"
+                          :class="flagClass(node.code)"
+                        ></span>
+                        <span v-else>{{ node.code }}</span>
+                      </span>
+                      <strong>{{ node.country }}</strong>
+                      <em>{{ node.role }}</em>
+                    </div>
+                  </template>
+                  <div v-if="torRouteNodes.length === 0" class="tor-empty-state">
+                    <strong>{{
+                      torState.state === "connected"
+                        ? "Circuito confirmado"
+                        : "Não conectado"
+                    }}</strong>
+                    <span>{{
+                      torState.state === "connected"
+                        ? "Saída validada; rota detalhada indisponível"
+                        : "Nenhum circuito Tor ativo"
+                    }}</span>
+                  </div>
                 </div>
               </div>
-              <div class="tor-panel-meta">
-                <span>{{ torExitLabel }}</span>
-                <span
-                  class="tor-test-result"
-                  :class="{
-                    ok: torState.isTor === true,
-                    warn: torState.isTor === false,
-                  }"
-                >
-                  {{ torTestLabel }}
-                </span>
+              <div class="tor-panel-stats">
+                <div class="tor-stat">
+                  <i class="pi pi-sitemap"></i>
+                  <div>
+                    <strong>{{ torRouteNodes.length }} nós</strong>
+                    <span>na rota da conexão</span>
+                  </div>
+                </div>
+                <div class="tor-stat">
+                  <i class="pi pi-map-marker"></i>
+                  <div>
+                    <strong>{{ torState.ip ?? "—" }}</strong>
+                    <span>IP de saída</span>
+                  </div>
+                </div>
+                <div class="tor-stat">
+                  <i class="pi pi-clock"></i>
+                  <div>
+                    <strong>{{ torLatencyMs != null ? `${torLatencyMs} ms` : "—" }}</strong>
+                    <span>Latência</span>
+                  </div>
+                </div>
               </div>
+              <p
+                v-if="torState.state === 'connected' && torState.isTor !== undefined"
+                class="tor-test-note"
+                :class="{ ok: torState.isTor === true, warn: torState.isTor === false }"
+              >
+                {{ torTestLabel }}
+              </p>
               <div class="tor-panel-actions">
                 <button
                   :disabled="torBusy || torState.state !== 'connected'"
@@ -548,23 +582,14 @@ const torPowerLabel = computed(() => {
     return "Desconectando";
   return torState.value.state === "connected" ? "Desconectar" : "Conectar";
 });
-const torPanelTitle = computed(() =>
-  torState.value.state === "connected"
-    ? "Downloads via Tor ativos"
-    : "Rede Tor",
-);
-const torEndpointLabel = computed(() =>
-  torState.value.state === "connected"
-    ? `${torState.value.host}:${torState.value.port}`
-    : "Clique para conectar",
-);
-const torExitLabel = computed(() => {
-  if (torState.value.state !== "connected") return "Saída: indisponível";
-  if (!torState.value.ip) return "Saída: aguardando teste";
-  return torState.value.country
-    ? `Saída: ${torState.value.ip} - ${torState.value.country}`
-    : `Saída: ${torState.value.ip}`;
+const torConnectionStateLabel = computed(() => {
+  if (torBusy.value && torState.value.state === "connecting") return "Conectando…";
+  if (torBusy.value && torState.value.state === "disconnecting") return "Desconectando…";
+  return torState.value.state === "connected" ? "Conectado" : "Desconectado";
 });
+// Medido na hora (round-trip de "Testar conexão"/"Nova identidade") — não é
+// telemetria do circuito Tor em si, só o tempo da chamada mais recente.
+const torLatencyMs = ref<number | null>(null);
 const torTestLabel = computed(() => {
   if (torState.value.state !== "connected") return "Teste: desconectado";
   if (torState.value.isTor === true) return "Teste: tráfego via Tor";
@@ -983,6 +1008,7 @@ async function disconnectTor(): Promise<void> {
   try {
     const payload = await window.api.tor.disconnect();
     applyTorPayload(payload);
+    torLatencyMs.value = null;
   } catch (error) {
     torError.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -993,12 +1019,14 @@ async function disconnectTor(): Promise<void> {
 async function testTorConnection(): Promise<void> {
   torBusy.value = true;
   torError.value = "";
+  const startedAt = Date.now();
   try {
     const payload = await withTimeout(
       window.api.tor.testConnection(),
       25_000,
       "Tempo esgotado testando a conexão Tor.",
     );
+    torLatencyMs.value = Date.now() - startedAt;
     applyTorPayload(payload);
   } catch (error) {
     torError.value = error instanceof Error ? error.message : String(error);
@@ -1694,12 +1722,12 @@ async function onDownloadComplete(
   right: 0;
   top: calc(100% + 8px);
   z-index: 30;
-  width: 360px;
-  padding: 14px;
+  width: 400px;
+  padding: 18px;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: 20px;
   background: var(--bg-card);
-  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.26);
 }
 
 .tor-panel-head {
@@ -1713,27 +1741,49 @@ async function onDownloadComplete(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 5px;
 }
 
 .tor-panel-head strong {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 15px;
 }
 
-.tor-panel-head span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.tor-power-btn {
-  height: 32px;
+.tor-status-line {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tor-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+
+.tor-status-dot.connected {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+
+.tor-status-dot.connecting,
+.tor-status-dot.disconnecting {
+  background: #f59e0b;
+  animation: tor-pulse 1.2s ease-in-out infinite;
+}
+
+.tor-power-btn {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--accent-color) 10%, transparent);
   color: var(--accent-color);
   cursor: pointer;
@@ -1747,36 +1797,43 @@ async function onDownloadComplete(
   opacity: 0.75;
 }
 
-.tor-route {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 14px;
+.tor-route-wrap {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed var(--border-color);
+  border-radius: 14px;
 }
 
-.tor-route::before {
-  content: "";
-  position: absolute;
-  left: 17%;
-  right: 17%;
-  top: 19px;
-  height: 2px;
-  background: color-mix(in srgb, var(--accent-color) 32%, var(--border-color));
+.tor-route-label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.tor-route {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-x: auto;
 }
 
 .tor-route.empty {
-  grid-template-columns: 1fr;
+  display: block;
 }
 
-.tor-route.empty::before {
-  display: none;
+.tor-route-arrow {
+  margin-top: 15px;
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
 }
 
 .tor-node {
   position: relative;
   z-index: 1;
-  min-width: 0;
+  min-width: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1788,9 +1845,20 @@ async function onDownloadComplete(
     opacity 0.25s ease;
 }
 
+.tor-node-badge {
+  position: absolute;
+  top: -10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-color);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+
 .tor-node-dot {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1812,6 +1880,11 @@ async function onDownloadComplete(
   color: #16a34a;
 }
 
+.tor-node.exit.active .tor-node-dot {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 22%, transparent);
+}
+
 .tor-node.pulse .tor-node-dot {
   animation: tor-pulse 1.2s ease-in-out infinite;
 }
@@ -1824,7 +1897,7 @@ async function onDownloadComplete(
 .tor-node em {
   max-width: 100%;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-style: normal;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1838,8 +1911,6 @@ async function onDownloadComplete(
   justify-content: center;
   gap: 4px;
   padding: 12px;
-  border: 1px dashed var(--border-color);
-  border-radius: 8px;
   color: var(--text-muted);
   text-align: center;
 }
@@ -1853,29 +1924,58 @@ async function onDownloadComplete(
   font-size: 11px;
 }
 
-.tor-panel-meta {
+.tor-panel-stats {
   display: grid;
-  gap: 4px;
-  margin-top: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.tor-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 6px;
+}
+
+.tor-stat i {
+  color: var(--text-muted);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.tor-stat div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tor-stat strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tor-stat span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.tor-test-note {
+  margin: 10px 0 0;
   color: var(--text-muted);
   font-size: 11px;
 }
 
-.tor-test-result {
-  width: fit-content;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
-}
-
-.tor-test-result.ok {
+.tor-test-note.ok {
   color: #15803d;
-  background: rgba(34, 197, 94, 0.14);
 }
 
-.tor-test-result.warn {
+.tor-test-note.warn {
   color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
 }
 
 .tor-panel-actions {
