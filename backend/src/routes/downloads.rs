@@ -58,6 +58,177 @@ fn normalize_identity_url(url: &str) -> String {
     url.split('#').next().unwrap_or(url).trim().to_string()
 }
 
+/// Chave GROSSA de origem — provider + URL, sem folder/selected_children (ao
+/// contrário de `download_identity_key`, que existe pra detectar duplicata
+/// exata). Duas capturas da MESMA pasta com subconjuntos de arquivos
+/// diferentes têm identity_key diferente (correto pra duplicata), mas devem
+/// cair no mesmo GRUPO — é a mesma origem, só pedaços diferentes dela.
+fn source_group_key(provider_name: &str, url: &str) -> String {
+    format!(
+        "{}::{}",
+        providers::provider_id_from_name(provider_name),
+        normalize_identity_url(url)
+    )
+}
+
+/// Passada única na inicialização: agrupa retroativamente downloads que já
+/// existiam soltos (criados antes desta função existir, ou que escaparam do
+/// agrupamento por qualquer motivo) e compartilham a mesma origem.
+async fn auto_group_existing_ungrouped_downloads(state: &AppState) {
+    let groups: Vec<(String, Option<String>, Vec<String>, String)> = {
+        let map = state.downloads.lock().await;
+        let mut by_key: std::collections::HashMap<String, Vec<&Download>> = std::collections::HashMap::new();
+        for download in map.values() {
+            by_key
+                .entry(source_group_key(&download.provider, &download.url))
+                .or_default()
+                .push(download);
+        }
+        by_key
+            .into_iter()
+            .filter(|(_, members)| members.len() > 1)
+            .map(|(key, members)| {
+                let existing_package_id = members.iter().find_map(|d| d.package_id.clone());
+                let name = members[0].filename.clone();
+                let ids: Vec<String> = members.iter().map(|d| d.id.clone()).collect();
+                (key, existing_package_id, ids, name)
+            })
+            .collect()
+    };
+
+    for (group_key, existing_package_id, ids, package_name) in groups {
+        // Já todos no mesmo pacote — nada a fazer.
+        if let Some(pkg_id) = &existing_package_id {
+            let all_same = {
+                let map = state.downloads.lock().await;
+                ids.iter().all(|id| map.get(id).and_then(|d| d.package_id.as_deref()) == Some(pkg_id.as_str()))
+            };
+            if all_same {
+                continue;
+            }
+        }
+
+        let package_id = match existing_package_id {
+            Some(id) => id,
+            None => {
+                let id = Uuid::new_v4().to_string();
+                let now = current_unix_secs();
+                let inserted = state.db.lock().ok().map(|db| {
+                    db.execute(
+                        "INSERT INTO packages (id, name, color, comment, dest_dir_override, priority, created_at)
+                         VALUES (?1, ?2, ?3, ?4, NULL, 0, ?5)",
+                        rusqlite::params![id, package_name, "#7c6fff", Option::<String>::None, now as i64],
+                    )
+                });
+                if inserted.is_none() {
+                    continue;
+                }
+                id
+            }
+        };
+
+        {
+            let mut map = state.downloads.lock().await;
+            for id in &ids {
+                if let Some(download) = map.get_mut(id) {
+                    download.package_id = Some(package_id.clone());
+                }
+            }
+        }
+        if let Ok(db) = state.db.lock() {
+            for id in &ids {
+                let _ = db.execute(
+                    "UPDATE downloads SET package_id = ?1 WHERE id = ?2",
+                    rusqlite::params![package_id, id],
+                );
+            }
+        }
+        info!(
+            target: "gdownloader_backend::downloads",
+            "auto-agrupamento retroativo: {} downloads no pacote {} (origem: {})",
+            ids.len(), package_id, group_key
+        );
+    }
+}
+
+/// Junta downloads que vieram da MESMA URL/pasta de origem num pacote comum
+/// — item pedido explicitamente pelo usuário: capturar a mesma pasta do Mega
+/// em adições separadas (ex.: por causa do limite de 1 do Mega, ou só por
+/// esquecimento) criava vários registros soltos com o mesmo nome em vez de
+/// um pacote único, como já acontecia quando o pacote era escolhido à mão.
+async fn auto_group_by_source(state: &AppState, new_id: &str) -> Option<String> {
+    let (group_key, existing_package_id, matched_ids, package_name) = {
+        let map = state.downloads.lock().await;
+        let new_download = map.get(new_id)?;
+        let group_key = source_group_key(&new_download.provider, &new_download.url);
+        let package_name = new_download.filename.clone();
+
+        let matches: Vec<&Download> = map
+            .values()
+            .filter(|d| d.id != new_id && source_group_key(&d.provider, &d.url) == group_key)
+            .collect();
+        if matches.is_empty() {
+            return None;
+        }
+
+        let existing_package_id = matches
+            .iter()
+            .find_map(|d| d.package_id.clone())
+            .or_else(|| map.get(new_id).and_then(|d| d.package_id.clone()));
+        let matched_ids: Vec<String> = matches.iter().map(|d| d.id.clone()).collect();
+        (group_key, existing_package_id, matched_ids, package_name)
+    };
+
+    let package_id = match existing_package_id {
+        Some(id) => id,
+        None => {
+            let id = Uuid::new_v4().to_string();
+            let now = current_unix_secs();
+            let inserted = state.db.lock().ok().map(|db| {
+                db.execute(
+                    "INSERT INTO packages (id, name, color, comment, dest_dir_override, priority, created_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL, 0, ?5)",
+                    rusqlite::params![id, package_name, "#7c6fff", Option::<String>::None, now as i64],
+                )
+            });
+            if inserted.is_none() {
+                warn!(
+                    target: "gdownloader_backend::downloads",
+                    "auto-agrupamento: falha ao criar pacote pra group_key={}", group_key
+                );
+                return None;
+            }
+            id
+        }
+    };
+
+    let mut ids_to_assign = matched_ids;
+    ids_to_assign.push(new_id.to_string());
+
+    {
+        let mut map = state.downloads.lock().await;
+        for id in &ids_to_assign {
+            if let Some(download) = map.get_mut(id) {
+                download.package_id = Some(package_id.clone());
+            }
+        }
+    }
+    if let Ok(db) = state.db.lock() {
+        for id in &ids_to_assign {
+            let _ = db.execute(
+                "UPDATE downloads SET package_id = ?1 WHERE id = ?2",
+                rusqlite::params![package_id, id],
+            );
+        }
+    }
+    info!(
+        target: "gdownloader_backend::downloads",
+        "auto-agrupados {} downloads no pacote {} (origem: {})",
+        ids_to_assign.len(), package_id, group_key
+    );
+    Some(package_id)
+}
+
 /// Aplica um nome escolhido pelo usuário preservando a extensão original quando ele
 /// não digitou uma. Remove separadores de caminho e caracteres inválidos.
 fn apply_custom_filename(original: &str, custom: &str) -> String {
@@ -544,7 +715,7 @@ pub async fn add_download_internal(
         .unwrap_or_default()
         .as_secs();
 
-    let download = Download {
+    let mut download = Download {
         id: id.clone(),
         url: req.url.clone(),
         provider: provider.name().to_string(),
@@ -617,6 +788,10 @@ pub async fn add_download_internal(
     // Cacheia a thumbnail em base64 em background (persiste entre reaberturas).
     if let Some(thumb) = download.thumbnail_url.clone() {
         spawn_thumbnail_cache(state.clone(), download.id.clone(), thumb);
+    }
+
+    if let Some(package_id) = auto_group_by_source(&state, &download.id).await {
+        download.package_id = Some(package_id);
     }
 
     info!(
@@ -3807,6 +3982,7 @@ pub async fn recover_downloads_from_db(state: AppState) {
     }
 
     info!(target: "gdownloader_backend::downloads", "downloads recuperados do SQLite");
+    auto_group_existing_ungrouped_downloads(&state).await;
     schedule_pending_downloads(state).await;
 }
 
@@ -5040,6 +5216,24 @@ mod tests {
         );
 
         assert_eq!(policy.retry_delay_secs, 8109);
+    }
+
+    #[test]
+    fn source_group_key_ignores_fragment_and_matches_same_folder() {
+        // As 3 capturas do mesmo folder do Mega, cada uma com um subconjunto
+        // de arquivos selecionado, devem cair na MESMA chave de grupo mesmo
+        // com fragment/whitespace diferentes.
+        let a = source_group_key("Mega", "https://mega.nz/folder/bGAXWLaB#svA6IqCjC_SWjQbnDn8hlA");
+        let b = source_group_key("Mega", "https://mega.nz/folder/bGAXWLaB#svA6IqCjC_SWjQbnDn8hlA ");
+        let c = source_group_key("Mega", "https://mega.nz/folder/bGAXWLaB#outraChaveDeDecriptacao");
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+
+        let different_folder = source_group_key("Mega", "https://mega.nz/folder/OUTRAPASTA#x");
+        assert_ne!(a, different_folder);
+
+        let different_provider = source_group_key("MediaFire", "https://mega.nz/folder/bGAXWLaB#x");
+        assert_ne!(a, different_provider);
     }
 
     #[test]
