@@ -1727,6 +1727,15 @@ async function ensureTorRunningForIsolation(): Promise<{
 }
 
 app.whenReady().then(async () => {
+  // Em dev, o BrowserWindow.icon não muda o ícone do Dock/Cmd+Tab no macOS —
+  // só afeta a janela em si. Sem isso, o Dock mostra o ícone genérico do
+  // Electron mesmo com o ícone real configurado corretamente no build.
+  if (process.platform === "darwin" && app.dock) {
+    const dockIcon = nativeImage.createFromPath(getAppIconPath());
+    if (!dockIcon.isEmpty()) {
+      app.dock.setIcon(dockIcon);
+    }
+  }
   ytdlpService = createYtdlpService(app.getPath("userData"));
   ffmpegService = createFfmpegService(app.getPath("userData"));
   turnstileService = createTurnstileService(app.getPath("userData"));

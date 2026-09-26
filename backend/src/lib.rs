@@ -6,7 +6,6 @@ pub mod db;        // Persistência SQLite
 pub mod hash_verify;
 pub mod integrity; // Verificação leve de integridade pós-download
 pub(crate) mod migrations; // Migrações do banco de dados SQLite
-pub mod mirrors;   // Busca de mirrors (SSE streaming)
 pub mod models;    // Structs e enums de dados (Download, FileInfo, WsEvent, etc.)
 pub mod proxy_intercept;
 pub mod providers; // Lógica de cada provedor de download (Mega, MediaFire, etc.)
@@ -211,7 +210,6 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/downloads/:id/tor-required", post(routes::downloads::set_tor_required))
         .route("/captcha", get(routes::captcha::captcha_page))
         .route("/captcha/submit", post(routes::captcha::submit_captcha))
-        .route("/mirrors/search", get(routes::mirrors::search_mirrors))
         .route("/stats/realtime", get(routes::stats::get_realtime_stats))
         .route("/system/disk", get(routes::system::disk_usage))
         .route("/system/disks", get(routes::system::list_disks))

@@ -22,7 +22,6 @@ import (
 	"gdownloader-go/internal/integrity"
 	"gdownloader-go/internal/links"
 	"gdownloader-go/internal/migrations"
-	"gdownloader-go/internal/mirrors"
 	"gdownloader-go/internal/packages"
 	"gdownloader-go/internal/providers"
 	"gdownloader-go/internal/proxyintercept"
@@ -91,9 +90,6 @@ func main() {
 	// System — portado de routes/system.rs (disk usage)
 	r.HandleFunc("/system/disk", system.DiskUsageHandler).Methods("GET")
 	r.HandleFunc("/system/disks", system.ListDisksHandler).Methods("GET")
-
-	// Mirrors — portado de routes/mirrors.rs + mirrors/mod.rs + searchers.rs (SSE mirrors search)
-	r.HandleFunc("/mirrors/search", mirrors.Handler).Methods("GET")
 
 	// Hash verify + Integrity — portado de hash_verify.rs + integrity.rs
 	r.HandleFunc("/hash/verify", hashverify.Handler).Methods("POST")

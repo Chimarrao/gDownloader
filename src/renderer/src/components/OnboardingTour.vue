@@ -141,12 +141,6 @@ const steps: TourStep[] = [
     body: "Decida o que fazer quando um arquivo já existe (padrão: salvar com sufixo).",
   },
   {
-    tab: "grabber",
-    selector: '[data-tour="mirrors"]',
-    title: "Busca de mirrors",
-    body: "Encontre espelhos alternativos quando um host está indisponível.",
-  },
-  {
     tab: "logs",
     selector: '[data-tour="logs-panel"]',
     title: "Leia os logs",

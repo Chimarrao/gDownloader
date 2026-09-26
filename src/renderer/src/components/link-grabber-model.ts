@@ -53,9 +53,3 @@ export interface CapturedRow {
   torRequired?: boolean
 }
 
-export interface MirrorViewResult {
-  url: string
-  source: string
-  hoster?: string | null
-  score: number
-}

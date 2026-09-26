@@ -74,7 +74,6 @@ export const defaultPublicSettings: PersistedSettings = {
     'completed',
     'hash',
   ],
-  lastFilters: { statuses: [], hosts: [], packages: [] },
 }
 
 export interface LegacyRootSettings extends AppSettingsSnapshot {

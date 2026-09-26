@@ -9,7 +9,6 @@ import type {
   TorrentPeerStatus,
   TorrentStatus,
 } from "../shared/types";
-import { splitSseMessages } from "./mirror-sse";
 
 // Porta do backend Rust (obtida via IPC e cacheada)
 let cachedPort: number | null = null;
@@ -41,7 +40,6 @@ async function fetchBackend(
     "/config",
     "/captcha",
     "/history",
-    "/mirrors",
     "/stats",
     "/system",
     "/hash",
@@ -105,52 +103,6 @@ async function fetchBackend(
   const port = await getPort();
   return fetch(`http://127.0.0.1:${port}${path}`, options);
 }
-
-// Callbacks registrados para eventos de mirrors (SSE)
-type MirrorStartPayload = {
-  filename: string;
-  total: number;
-};
-
-type MirrorProgressPayload = {
-  current: number;
-  total: number;
-  searcher: string;
-  phase: string;
-  newResults: number;
-  totalResults: number;
-  rawResults: number;
-  rejectedResults: number;
-  durationMs: number;
-  error?: string | null;
-};
-
-type MirrorResultPayload = {
-  url: string;
-  source: string;
-  hoster?: string | null;
-  score: number;
-};
-
-type MirrorDonePayload = {
-  filename: string;
-  searchers: number;
-  total: number;
-  hosters: number;
-  durationMs: number;
-};
-
-type MirrorRendererEvent =
-  | { type: "start"; payload: MirrorStartPayload }
-  | { type: "progress"; payload: MirrorProgressPayload }
-  | { type: "log"; payload: string }
-  | { type: "result"; payload: MirrorResultPayload }
-  | { type: "done"; payload: MirrorDonePayload }
-  | { type: "error"; payload: string };
-
-const mirrorEventHandlers: Array<(ev: MirrorRendererEvent) => void> = [];
-let activeMirrorController: AbortController | null = null;
-let activeMirrorSearchSeq = 0;
 
 type DownloadChannel =
   | "download:progress"
@@ -1024,199 +976,6 @@ const api = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, token }),
       }).then(() => undefined),
-  },
-
-  // ── Mirrors ──────────────────────────────────────────────────────────────
-  mirrors: {
-    /**
-     * Inicia a busca de mirrors via SSE no backend Rust.
-     * Os eventos chegam via onEvent; resolve quando termina.
-     */
-    search: async (filename: string): Promise<void> => {
-      activeMirrorSearchSeq += 1;
-      activeMirrorController?.abort();
-      const controller = new AbortController();
-      const searchSeq = activeMirrorSearchSeq;
-      activeMirrorController = controller;
-      const goPort = await getGoPort();
-      const rustPort = await getPort();
-      const primaryPort = goPort ?? rustPort;
-      const url = `http://127.0.0.1:${primaryPort}/mirrors/search?filename=${encodeURIComponent(filename)}`;
-      const fallbackUrl = goPort
-        ? `http://127.0.0.1:${rustPort}/mirrors/search?filename=${encodeURIComponent(filename)}`
-        : null;
-      const emit = (ev: MirrorRendererEvent): void => {
-        if (searchSeq !== activeMirrorSearchSeq) {
-          return;
-        }
-        for (const h of mirrorEventHandlers) h(ev);
-      };
-
-      const parseMessage = (payload: string): boolean => {
-        if (!payload) {
-          return false;
-        }
-
-        try {
-          const data = JSON.parse(payload) as Record<string, unknown>;
-          if (data.type === "start") {
-            emit({
-              type: "start",
-              payload: {
-                filename: String(data.filename ?? ""),
-                total: Number(data.total ?? 0),
-              },
-            });
-          } else if (data.type === "progress") {
-            emit({
-              type: "progress",
-              payload: {
-                current: Number(data.current ?? 0),
-                total: Number(data.total ?? 0),
-                searcher: String(data.searcher ?? ""),
-                phase: String(data.phase ?? ""),
-                newResults: Number(data.newResults ?? 0),
-                totalResults: Number(data.totalResults ?? 0),
-                rawResults: Number(data.rawResults ?? 0),
-                rejectedResults: Number(data.rejectedResults ?? 0),
-                durationMs: Number(data.durationMs ?? 0),
-                error: typeof data.error === "string" ? data.error : null,
-              },
-            });
-          } else if (data.type === "log") {
-            emit({ type: "log", payload: String(data.payload ?? "") });
-          } else if (data.type === "result") {
-            emit({
-              type: "result",
-              payload: {
-                url: String(data.url ?? ""),
-                source: String(data.source ?? ""),
-                hoster: typeof data.hoster === "string" ? data.hoster : null,
-                score: Number(data.score ?? 0),
-              },
-            });
-          } else if (data.type === "done") {
-            emit({
-              type: "done",
-              payload: {
-                filename: String(data.filename ?? ""),
-                searchers: Number(data.searchers ?? 0),
-                total: Number(data.total ?? 0),
-                hosters: Number(data.hosters ?? 0),
-                durationMs: Number(data.durationMs ?? 0),
-              },
-            });
-            return true;
-          }
-        } catch {
-          // Ignora mensagens SSE malformadas.
-        }
-
-        return false;
-      };
-
-      const fetchSse = async (targetUrl: string): Promise<Response> =>
-        fetch(targetUrl, {
-          headers: { Accept: "text/event-stream" },
-          cache: "no-store",
-          signal: controller.signal,
-        });
-      let response: Response | null = null;
-      try {
-        const primary = await fetchSse(url);
-        if (primary.ok && primary.body) {
-          response = primary;
-        } else if (primary.status === 404 && fallbackUrl) {
-          response = await fetchSse(fallbackUrl);
-        } else {
-          response = primary;
-        }
-      } catch (e) {
-        if (fallbackUrl && !controller.signal.aborted) {
-          try {
-            response = await fetchSse(fallbackUrl);
-          } catch {}
-        }
-      }
-      try {
-        if (!response || !response.ok || !response.body) {
-          emit({
-            type: "error",
-            payload: "Falha ao iniciar stream de mirrors",
-          });
-          return;
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let doneReceived = false;
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              break;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-
-            const parsed = splitSseMessages(buffer);
-            buffer = parsed.rest;
-
-            for (const message of parsed.messages) {
-              if (parseMessage(message.data)) {
-                doneReceived = true;
-                await reader.cancel().catch(() => undefined);
-                return;
-              }
-            }
-          }
-
-          const trailing = buffer.trim();
-          if (trailing && parseMessage(trailing)) {
-            doneReceived = true;
-          }
-        } finally {
-          reader.releaseLock();
-        }
-        if (!doneReceived && !controller.signal.aborted) {
-          emit({ type: "error", payload: "Conexão SSE perdida" });
-        }
-      } catch {
-        if (!controller.signal.aborted) {
-          emit({ type: "error", payload: "Conexão SSE perdida" });
-        }
-      } finally {
-        if (activeMirrorController === controller) {
-          activeMirrorController = null;
-        }
-      }
-    },
-
-    abort: (): void => {
-      activeMirrorSearchSeq += 1;
-      activeMirrorController?.abort();
-      activeMirrorController = null;
-    },
-
-    /**
-     * Subscreve a eventos de progresso da busca:
-     *   { type: 'start',    payload: { filename, total } }
-     *   { type: 'progress', payload: { current, total, searcher, phase, ... } }
-     *   { type: 'log',      payload: string }
-     *   { type: 'result',   payload: { url, source, hoster, score } }
-     *   { type: 'done',     payload: { filename, searchers, total, hosters, durationMs } }
-     *   { type: 'error',    payload: string }
-     * Retorna função de cleanup.
-     */
-    onEvent: (cb: (event: MirrorRendererEvent) => void) => {
-      mirrorEventHandlers.push(cb);
-      return () => {
-        const idx = mirrorEventHandlers.indexOf(cb);
-        if (idx >= 0) mirrorEventHandlers.splice(idx, 1);
-      };
-    },
   },
 
   // Stats

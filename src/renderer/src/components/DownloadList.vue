@@ -116,33 +116,6 @@
           <template v-if="(skeletonCount ?? 0) > 0"> · adicionando {{ skeletonCount }}</template>
         </span>
         <div class="toolbar-actions">
-          <label class="toolbar-sort">
-            <span>Status</span>
-            <select v-model="filterStatuses" class="toolbar-select" multiple size="1" @change="persistFilters">
-              <option v-for="status in statusFilterOptions" :key="status" :value="status">{{ status }}</option>
-            </select>
-          </label>
-          <label class="toolbar-sort">
-            <span>Host</span>
-            <select v-model="filterHosts" class="toolbar-select" multiple size="1" @change="persistFilters">
-              <option v-for="host in hostFilterOptions" :key="host" :value="host">{{ host }}</option>
-            </select>
-          </label>
-          <label class="toolbar-sort">
-            <span>Pacote</span>
-            <select v-model="filterPackages" class="toolbar-select" multiple size="1" @focus="void refreshPackages()" @change="persistFilters">
-              <option value="">Sem pacote</option>
-              <option v-for="pkg in packages" :key="pkg.id" :value="pkg.id">{{ pkg.name }}</option>
-            </select>
-          </label>
-          <button
-            v-if="hasActiveListFilters"
-            class="toolbar-btn"
-            title="Limpar filtros"
-            @click="clearListFilters"
-          >
-            Limpar filtros
-          </button>
           <div class="sort-menu-wrap">
             <button
               class="toolbar-btn sort-cycle-btn"
@@ -1045,11 +1018,6 @@
                 <code v-for="line in detailLogs[item.id]" :key="line">{{ line }}</code>
               </div>
 
-              <div v-else-if="activeDetailTab(item.id) === 'mirrors'" class="detail-action-pane">
-                <span>Buscar espelhos usando o nome atual do arquivo.</span>
-                <button class="toolbar-btn" @click="searchMirrorsFor(item)">Buscar mirrors</button>
-              </div>
-
               <div v-else-if="activeDetailTab(item.id) === 'peers'" class="detail-action-pane">
                 <span v-if="item.moduleId === 'torrent'">Peers serão listados aqui quando o provider torrent estiver ativo.</span>
                 <span v-else>Este download não é torrent.</span>
@@ -1450,9 +1418,6 @@ const visibleColumns = ref<string[]>([...defaultColumns])
 // Bump quando o layout do card mudar — invalida :key + v-memo dos itens já montados
 // (senão HMR/reloads deixam downloads antigos com o DOM esparso anterior).
 const rowLayoutVersion = 4
-const filterStatuses = ref<string[]>([])
-const filterHosts = ref<string[]>([])
-const filterPackages = ref<string[]>([])
 const uiDensity = ref<'comfortable' | 'compact' | 'dense'>('comfortable')
 const reorderAnimations = ref(true)
 const queuePanelCollapsed = ref(false)
@@ -1463,7 +1428,7 @@ const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
 const collapsedPackages = ref<Record<string, boolean>>({})
-type DetailTabId = 'files' | 'general' | 'logs' | 'mirrors' | 'peers' | 'history'
+type DetailTabId = 'files' | 'general' | 'logs' | 'peers' | 'history'
 
 const detailTabs = ref<Record<string, DetailTabId>>({})
 const detailLogs = ref<Record<string, string[]>>({})
@@ -1579,31 +1544,10 @@ const downloadChildNodeCache = new WeakMap<DownloadChild[], DerivedChildNode[]>(
 
 // ── Computed ───────────────────────────────────────────────
 const packageFilteredItems = computed(() => {
-  let base = items.value
-  if (selectedPackageId.value !== 'all') {
-    base = base.filter((item) => itemTypeTag(item).id === selectedPackageId.value)
-  }
-  if (filterStatuses.value.length > 0) {
-    base = base.filter((item) => filterStatuses.value.includes(item.status))
-  }
-  if (filterHosts.value.length > 0) {
-    base = base.filter((item) => filterHosts.value.includes(moduleLabel(item.moduleId)))
-  }
-  if (filterPackages.value.length > 0) {
-    base = base.filter((item) => filterPackages.value.includes(item.packageId ?? ''))
-  }
-  return base
+  if (selectedPackageId.value === 'all') return items.value
+  return items.value.filter((item) => itemTypeTag(item).id === selectedPackageId.value)
 })
 
-const statusFilterOptions = ['pending', 'downloading', 'paused', 'complete', 'error', 'waiting_captcha', 'rate_limited']
-const hostFilterOptions = computed(() => {
-  const hosts = new Set<string>()
-  for (const item of items.value) hosts.add(moduleLabel(item.moduleId))
-  return [...hosts].sort((a, b) => a.localeCompare(b))
-})
-const hasActiveListFilters = computed(() =>
-  filterStatuses.value.length > 0 || filterHosts.value.length > 0 || filterPackages.value.length > 0
-)
 const typeTags = computed(() => {
   const counts = new Map<string, { id: string; label: string; color: string; count: number }>()
   for (const item of items.value) {
@@ -1784,10 +1728,15 @@ watch(statSpeedBps, (value) => {
 const statCompletedCount = computed(
   () => items.value.filter((item) => item.status === DownloadStatusEnum.Complete).length,
 )
+// Usa effectiveEta (mesma função do ETA por-linha) em vez do etaSec cru: um
+// download com status "downloading" mas com a velocidade estagnada/velha
+// (sem progresso recente) tinha um etaSec desatualizado que podia sobrar de
+// uma amostra de velocidade quase zero — daí o "3 meses e 23 dias" no card.
 const statRemainingSecs = computed(() => {
   const etas = items.value
     .filter((item) => item.status === DownloadStatusEnum.Downloading)
-    .map((item) => item.etaSec || 0)
+    .map((item) => effectiveEta(item, nowTick.value))
+    .filter((eta) => eta > 0)
   return etas.length ? Math.max(...etas) : 0
 })
 // Pausar/retomar todos (item 6).
@@ -2373,36 +2322,8 @@ function eventKindLabel(kind: string): string {
   return labels[kind] ?? kind
 }
 
-async function persistFilters(): Promise<void> {
-  const settings = await window.api.settings.load().catch(() => null)
-  if (!settings) return
-  await window.api.settings.save({
-    ...settings,
-    lastFilters: {
-      statuses: filterStatuses.value,
-      hosts: filterHosts.value,
-      packages: filterPackages.value,
-    },
-  }).catch(() => null)
-}
-
-function clearListFilters(): void {
-  filterStatuses.value = []
-  filterHosts.value = []
-  filterPackages.value = []
-  void persistFilters()
-}
-
 async function refreshPackages(): Promise<void> {
-  const freshPackages = await window.api.packages.list().catch(() => packages.value)
-  packages.value = freshPackages
-
-  const availableIds = new Set(freshPackages.map((pkg) => pkg.id))
-  const nextFilters = filterPackages.value.filter((id) => id === '' || availableIds.has(id))
-  if (nextFilters.length !== filterPackages.value.length) {
-    filterPackages.value = nextFilters
-    void persistFilters()
-  }
+  packages.value = await window.api.packages.list().catch(() => packages.value)
 }
 
 function toggleQueuePanel(): void {
@@ -2516,9 +2437,6 @@ onMounted(async () => {
 
   const settings = await window.api.settings.load().catch(() => null)
   applyDisplaySettings(settings)
-  filterStatuses.value = settings?.lastFilters?.statuses ?? []
-  filterHosts.value = settings?.lastFilters?.hosts ?? []
-  filterPackages.value = settings?.lastFilters?.packages ?? []
   await refreshPackages()
 
   packageRefreshTimer = window.setInterval(() => {
@@ -3624,7 +3542,6 @@ function detailTabOptions(item: DownloadItem): Array<{ id: DetailTabId; label: s
     { id: 'general', label: 'Geral' },
     { id: 'logs', label: 'Logs' },
   )
-  if (item.moduleId !== 'youtube') tabs.push({ id: 'mirrors', label: 'Mirrors' })
   if (item.moduleId === 'torrent') tabs.push({ id: 'peers', label: 'Peers' })
   tabs.push({ id: 'history', label: 'Histórico' })
   return tabs
@@ -3649,12 +3566,6 @@ async function loadDetailData(item: DownloadItem): Promise<void> {
     const events = await window.api.downloads.events(item.id).catch(() => [])
     detailEvents.value = { ...detailEvents.value, [item.id]: events }
   }
-}
-
-async function searchMirrorsFor(item: DownloadItem): Promise<void> {
-  const filename = item.title || item.url
-  await window.api.mirrors.search(filename).catch(() => null)
-  await window.api.system.notify('Busca de mirrors iniciada', filename).catch(() => null)
 }
 
 function effectiveSpeedValue(item: DownloadItem): number {
@@ -4171,20 +4082,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
     gap: 8px;
   }
 
-  .toolbar-sort {
-    min-width: 0;
-    width: 100%;
-  }
-
-  .toolbar-sort:nth-child(3) {
-    grid-column: span 2;
-  }
-
-  .toolbar-select {
-    min-width: 0;
-    width: 100%;
-  }
-
   .toolbar-btn,
   .sort-menu-wrap,
   .display-menu-wrap {
@@ -4204,10 +4101,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .toolbar-sort:nth-child(3) {
-    grid-column: span 2;
-  }
-
   .speed-card-chart {
     width: 58%;
   }
@@ -4217,10 +4110,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   .stat-cards,
   .toolbar-actions {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .toolbar-sort:nth-child(3) {
-    grid-column: auto;
   }
 
   .stat-card {
@@ -4615,31 +4504,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-}
-
-.toolbar-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.toolbar-select {
-  border: 1px solid var(--border-color);
-  background: #ffffff;
-  color: #111827;
-  border-radius: 10px;
-  padding: 8px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  outline: none;
-  color-scheme: light;
-}
-
-.toolbar-select option {
-  background: #ffffff;
-  color: #111827;
 }
 
 .toolbar-btn {

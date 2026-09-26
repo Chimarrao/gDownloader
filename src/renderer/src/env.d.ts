@@ -45,47 +45,6 @@ type DownloadChannel =
   | "download:error"
   | "download:cancelled";
 
-interface MirrorStartPayload {
-  filename: string;
-  total: number;
-}
-
-interface MirrorProgressPayload {
-  current: number;
-  total: number;
-  searcher: string;
-  phase: string;
-  newResults: number;
-  totalResults: number;
-  rawResults: number;
-  rejectedResults: number;
-  durationMs: number;
-  error?: string | null;
-}
-
-interface MirrorResultPayload {
-  url: string;
-  source: string;
-  hoster?: string | null;
-  score: number;
-}
-
-interface MirrorDonePayload {
-  filename: string;
-  searchers: number;
-  total: number;
-  hosters: number;
-  durationMs: number;
-}
-
-type MirrorEvent =
-  | { type: "start"; payload: MirrorStartPayload }
-  | { type: "progress"; payload: MirrorProgressPayload }
-  | { type: "log"; payload: string }
-  | { type: "result"; payload: MirrorResultPayload }
-  | { type: "done"; payload: MirrorDonePayload }
-  | { type: "error"; payload: string };
-
 interface RendererApi {
   settings: {
     load: () => Promise<AppSettingsSnapshot>;
@@ -305,11 +264,6 @@ interface RendererApi {
         stage: string;
       }) => void,
     ) => () => void;
-  };
-  mirrors: {
-    search: (filename: string) => Promise<void>;
-    abort: () => void;
-    onEvent: (cb: (event: MirrorEvent) => void) => () => void;
   };
   torrents: {
     add: (

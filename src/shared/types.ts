@@ -245,11 +245,6 @@ export interface PersistedSettings {
     port: number;
   };
   visibleColumns?: string[];
-  lastFilters?: {
-    statuses?: string[];
-    hosts?: string[];
-    packages?: string[];
-  };
   uiDensity?: "comfortable" | "compact" | "dense";
   reorderAnimations?: boolean;
   interceptMode?: "off" | "proxy_only";

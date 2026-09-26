@@ -287,16 +287,6 @@
             </div>
             <div class="row-actions-bottom">
               <button
-                v-if="canSearchMirrors(row)"
-                class="row-action-btn is-mirror"
-                :class="{ 'is-active': activeMirrorRowUrl === row.url }"
-                :title="t('linkGrabberOpenMirrorsTitle')"
-                data-tour="mirrors"
-                @click="emit('open-mirrors', row)"
-              >
-                <i class="pi pi-sitemap"></i>
-              </button>
-              <button
                 v-if="(supportsChildSelection(row) && (row.info?.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
                 class="row-action-btn expand-btn"
                 :title="row.expanded ? t('closeDetails') : t('openDetails')"
@@ -590,10 +580,6 @@ const props = defineProps({
     type: Number,
     required: true,
   },
-  activeMirrorRowUrl: {
-    type: String,
-    default: '',
-  },
   isRowChecked: {
     type: Function as PropType<(row: CapturedRow) => boolean>,
     required: true,
@@ -630,10 +616,6 @@ const props = defineProps({
     type: Function as PropType<(node: DerivedChildNode<SelectableChild>) => boolean>,
     required: true,
   },
-  canSearchMirrors: {
-    type: Function as PropType<(row: CapturedRow) => boolean>,
-    required: true,
-  },
   fmtBytes: {
     type: Function as PropType<(value: number) => string>,
     required: true,
@@ -664,7 +646,6 @@ const emit = defineEmits<{
   (e: 'update-youtube-option', payload: { row: CapturedRow; key: 'youtubeOutputFormat' | 'youtubeDownloadThumbnail' | 'youtubeDownloadSubtitles' | 'youtubeMultiAudio' | 'youtubeSplitChapters' | 'youtubeDownloadPack' | 'youtubeSubLangs'; value: string | boolean }): void
   (e: 'update-tor-required', payload: { row: CapturedRow; value: boolean }): void
   (e: 'toggle-expanded', row: CapturedRow): void
-  (e: 'open-mirrors', row: CapturedRow): void
   (e: 'choose-destination', row: CapturedRow): void
   (e: 'rename-row', payload: { row: CapturedRow; name: string }): void
   (e: 'filtered-change', urls: string[]): void
@@ -1421,19 +1402,6 @@ function suffixFps(source: string, label: string): string {
 .row-action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.row-action-btn.is-mirror {
-  color: #5b7cff;
-  background: color-mix(in srgb, #5b7cff 8%, var(--bg-card));
-  border-color: rgba(91, 124, 255, 0.2);
-}
-
-.row-action-btn.is-mirror.is-active {
-  color: #fff;
-  background: linear-gradient(90deg, #5b7cff, #6f63ff);
-  border-color: transparent;
-  box-shadow: 0 6px 18px rgba(99, 102, 241, 0.22);
 }
 
 .child-panel {
