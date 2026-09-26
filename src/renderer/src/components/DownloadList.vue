@@ -407,15 +407,13 @@
           @contextmenu.prevent="openContextMenu(item, $event)"
           @click="toggleDetailsFromCard(item, $event)"
         >
-          <!-- Checkbox de seleção (não abre os detalhes ao clicar) -->
-          <label class="row-select" @click.stop :title="'Selecionar'">
-            <input
-              type="checkbox"
-              :checked="selectedDownloadIds.has(item.id)"
-              :aria-label="`Selecionar ${item.title || item.url}`"
-              @change="toggleRowChecked(item, $event)"
-            />
-          </label>
+          <!-- Indicador de seleção (não é mais clicável por si só — o clique na
+               linha inteira é que seleciona, item 6). Só aparece quando o item
+               está selecionado, pra dar feedback visual sem ocupar espaço com
+               um controle interativo à parte. -->
+          <span class="row-select-indicator">
+            <i v-if="selectedDownloadIds.has(item.id)" class="pi pi-check"></i>
+          </span>
           <!-- Left: provider icon -->
           <div
             v-if="item.packageId && hasColumn('host')"
@@ -1877,17 +1875,6 @@ async function runBulkAction(action: 'pause' | 'resume' | 'cancel' | 'remove'): 
 function clearDownloadSelection(): void {
   selectedDownloadIds.value = new Set()
   lastSelectedDownloadId.value = null
-}
-
-// Checkbox por linha: alterna a presença do item na seleção, sem limpar o resto
-// (comportamento aditivo, como Ctrl+clique). Mantém shift/ctrl no clique do card.
-function toggleRowChecked(item: DownloadItem, event: Event): void {
-  const checked = (event.target as HTMLInputElement).checked
-  const next = new Set(selectedDownloadIds.value)
-  if (checked) next.add(item.id)
-  else next.delete(item.id)
-  selectedDownloadIds.value = next
-  lastSelectedDownloadId.value = item.id
 }
 
 function selectAllVisibleDownloads(): void {
@@ -3497,14 +3484,15 @@ function toggleDetailsFromCard(item: DownloadItem, event: MouseEvent): void {
   if (target?.closest('button,input,select,a,label,.download-detail-panel,.folder-children,.captcha-row')) {
     return
   }
-  // Ctrl/Cmd/Shift + clique = seleção múltipla (mantido). Clique simples NÃO
-  // seleciona: apenas abre/fecha as informações do download (a seleção fica a
-  // cargo do checkbox por linha).
-  if (event.metaKey || event.ctrlKey || event.shiftKey) {
-    selectDownload(item, event)
-    return
+  // Sem checkbox (item 6): o clique na linha É a seleção, igual explorador de
+  // arquivos — Ctrl/Cmd soma à seleção, Shift seleciona o intervalo, clique
+  // simples troca a seleção pra só este item. Além disso, clique simples
+  // continua abrindo/fechando os detalhes (não é um toggle de seleção: clicar
+  // duas vezes no mesmo item mantido selecionado só fecha/abre os detalhes).
+  selectDownload(item, event)
+  if (!event.metaKey && !event.ctrlKey && !event.shiftKey) {
+    toggleDetails(item)
   }
-  toggleDetails(item)
 }
 
 function toggleDetails(item: DownloadItem): void {
@@ -4725,23 +4713,6 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   z-index: 1;
 }
 
-/* ── Checkbox de seleção por linha ──────────────────────────── */
-.row-select {
-  display: flex;
-  align-items: center;
-  align-self: center; /* meio vertical do card */
-  padding: 2px 2px 2px 0;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-
-.row-select input {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--accent, #6366f1);
-}
-
 /* ── Download card ──────────────────────────────────────────── */
 .download-card {
   display: flex;
@@ -5717,9 +5688,14 @@ button.meta-path {
   padding: 6px 12px;
 }
 
-.row-select {
+.row-select-indicator {
   grid-column: 1;
   grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-color);
+  font-size: 13px;
 }
 
 .provider-icon {
