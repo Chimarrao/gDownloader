@@ -2199,7 +2199,11 @@ function providerWaitNotice(item: DownloadItem): { label: string; title: string 
 
 function rowBadges(item: DownloadItem): Array<{ label: string; kind: string; title: string }> {
   const badges: Array<{ label: string; kind: string; title: string }> = []
-  if ((item.networkRoute?.mode === 'tor' || torActive.value) && !isTerminal(item.status)) {
+  // Só o networkRoute DESTE item (não torActive global): ligar Tor num
+  // download específico não liga o Tor geral, e o badge não pode dar a
+  // entender isso — antes qualquer linha aparecia com "Tor" só porque o
+  // widget geral estava conectado, mesmo sem esse download usar nada.
+  if (item.networkRoute?.mode === 'tor' && !isTerminal(item.status)) {
     badges.push({
       label: item.networkRoute?.isolated ? 'Tor isolado' : 'Tor',
       kind: 'tor',

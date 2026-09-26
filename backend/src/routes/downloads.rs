@@ -2593,7 +2593,42 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                             reschedule_pending_downloads(state.clone());
                             return;
                         }
-                        let _ = rotate_download_tor_route(&state, &id, &settings).await;
+                        // Item 5(d): o Mega bloqueia quase todo o espaço de saída do Tor
+                        // (visto ao vivo: 100+ IPs de saída distintos, todos batendo 509
+                        // na hora). Ficar trocando de circuito pra sempre não resolve —
+                        // é um limite externo, não passageiro. Bem antes do teto de 300
+                        // (só existe pra não desistir rápido demais de hosts que ÀS VEZES
+                        // funcionam via Tor), desliga o Tor deste download específico e
+                        // deixa continuar por conexão direta — sem perder o progresso.
+                        if provider_name.eq_ignore_ascii_case("mega")
+                            && download_auto_tor
+                            && !download_tor_required
+                            && tor_limit_retries >= MEGA_TOR_AUTO_DISABLE_THRESHOLD
+                        {
+                            if let Ok(db) = state.db.lock() {
+                                let _ = db.execute(
+                                    "UPDATE downloads SET auto_tor_on_limit = 0 WHERE id = ?1",
+                                    rusqlite::params![id],
+                                );
+                            }
+                            {
+                                let mut map = state.downloads.lock().await;
+                                if let Some(d) = map.get_mut(&id) {
+                                    d.auto_tor_on_limit = false;
+                                    d.network_route = None;
+                                }
+                            }
+                            record_download_event(
+                                &state,
+                                &id,
+                                "network",
+                                &format!(
+                                    "Tor desativado automaticamente pra este download depois de {tor_limit_retries} trocas de circuito sem sucesso (o Mega bloqueia a maior parte da saída do Tor) — voltando a tentar por conexão direta"
+                                ),
+                            );
+                        } else {
+                            let _ = rotate_download_tor_route(&state, &id, &settings).await;
+                        }
                     }
                     // 3s era rápido demais: cada rotação de circuito Tor nem tinha tempo
                     // de terminar de estabelecer antes de já ser abandonada pela próxima
@@ -2892,6 +2927,14 @@ pub async fn enforce_tor_kill_switch(state: &AppState) {
 // bem mais que algumas tentativas até cair numa saída limpa.
 const TOR_LIMIT_MAX_RETRIES: u32 = 300;
 
+/// Item 5(d): teto BEM menor, só pro caso Mega+auto_tor_on_limit — depois de
+/// tantas trocas de circuito sem sucesso, desliga o Tor desse download e
+/// segue por conexão direta em vez de esperar o teto geral de 300 (que
+/// existe pra hosts que ocasionalmente funcionam via Tor, não pro caso do
+/// Mega, que bloqueia a saída quase inteira). Não se aplica quando o usuário
+/// marcou "Tor obrigatório" explicitamente (kill switch) — aí é decisão dele.
+const MEGA_TOR_AUTO_DISABLE_THRESHOLD: u32 = 15;
+
 /// Puro e testável: indica se o modo Tor esgotou o teto de tentativas.
 fn tor_limit_retry_exhausted(tor_limit_retries: u32) -> bool {
     tor_limit_retries >= TOR_LIMIT_MAX_RETRIES
@@ -2907,10 +2950,11 @@ async fn ensure_download_network_route(
     let global_tor = settings.proxy_mode == "tor" && settings.start_tor;
 
     let mut changed = false;
+    let mut reused_shared_circuit = false;
     let mut cleared_stale_route = false;
     let route = {
         let mut map = state.downloads.lock().await;
-        let Some(download) = map.get_mut(id) else {
+        let Some(download) = map.get(id) else {
             return None;
         };
         // Rota isolada por-download: flag ligada + daemon Tor rodando, mesmo que
@@ -2922,6 +2966,7 @@ async fn ensure_download_network_route(
             // sem isso a UI continuava mostrando "Tor isolado" com um IP antigo
             // mesmo depois do usuário desligar, embora a conexão real já caísse
             // pra direta (o campo só ficava desatualizado, não afetava o download).
+            let download = map.get_mut(id).expect("checado acima");
             if download.network_route.take().is_some() {
                 cleared_stale_route = true;
             }
@@ -2933,10 +2978,16 @@ async fn ensure_download_network_route(
                 .map(|route| route.mode != "tor" || route.proxy_username.is_none() || route.proxy_password.is_none())
                 .unwrap_or(true);
             if needs_new {
-                download.network_route = Some(new_tor_route(id, settings, 0, isolated_port));
+                let provider = download.provider.clone();
+                let shared = find_shareable_tor_route(&map, &provider, id);
+                reused_shared_circuit = shared.is_some();
+                let download = map.get_mut(id).expect("checado acima");
+                download.network_route = Some(
+                    shared.unwrap_or_else(|| new_tor_route(id, settings, 0, isolated_port)),
+                );
                 changed = true;
             }
-            download.network_route.clone()
+            map.get(id).and_then(|d| d.network_route.clone())
         }
     };
 
@@ -2947,7 +2998,16 @@ async fn ensure_download_network_route(
 
     if changed {
         persist_download_snapshot(state, id).await;
-        record_download_event(state, id, "network", "Circuito Tor isolado atribuído ao download");
+        record_download_event(
+            state,
+            id,
+            "network",
+            if reused_shared_circuit {
+                "Reaproveitou um circuito Tor já aberto por outro download deste host"
+            } else {
+                "Circuito Tor novo aberto para este download"
+            },
+        );
     }
 
     route
@@ -2973,18 +3033,46 @@ async fn rotate_download_tor_route(
         return None;
     }
 
-    let route = {
+    // Se outros downloads do MESMO provider compartilhavam esse circuito
+    // (pool do item 5), o rate-limit é do CIRCUITO — bloquear só quem
+    // detectou primeiro e deixar os outros martelando o mesmo IP não ajuda
+    // ninguém. Troca pra todos que estavam no mesmo circuito de uma vez.
+    let (route, sharers) = {
         let mut map = state.downloads.lock().await;
-        let Some(download) = map.get_mut(id) else {
+        let Some(download) = map.get(id) else {
             return None;
         };
+        let provider = download.provider.clone();
+        let old_username = download.network_route.as_ref().and_then(|r| r.proxy_username.clone());
         let next_generation = download
             .network_route
             .as_ref()
             .map(|route| route.circuit_changes.saturating_add(1))
             .unwrap_or(1);
-        download.network_route = Some(new_tor_route(id, settings, next_generation, isolated_port));
-        download.network_route.clone()
+        let new_route = new_tor_route(id, settings, next_generation, isolated_port);
+
+        let sharers: Vec<String> = old_username
+            .as_deref()
+            .map(|username| {
+                map.values()
+                    .filter(|d| {
+                        d.id != id
+                            && d.provider == provider
+                            && d.network_route.as_ref().and_then(|r| r.proxy_username.as_deref()) == Some(username)
+                    })
+                    .map(|d| d.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let download = map.get_mut(id).expect("checado acima");
+        download.network_route = Some(new_route.clone());
+        for sharer_id in &sharers {
+            if let Some(sharer) = map.get_mut(sharer_id) {
+                sharer.network_route = Some(new_route.clone());
+            }
+        }
+        (Some(new_route), sharers)
     };
 
     persist_download_snapshot(state, id).await;
@@ -2992,8 +3080,17 @@ async fn rotate_download_tor_route(
         state,
         id,
         "network",
-        "Rate-limit detectado; circuito Tor isolado trocado para este download",
+        "Rate-limit detectado; circuito Tor trocado (compartilhado com outros downloads deste host)",
     );
+    for sharer_id in &sharers {
+        persist_download_snapshot(state, sharer_id).await;
+        record_download_event(
+            state,
+            sharer_id,
+            "network",
+            "Circuito Tor trocado — outro download do mesmo host bateu rate-limit no circuito compartilhado",
+        );
+    }
     route
 }
 
@@ -3070,6 +3167,30 @@ async fn refresh_download_tor_exit(state: AppState, id: String, route: DownloadN
     }
     persist_download_snapshot(&state, &id).await;
     record_download_event(&state, &id, "network", &format!("Saída Tor validada: {ip}"));
+}
+
+/// Pool de circuitos Tor por provider (item 5): antes, cada download ganhava
+/// usuário/senha SOCKS únicos (IsolateSOCKSAuth), então cada um abria seu
+/// PRÓPRIO circuito — mesmo 5 downloads saudáveis do mesmo host abriam 5
+/// circuitos Tor diferentes à toa. Agora, ao precisar de uma rota Tor nova,
+/// primeiro procura outro download ATIVO do MESMO provider que já tenha uma
+/// rota Tor saudável (não rate-limited) e reusa o MESMO usuário/senha —
+/// mesma credencial = mesmo circuito no Tor. Só gera um circuito novo quando
+/// não há nenhum saudável pra compartilhar.
+fn find_shareable_tor_route(
+    map: &std::collections::HashMap<String, Download>,
+    provider: &str,
+    exclude_id: &str,
+) -> Option<DownloadNetworkRoute> {
+    map.values()
+        .filter(|d| d.id != exclude_id && d.provider == provider)
+        .filter(|d| !matches!(d.status, DownloadStatus::RateLimited))
+        .find_map(|d| {
+            d.network_route
+                .as_ref()
+                .filter(|route| route.mode == "tor" && route.proxy_username.is_some())
+                .cloned()
+        })
 }
 
 fn new_tor_route(id: &str, settings: &PublicSettings, circuit_changes: u32, isolated_port: Option<u16>) -> DownloadNetworkRoute {
