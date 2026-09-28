@@ -59,6 +59,11 @@ import { createFfmpegService } from "./ffmpeg-service";
 import { createTurnstileService } from "./turnstile-service";
 import { randomBytes } from "crypto";
 
+// Precisa ser a PRIMEIRA coisa a tocar em `app` — em dev, sem isso o Dock/
+// Cmd+Tab mostra "Electron" no tooltip (o app.setName() antigo rodava tarde
+// demais, depois que o nome padrão do processo já tinha "pego").
+app.setName("gDownloader");
+
 // Trava de instância única: sem isso, abrir o app uma segunda vez (dev ou
 // build) sobe um segundo backend Rust/Go e um segundo helper de Katfile/Send.now
 // brigando pela mesma sessão/partição/DB — sintoma visto na prática (duas
@@ -1801,7 +1806,6 @@ app.whenReady().then(async () => {
       return undefined;
     },
   });
-  app.setName("gDownloader");
   electronApp.setAppUserModelId("com.gdownloader");
 
   app.on("browser-window-created", (_, window) => {
