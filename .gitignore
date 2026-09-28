@@ -12,19 +12,21 @@ docs/
 poc/
 tsconfig.web.tsbuildinfo
 tsconfig.node.tsbuildinfo
-backend/.env.test.local
+backend/rust/.env.test.local
 settings.json
 *.sqlite
 *.db
 *.db-shm
 *.db-wal
-~/ 
+~/
 # Artefatos compilados do Rust — gerados pelo cargo build
-backend/target/
+backend/rust/target/
 backend/logs/
 logs/
 backend/backend/
 backend/database/.gdownloader.lock
+# Artefatos do Go
+backend/go/bin/
 
 # Documentos de trabalho locais (não versionados)
 melhorias.odt

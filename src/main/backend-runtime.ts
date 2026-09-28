@@ -25,8 +25,8 @@ export function getRustBinaryPath(): string {
   const binaryName = getRustBinaryName()
   if (!app.isPackaged) {
     const localCandidates = [
-      join(__dirname, '../../backend/target/debug', binaryName),
-      join(__dirname, '../../backend/target/release', binaryName),
+      join(__dirname, '../../backend/rust/target/debug', binaryName),
+      join(__dirname, '../../backend/rust/target/release', binaryName),
     ]
       .filter((candidate) => existsSync(candidate))
       .sort((left, right) => lstatSync(right).mtimeMs - lstatSync(left).mtimeMs)
@@ -43,9 +43,9 @@ export function getGoBinaryPath(): string {
   const binaryName = getGoBinaryName()
   if (!app.isPackaged) {
     const localCandidates = [
-      join(__dirname, '../../backend-go/bin', binaryName),
-      join(__dirname, '../../backend-go', binaryName),
-      join(__dirname, '../backend-go/bin', binaryName),
+      join(__dirname, '../../backend/go/bin', binaryName),
+      join(__dirname, '../../backend/go', binaryName),
+      join(__dirname, '../backend/go/bin', binaryName),
       join(__dirname, '../../out', binaryName),
       join(__dirname, '../out', binaryName),
       '/tmp/gdownloader-go',
@@ -244,7 +244,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
 }
 
 // Go sidecar para os 6 módulos migrados (migrations, models, config, captcha, health, history)
-// Build: cd backend-go && go build -o ../out/gdownloader-go .  (ou ../backend/target/debug/gdownloader-go)
+// Build: cd backend/go && go build -o ../../out/gdownloader-go .  (ou ../rust/target/debug/gdownloader-go)
 // O Go compartilha o mesmo SQLite em WAL, então Rust+Go podem coexistir no mesmo arquivo.
 export function createGoRuntime(options: BackendRuntimeOptions) {
   let backend: ChildProcess | null = null
@@ -277,7 +277,7 @@ export function createGoRuntime(options: BackendRuntimeOptions) {
         logMain('go-runtime', 'Binário Go não encontrado, tentando go run', { binaryPath })
         // Fallback: tenta go run direto (dev sem build)
         const goBinary = spawn('go', ['run', '.', options.dbPath], {
-          cwd: join(__dirname, '../../backend-go'),
+          cwd: join(__dirname, '../../backend/go'),
           stdio: ['ignore', 'pipe', 'pipe'],
           env: options.createEnv(options.dbPath),
         })

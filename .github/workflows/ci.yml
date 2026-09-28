@@ -29,7 +29,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: backend
+          workspaces: backend/rust
 
       - name: Install dependencies
         run: npm ci
@@ -41,7 +41,7 @@ jobs:
         run: npm run test
 
       - name: Backend tests
-        run: cd backend && cargo test -q
+        run: cd backend/rust && cargo test -q
 
       - name: Production build
         run: npm run build

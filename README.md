@@ -166,18 +166,18 @@ npm install
 npm run dev              # concurrently: cargo watch (Rust) + go run (Go sidecar) + electron-vite
 # ou separado:
 # npm run dev:backend:rust  # só Rust
-# npm run dev:backend:go    # só Go (go run . ../backend/database/gdownloader.db)
+# npm run dev:backend:go    # só Go (go run . ../database/gdownloader.db, a partir de backend/go)
 ```
 
-Go sidecar (`backend-go/`) porta `migrations.go:1` (22 migrações idempotentes), `models.go`, `config`, `captcha`, `health`, `history` — mesmo `app_kv` e `download_history` do Rust. `src/preload/index.ts:15` tenta Go primeiro para `/health /config/* /captcha* /history*` e cai para Rust se Go não estiver pronto.
+Go sidecar (`backend/go/`) porta `migrations.go:1` (22 migrações idempotentes), `models.go`, `config`, `captcha`, `health`, `history` — mesmo `app_kv` e `download_history` do Rust (`backend/rust/`). `src/preload/index.ts:15` tenta Go primeiro para `/health /config/* /captcha* /history*` e cai para Rust se Go não estiver pronto.
 
 ## Verificações úteis
 
 ```bash
 npm run typecheck:web
 npm run typecheck:node
-cd backend && cargo check
-cd backend && cargo test
+cd backend/rust && cargo check
+cd backend/rust && cargo test
 npx electron-vite build
 ```
 

@@ -212,7 +212,7 @@ async function ensureDownloadsSocket(): Promise<void> {
     const rustPort = await getPort();
     // O scheduler de downloads (progresso, velocidade, status) só roda no Rust —
     // o hub WS do Go aceita a conexão normalmente mas nunca emite eventos de
-    // progresso (backend-go/internal/ws/handler.go é só compatibilidade/keepalive).
+    // progresso (backend/go/internal/ws/handler.go é só compatibilidade/keepalive).
     // Conectar no Go primeiro fazia a UI nunca receber updates em tempo real,
     // sobrevivendo só do hydrate REST a cada 15s — daí a velocidade "puxar e
     // zerar" o tempo todo e o status ficar preso em "Conectando".
