@@ -71,27 +71,129 @@ fn source_group_key(provider_name: &str, url: &str) -> String {
     )
 }
 
+/// Detecta arquivo multi-parte (RAR/ZIP/7z divididos em vários uploads
+/// separados, cada um com sua própria URL — ex.: Rapidgator com
+/// "nome.part1.rar" .. "nome.part7.rar") e devolve um nome-base normalizado
+/// comum a todas as partes. `None` quando o nome não bate nenhum padrão
+/// conhecido — nesse caso não agrupa por nome, só por URL (source_group_key).
+fn archive_part_base_name(filename: &str) -> Option<String> {
+    let lower = filename.to_ascii_lowercase();
+
+    // "nome.part1.rar" / "nome.part07.zip" / "nome.part2.7z" (WinRAR/7-Zip modernos)
+    if let Some(caps) = ARCHIVE_PART_RE.captures(&lower) {
+        return Some(format!("{}{}", &caps[1], &caps[2]));
+    }
+    // "nome.rar" + "nome.r00" .. "nome.r99" (WinRAR legado)
+    if let Some(caps) = ARCHIVE_RLEGACY_RE.captures(&lower) {
+        return Some(format!("{}.rar-set", &caps[1]));
+    }
+    // "nome.zip" + "nome.z01" .. "nome.z99" (ZIP dividido)
+    if let Some(caps) = ARCHIVE_ZLEGACY_RE.captures(&lower) {
+        return Some(format!("{}.zip-set", &caps[1]));
+    }
+    // "nome.001" .. "nome.999" (numeração genérica de 3 dígitos)
+    if let Some(caps) = ARCHIVE_NUMBERED_RE.captures(&lower) {
+        return Some(format!("{}.numbered-set", &caps[1]));
+    }
+
+    None
+}
+
+static ARCHIVE_PART_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(.*)\.part\d+(\.(?:rar|zip|7z))$").unwrap()
+});
+static ARCHIVE_RLEGACY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(.*)\.(?:rar|r\d{2,3})$").unwrap()
+});
+static ARCHIVE_ZLEGACY_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(.*)\.(?:zip|z\d{2,3})$").unwrap()
+});
+static ARCHIVE_NUMBERED_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^(.*)\.\d{3}$").unwrap()
+});
+
+/// Todas as chaves de agrupamento aplicáveis a um download: sempre a de URL,
+/// e também a de arquivo multi-parte quando o nome bate algum padrão
+/// conhecido. Dois downloads agrupam se compartilharem QUALQUER uma delas.
+fn group_keys_for(provider_name: &str, url: &str, filename: &str) -> Vec<String> {
+    let mut keys = vec![source_group_key(provider_name, url)];
+    if let Some(base) = archive_part_base_name(filename) {
+        keys.push(format!(
+            "{}::archive::{}",
+            providers::provider_id_from_name(provider_name),
+            base
+        ));
+    }
+    keys
+}
+
+/// Union-find bem simples (path compression, sem union by rank — os grupos
+/// são pequenos, não vale a complexidade extra). `find` também serve pra
+/// inicializar um id não visto ainda.
+struct UnionFind {
+    parent: std::collections::HashMap<String, String>,
+}
+
+impl UnionFind {
+    fn new() -> Self {
+        Self { parent: std::collections::HashMap::new() }
+    }
+
+    fn find(&mut self, id: &str) -> String {
+        let parent = self.parent.entry(id.to_string()).or_insert_with(|| id.to_string()).clone();
+        if parent == id {
+            return parent;
+        }
+        let root = self.find(&parent);
+        self.parent.insert(id.to_string(), root.clone());
+        root
+    }
+
+    fn union(&mut self, a: &str, b: &str) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            self.parent.insert(ra, rb);
+        }
+    }
+}
+
 /// Passada única na inicialização: agrupa retroativamente downloads que já
 /// existiam soltos (criados antes desta função existir, ou que escaparam do
-/// agrupamento por qualquer motivo) e compartilham a mesma origem.
+/// agrupamento por qualquer motivo) e compartilham a mesma origem — por URL
+/// OU por serem partes do mesmo arquivo multi-volume (union-find: dois
+/// downloads que só se conectam TRANSITIVAMENTE, via um terceiro que
+/// compartilha uma chave com cada um, ainda caem no mesmo grupo).
 async fn auto_group_existing_ungrouped_downloads(state: &AppState) {
     let groups: Vec<(String, Option<String>, Vec<String>, String)> = {
         let map = state.downloads.lock().await;
-        let mut by_key: std::collections::HashMap<String, Vec<&Download>> = std::collections::HashMap::new();
+        let mut uf = UnionFind::new();
+        let mut key_to_id: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for download in map.values() {
-            by_key
-                .entry(source_group_key(&download.provider, &download.url))
-                .or_default()
-                .push(download);
+            uf.find(&download.id); // garante que todo id existe no union-find
+            for key in group_keys_for(&download.provider, &download.url, &download.filename) {
+                match key_to_id.get(&key) {
+                    Some(other_id) => uf.union(&download.id, other_id),
+                    None => {
+                        key_to_id.insert(key, download.id.clone());
+                    }
+                }
+            }
         }
-        by_key
+
+        let mut by_root: std::collections::HashMap<String, Vec<&Download>> = std::collections::HashMap::new();
+        for download in map.values() {
+            let root = uf.find(&download.id);
+            by_root.entry(root).or_default().push(download);
+        }
+        by_root
             .into_iter()
             .filter(|(_, members)| members.len() > 1)
-            .map(|(key, members)| {
+            .map(|(root, members)| {
                 let existing_package_id = members.iter().find_map(|d| d.package_id.clone());
                 let name = members[0].filename.clone();
                 let ids: Vec<String> = members.iter().map(|d| d.id.clone()).collect();
-                (key, existing_package_id, ids, name)
+                (root, existing_package_id, ids, name)
             })
             .collect()
     };
@@ -151,21 +253,31 @@ async fn auto_group_existing_ungrouped_downloads(state: &AppState) {
     }
 }
 
-/// Junta downloads que vieram da MESMA URL/pasta de origem num pacote comum
-/// — item pedido explicitamente pelo usuário: capturar a mesma pasta do Mega
-/// em adições separadas (ex.: por causa do limite de 1 do Mega, ou só por
-/// esquecimento) criava vários registros soltos com o mesmo nome em vez de
-/// um pacote único, como já acontecia quando o pacote era escolhido à mão.
+/// Junta downloads que vieram da MESMA URL/pasta de origem, OU que são
+/// partes do mesmo arquivo multi-volume (nome bate um padrão de arquivo
+/// dividido — ver group_keys_for), num pacote comum — item pedido
+/// explicitamente pelo usuário: capturar a mesma pasta do Mega em adições
+/// separadas (ex.: por causa do limite de 1 do Mega, ou só por esquecimento)
+/// criava vários registros soltos com o mesmo nome em vez de um pacote
+/// único, como já acontecia quando o pacote era escolhido à mão. Mesma coisa
+/// pra RARs/ZIPs divididos em uploads separados com URLs diferentes
+/// (ex.: Rapidgator "nome.part1.rar" .. "nome.part7.rar").
 async fn auto_group_by_source(state: &AppState, new_id: &str) -> Option<String> {
     let (group_key, existing_package_id, matched_ids, package_name) = {
         let map = state.downloads.lock().await;
         let new_download = map.get(new_id)?;
         let group_key = source_group_key(&new_download.provider, &new_download.url);
+        let new_keys = group_keys_for(&new_download.provider, &new_download.url, &new_download.filename);
         let package_name = new_download.filename.clone();
 
         let matches: Vec<&Download> = map
             .values()
-            .filter(|d| d.id != new_id && source_group_key(&d.provider, &d.url) == group_key)
+            .filter(|d| {
+                d.id != new_id
+                    && group_keys_for(&d.provider, &d.url, &d.filename)
+                        .iter()
+                        .any(|k| new_keys.contains(k))
+            })
             .collect();
         if matches.is_empty() {
             return None;
@@ -2766,7 +2878,14 @@ async fn run_download_inner(state: AppState, id: String, url: String, dest_path:
                     provider_name,
                     retry_policy.final_message
                 );
-                update_error(&state, &id, &retry_policy.final_message).await;
+                // Passa o err_str CRU (com prefixo PREMIUM_REQUIRED:/etc.), não o
+                // já prettificado — update_error prettifica por conta própria, mas
+                // precisa do prefixo intacto pra classificar error_kind direito.
+                // Com o texto já sem prefixo (retry_policy.final_message), TODO
+                // erro definitivo — inclusive "exige conta premium" — caía no
+                // fallback genérico "temporary", sugerindo (errado) que bastava
+                // tentar de novo.
+                update_error(&state, &id, &err_str).await;
                 reschedule_pending_downloads(state.clone());
                 return;
             }
@@ -5358,6 +5477,54 @@ mod tests {
     }
 
     #[test]
+    fn archive_part_base_name_matches_rapidgator_multi_part_set() {
+        // Exatamente o caso visto ao vivo: 7 uploads do Rapidgator com URLs
+        // diferentes, mas nome de arquivo em sequência .part1.rar..part7.rar
+        // — devem produzir o MESMO nome-base pra entrar no mesmo grupo.
+        let names = [
+            "Sooros198180BuaRmxAVFAC0RLiaKo.part1.rar",
+            "Sooros198180BuaRmxAVFAC0RLiaKo.part2.rar",
+            "Sooros198180BuaRmxAVFAC0RLiaKo.part7.rar",
+        ];
+        let bases: Vec<_> = names.iter().map(|n| archive_part_base_name(n)).collect();
+        assert!(bases.iter().all(|b| b.is_some()));
+        assert_eq!(bases[0], bases[1]);
+        assert_eq!(bases[0], bases[2]);
+
+        // Arquivo comum (sem padrão de parte) não deve casar com nada.
+        assert_eq!(archive_part_base_name("filme.mkv"), None);
+
+        // Nomes-base DIFERENTES não podem colidir.
+        assert_ne!(
+            archive_part_base_name("OutraCoisa.part1.rar"),
+            bases[0]
+        );
+
+        // Legado WinRAR: nome.rar + nome.r00/.r01 caem juntos.
+        let legacy_a = archive_part_base_name("Backup.rar");
+        let legacy_b = archive_part_base_name("Backup.r00");
+        assert!(legacy_a.is_some());
+        assert_eq!(legacy_a, legacy_b);
+    }
+
+    #[test]
+    fn group_keys_for_matches_by_archive_part_even_with_different_urls() {
+        let keys_a = group_keys_for(
+            "Rapidgator",
+            "https://rapidgator.net/file/93f887ea.../Sooros198180BuaRmxAVFAC0RLiaKo.part1.rar",
+            "Sooros198180BuaRmxAVFAC0RLiaKo.part1.rar",
+        );
+        let keys_b = group_keys_for(
+            "Rapidgator",
+            "https://rapidgator.net/file/b1773afd.../Sooros198180BuaRmxAVFAC0RLiaKo.part2.rar",
+            "Sooros198180BuaRmxAVFAC0RLiaKo.part2.rar",
+        );
+        // URLs diferentes (identity separada), mas devem compartilhar a chave
+        // de arquivo multi-parte.
+        assert!(keys_a.iter().any(|k| keys_b.contains(k)));
+    }
+
+    #[test]
     fn permanent_errors_are_classified() {
         assert!(is_permanent_error("REMOVED:Rapidgator:Arquivo não localizado no Rapidgator"));
         assert!(is_permanent_error("PREMIUM_REQUIRED:Rapidgator:precisa premium"));
@@ -5387,6 +5554,19 @@ mod tests {
         assert_eq!(
             classify_error_kind(&DownloadStatus::Corrupted, Some("bad")).as_deref(),
             Some("integrity")
+        );
+        // Regressão: update_error() chegou a passar a mensagem já
+        // PRETTIFICADA (sem o prefixo) pra classify_error_kind — isso fazia
+        // TODO erro definitivo de "precisa premium" cair no fallback
+        // genérico "temporary" em vez de "premium". Precisa ser classificado
+        // a partir da mensagem CRUA, com o prefixo intacto.
+        assert_eq!(
+            classify_error_kind(
+                &DownloadStatus::Error,
+                Some("PREMIUM_REQUIRED:Rapidgator:o modo grátis atual só libera até 1 GB"),
+            )
+            .as_deref(),
+            Some("premium")
         );
         assert_eq!(
             classify_error_kind(
