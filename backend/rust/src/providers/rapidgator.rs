@@ -345,7 +345,7 @@ impl Provider for RapidgatorProvider {
                 if Self::is_free_limit_block(&page, size) {
                     return Err(premium_required_error(
                         "Rapidgator",
-                        "o modo grátis atual só libera até 1 GB",
+                        "sem cota grátis para arquivos acima de 1 GB — precisa de conta premium",
                     ));
                 }
 
