@@ -103,6 +103,12 @@ export interface DownloadItem {
   autoTorOnLimit?: boolean;
   // Kill switch por download: nunca inicia/continua sem um circuito Tor ativo.
   torRequired?: boolean;
+  // Presentes só quando moduleId === 'torrent' (item adaptado de TorrentStatus,
+  // ver utils/torrent-adapter.ts — id vem prefixado "torrent:<id-real-no-Go>").
+  numPeers?: number;
+  numSeeds?: number;
+  uploadBps?: number;
+  torrentInfoHash?: string;
 }
 
 export interface DownloadNetworkRoute {

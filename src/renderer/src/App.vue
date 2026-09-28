@@ -48,15 +48,6 @@
         </button>
         <button
           class="nav-item"
-          :class="{ active: activeTab === 'torrents' }"
-          data-tour="torrents-tab"
-          @click="activeTab = 'torrents'"
-        >
-          <i class="pi pi-share-alt"></i>
-          <span>Torrents</span>
-        </button>
-        <button
-          class="nav-item"
           :class="{ active: activeTab === 'account' }"
           data-tour="accounts-tab"
           @click="activeTab = 'account'"
@@ -421,10 +412,6 @@
           />
         </section>
 
-        <section v-show="activeTab === 'torrents'" class="panel">
-          <TorrentPanel />
-        </section>
-
         <section v-show="activeTab === 'settings'" class="panel">
           <AppSettings />
         </section>
@@ -473,7 +460,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import type { DownloadHistoryItem } from "../../shared/types";
 import DownloadList from "./components/DownloadList.vue";
 import LinkGrabber from "./components/LinkGrabber.vue";
-import TorrentPanel from "./components/TorrentPanel.vue";
 import AppSettings from "./components/AppSettings.vue";
 import AccountSettings from "./components/AccountSettings.vue";
 import LogsView from "./components/LogsView.vue";
@@ -488,7 +474,6 @@ import torIconSvg from "./assets/tor.svg?raw";
 type AppTab =
   | "downloads"
   | "grabber"
-  | "torrents"
   | "settings"
   | "account"
   | "logs";

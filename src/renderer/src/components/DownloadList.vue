@@ -707,6 +707,17 @@
                 </span>
               </template>
 
+              <template v-if="item.moduleId === 'torrent' && !isTerminal(item.status)">
+                <span class="meta-chip meta-torrent-swarm">
+                  <i class="pi pi-share-alt"></i>
+                  {{ item.numPeers ?? 0 }} peers · {{ item.numSeeds ?? 0 }} seeds
+                </span>
+                <span v-if="(item.uploadBps ?? 0) > 0" class="meta-chip meta-torrent-swarm">
+                  <i class="pi pi-arrow-up"></i>
+                  {{ formatSpeed(item.uploadBps!) }}
+                </span>
+              </template>
+
               <template v-if="item.status === 'verifying'">
                 <span class="meta-chip meta-verifying">
                   <i class="pi" :class="item.expectedHash ? 'pi-shield' : 'pi-cog'"></i>
@@ -1016,9 +1027,18 @@
                 <code v-for="line in detailLogs[item.id]" :key="line">{{ line }}</code>
               </div>
 
-              <div v-else-if="activeDetailTab(item.id) === 'peers'" class="detail-action-pane">
-                <span v-if="item.moduleId === 'torrent'">Peers serão listados aqui quando o provider torrent estiver ativo.</span>
-                <span v-else>Este download não é torrent.</span>
+              <div v-else-if="activeDetailTab(item.id) === 'peers'" class="detail-peer-list">
+                <p v-if="!(detailPeers[item.id]?.length)">Nenhum peer conectado no momento.</p>
+                <div v-for="peer in detailPeers[item.id]" :key="peer.address" class="detail-peer-row">
+                  <span class="detail-peer-address">{{ peer.address }}</span>
+                  <span class="detail-peer-client">{{ peer.clientName || peer.source }}</span>
+                  <span>{{ formatSpeed(peer.downloadBps) }}</span>
+                  <span>{{ Math.round(peer.percentPieces) }}%</span>
+                </div>
+              </div>
+
+              <div v-else-if="item.moduleId === 'torrent'" class="detail-action-pane">
+                <span>Histórico de eventos não disponível para torrents.</span>
               </div>
 
               <div v-else class="detail-events">
@@ -1316,6 +1336,8 @@ import { effectiveSize } from '../utils/display-size'
 import { isArchiveFilename } from '../utils/archive'
 import { focusFirstDialogElement, trapDialogTab } from '../utils/dialog-focus'
 import { flagClass } from '../utils/flag'
+import { isTorrentItemId, torrentRawId, torrentToDownloadItem } from '../utils/torrent-adapter'
+import type { TorrentPeerStatus } from '../../../shared/types'
 import VirtualRows from './VirtualRows.vue'
 
 interface ModuleSummary {
@@ -1464,6 +1486,11 @@ let sortTickCounter = 0
 let retryTimer: number | null = null
 let hydrateTimer: number | null = null
 let packageRefreshTimer: number | null = null
+// Torrents não têm push de progresso via WebSocket (só a fila HTTP tem) — poll
+// dedicado no mesmo ritmo que o antigo TorrentPanel.vue usava (2s), fora do
+// gate "só reconsulta se houver item não-terminal" do hydrateTimer normal.
+let torrentPollTimer: number | null = null
+const detailPeers = ref<Record<string, TorrentPeerStatus[]>>({})
 let scheduledHydrateTimer: number | null = null
 const torCircuitRetryIds = new Set<string>()
 const sortOptions = computed(() =>
@@ -2425,6 +2452,9 @@ onMounted(async () => {
     acc[mod.id] = { id: mod.id, name: mod.name, color: mod.color }
     return acc
   }, {})
+  // 'torrent' não é um provider Rust (não vem de /providers) — registra à mão
+  // pra moduleLabel()/badges mostrarem "Torrent" em vez do id cru.
+  modulesById.value.torrent = { id: 'torrent', name: 'Torrent', color: '#8b5cf6' }
 
   const settings = await window.api.settings.load().catch(() => null)
   applyDisplaySettings(settings)
@@ -2436,6 +2466,11 @@ onMounted(async () => {
 
   // Load existing downloads from backend
   await hydrate()
+  await hydrateTorrents()
+  torrentPollTimer = window.setInterval(() => {
+    if (!isMounted) return
+    void hydrateTorrents()
+  }, 2000)
 
   // Real-time progress events
   unsubs.push(
@@ -2758,6 +2793,10 @@ onUnmounted(() => {
     window.clearInterval(packageRefreshTimer)
     packageRefreshTimer = null
   }
+  if (torrentPollTimer !== null) {
+    window.clearInterval(torrentPollTimer)
+    torrentPollTimer = null
+  }
   if (scheduledHydrateTimer !== null) {
     window.clearTimeout(scheduledHydrateTimer)
     scheduledHydrateTimer = null
@@ -2899,6 +2938,39 @@ async function hydrate(): Promise<void> {
   }
 }
 
+// Torrents ficam fundidos no mesmo `items.value` dos downloads HTTP (mesma
+// lista, mesmo card), mas são atualizados por um poll à parte — ver comentário
+// em `torrentPollTimer`. Progresso de torrent é sempre o estado real do
+// momento (não sofre do problema de "voltar" que o anti-flicker do hydrate()
+// HTTP evita), então aqui é um merge direto por id, sem Math.max.
+async function hydrateTorrents(): Promise<void> {
+  if (!isMounted) return
+  const list = await window.api.torrents.list().catch(() => [])
+  const fresh = list.map(torrentToDownloadItem)
+  const freshById = new Map(fresh.map((item) => [item.id, item]))
+
+  for (let i = items.value.length - 1; i >= 0; i--) {
+    const current = items.value[i]
+    if (isTorrentItemId(current.id) && !freshById.has(current.id)) {
+      items.value.splice(i, 1)
+    }
+  }
+
+  let changed = false
+  for (const item of fresh) {
+    const idx = items.value.findIndex((entry) => entry.id === item.id)
+    if (idx >= 0) {
+      Object.assign(items.value[idx], item)
+    } else {
+      items.value.push(item)
+      changed = true
+    }
+  }
+
+  rebuildItemIndex()
+  if (changed) emit('count-change', items.value.length)
+}
+
 function scheduleHydrate(delayMs = 700): void {
   if (!isMounted) return
   if (scheduledHydrateTimer !== null) {
@@ -3016,16 +3088,31 @@ function onListScroll(): void {
 
 // ── Actions ────────────────────────────────────────────────
 async function cancel(id: string): Promise<void> {
+  if (isTorrentItemId(id)) {
+    await window.api.torrents.remove(torrentRawId(id), false).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.cancel(id).catch(() => null)
   await hydrate()
 }
 
 async function pause(id: string): Promise<void> {
+  if (isTorrentItemId(id)) {
+    await window.api.torrents.pause(torrentRawId(id)).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.pause(id).catch(() => null)
   await hydrate()
 }
 
 async function resume(id: string): Promise<void> {
+  if (isTorrentItemId(id)) {
+    await window.api.torrents.resume(torrentRawId(id)).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.resume(id).catch(() => null)
   await hydrate()
 }
@@ -3061,6 +3148,13 @@ async function cancelPackage(packageId: string): Promise<void> {
 }
 
 async function retry(id: string): Promise<void> {
+  if (isTorrentItemId(id)) {
+    // Não existe "retry" pra torrent (não é uma tentativa de host que falhou);
+    // o botão equivalente vira um recheck (reconferir dados já no disco).
+    await window.api.torrents.recheck(torrentRawId(id)).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.retry(id).catch(() => null)
   await hydrate()
 }
@@ -3209,6 +3303,11 @@ async function restart(id: string): Promise<void> {
 }
 
 async function remove(id: string): Promise<void> {
+  if (isTorrentItemId(id)) {
+    await window.api.torrents.remove(torrentRawId(id), false).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.remove(id).catch(() => null)
   await hydrate()
 }
@@ -3220,6 +3319,11 @@ async function removeWithFiles(id: string): Promise<void> {
     confirmLabel: t('confirmRemove'),
   })
   if (!ok) return
+  if (isTorrentItemId(id)) {
+    await window.api.torrents.remove(torrentRawId(id), true).catch(() => null)
+    await hydrateTorrents()
+    return
+  }
   await window.api.downloads.removeWithFiles(id).catch(() => null)
   await hydrate()
 }
@@ -3554,9 +3658,13 @@ async function loadDetailData(item: DownloadItem): Promise<void> {
       [item.id]: log.lines.filter((line) => needles.some((needle) => line.toLowerCase().includes(needle))).slice(-80),
     }
   }
-  if (tab === 'history' && !detailEvents.value[item.id]) {
+  if (tab === 'history' && !detailEvents.value[item.id] && item.moduleId !== 'torrent') {
     const events = await window.api.downloads.events(item.id).catch(() => [])
     detailEvents.value = { ...detailEvents.value, [item.id]: events }
+  }
+  if (tab === 'peers' && item.moduleId === 'torrent') {
+    const peers = await window.api.torrents.peers(torrentRawId(item.id)).catch(() => [])
+    detailPeers.value = { ...detailPeers.value, [item.id]: peers }
   }
 }
 
@@ -5524,6 +5632,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   font-size: 10.5px;
 }
 
+.meta-torrent-swarm {
+  color: #8b5cf6;
+  font-weight: 600;
+  border-color: color-mix(in srgb, #8b5cf6 30%, var(--border-color));
+  background: color-mix(in srgb, #8b5cf6 8%, transparent);
+}
+
 .meta-time .pi,
 .meta-completed .pi {
   font-size: 10px;
@@ -6231,7 +6346,8 @@ button.meta-path {
 }
 
 .detail-log-list,
-.detail-events {
+.detail-events,
+.detail-peer-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -6240,10 +6356,34 @@ button.meta-path {
 }
 
 .detail-log-list p,
-.detail-events p {
+.detail-events p,
+.detail-peer-list p {
   margin: 0;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.detail-peer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 80px 50px;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.detail-peer-address {
+  color: var(--text-primary);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-peer-client {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-log-list code {

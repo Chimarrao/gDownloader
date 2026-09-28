@@ -1429,7 +1429,10 @@ async function resumeDownloadsAfterNetworkSwitch(ids: string[]): Promise<void> {
 }
 
 function extractClipboardUrls(text: string): string[] {
-  const matches = text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? [];
+  const matches = [
+    ...(text.match(/https?:\/\/[^\s"'<>\\]+/gi) ?? []),
+    ...(text.match(/magnet:\?xt=urn:btih:[^\s"'<>\\]+/gi) ?? []),
+  ];
   const seen = new Set<string>();
   return matches
     .map((url) => url.replace(/[),.;\]]+$/g, ""))
@@ -1443,6 +1446,11 @@ function extractClipboardUrls(text: string): string[] {
 async function detectClipboardUrl(
   url: string,
 ): Promise<{ id?: string; name?: string } | null> {
+  // magnet: não passa pelo /detect do Rust (não é um provider dele) — o app
+  // sabe reconhecer o esquema sozinho, sem depender do backend estar de pé.
+  if (/^magnet:\?xt=urn:btih:/i.test(url)) {
+    return { id: "torrent", name: "Torrent" };
+  }
   if (!rustPort) return null;
   try {
     const response = await fetch(

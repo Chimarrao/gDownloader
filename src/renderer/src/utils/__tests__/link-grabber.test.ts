@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeUrlCandidate, packageGroupName, parseUrls, truncateUrl } from '../link-grabber'
+import {
+  normalizeUrlCandidate,
+  packageGroupName,
+  parseUrls,
+  torrentFilePath,
+  torrentFileUriFromPath,
+  truncateUrl,
+} from '../link-grabber'
 
 describe('packageGroupName', () => {
   it('agrupa partes .rar pelo mesmo nome-base', () => {
@@ -77,6 +84,29 @@ describe('link-grabber utils', () => {
   it('não confunde nome de arquivo solto com url', () => {
     expect(normalizeUrlCandidate('video.mkv')).toBe('')
     expect(normalizeUrlCandidate('arquivo final.rar')).toBe('')
+  })
+
+  it('reconhece magnet: junto de links normais, sem misturar os dois', () => {
+    const magnet = 'magnet:?xt=urn:btih:F394951FD186D54F0F9E2D0C2CCCF36AACEB7922&dn=Filme&tr=udp%3A%2F%2Ftracker.example%3A6969'
+    const urls = parseUrls(`https://katfile.com/u1ifmhkgsyjx\n${magnet}`)
+    expect(new Set(urls)).toEqual(new Set(['https://katfile.com/u1ifmhkgsyjx', magnet]))
+  })
+
+  it('extrai o nome do parâmetro dn do magnet pro título', () => {
+    const magnet = 'magnet:?xt=urn:btih:F394951FD186D54F0F9E2D0C2CCCF36AACEB7922&dn=Spoorloos.1988.PROPER.DUTCH.1080p'
+    expect(truncateUrl(magnet)).toBe('Spoorloos.1988.PROPER.DUTCH.1080p')
+  })
+
+  it('usa um rótulo genérico quando o magnet não tem dn', () => {
+    expect(truncateUrl('magnet:?xt=urn:btih:F394951FD186D54F0F9E2D0C2CCCF36AACEB7922')).toBe('Torrent (magnet)')
+  })
+
+  it('representa um arquivo .torrent escolhido no picker como pseudo-URI reversível', () => {
+    const uri = torrentFileUriFromPath('/Users/lucas/Downloads/filme.torrent')
+    expect(uri).toBe('torrentfile://%2FUsers%2Flucas%2FDownloads%2Ffilme.torrent')
+    expect(torrentFilePath(uri)).toBe('/Users/lucas/Downloads/filme.torrent')
+    expect(truncateUrl(uri)).toBe('filme.torrent')
+    expect(parseUrls(uri)).toEqual([uri])
   })
 
   it('extrai link cru com caminho de um texto', () => {

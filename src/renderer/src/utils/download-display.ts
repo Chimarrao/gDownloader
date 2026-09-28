@@ -148,6 +148,13 @@ export function statusText(item: DownloadItem, nowTick: number): string {
 }
 
 export function statusTextKey(item: DownloadItem, nowTick: number): string {
+  // Torrent "pending" é na verdade "buscando metadados no DHT/trackers" — não
+  // tem chave i18n dedicada; t() cai pro próprio texto quando a chave não
+  // existe em nenhuma locale (ver i18n.ts), então isto funciona como label
+  // direto sem precisar tocar nos 9 arquivos de locale por um único status.
+  if (item.moduleId === 'torrent' && item.status === DownloadStatus.Pending) {
+    return 'Buscando metadados…'
+  }
   if (item.status === DownloadStatus.Downloading && effectiveSpeed(item, nowTick) <= 0) {
     return isConnectingViaTor(item) ? 'statusConnectingTor' : 'statusConnecting'
   }
@@ -250,7 +257,29 @@ export function compareDownloads(
   }
 }
 
+// Torrents (moduleId === 'torrent', item adaptado de TorrentStatus pelo Go) têm
+// um conjunto de ações bem diferente do download HTTP: sem retry/força-agora
+// (não existe fila/rate-limit pro BitTorrent em si), "recheck" (verificar dados
+// no disco) no lugar de "reiniciar do zero", e remover sempre disponível
+// (Engine.Remove do Go para e esquece o torrent em qualquer estado).
+function getTorrentActions(item: DownloadItem): Record<string, boolean> {
+  const hasMetadata = item.status !== DownloadStatus.Pending || Boolean(item.size)
+  return {
+    canPause: item.status !== DownloadStatus.Paused && item.status !== DownloadStatus.Error,
+    canResume: item.status === DownloadStatus.Paused,
+    canOpenCaptcha: false,
+    canCancel: item.status !== DownloadStatus.Paused && item.status !== DownloadStatus.Error,
+    canRetry: hasMetadata,
+    canForce: false,
+    canRestart: false,
+    canOpenFolder: Boolean(item.outputPath),
+    canRemove: true,
+    canRemoveWithFiles: Boolean(item.outputPath),
+  }
+}
+
 export function getDownloadActions(item: DownloadItem): Record<string, boolean> {
+  if (item.moduleId === 'torrent') return getTorrentActions(item)
   const retryable =
     item.status === DownloadStatus.Paused
     || item.status === DownloadStatus.Error

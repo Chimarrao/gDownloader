@@ -57,7 +57,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 type TourTab =
   | "downloads"
   | "grabber"
-  | "torrents"
   | "settings"
   | "account"
   | "logs";

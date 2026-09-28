@@ -6,6 +6,7 @@
       @imported-links="appendImportedLinks"
       @imported-hashes="appendImportedHashes"
       @import-error="showImportError"
+      @pick-torrent-file="pickTorrentFile"
     />
 
     <div v-if="rows.length > 0" class="global-destination">
@@ -91,7 +92,15 @@ import type { AppSettingsSnapshot, ExpectedHash, FileInfo } from '../../../share
 import { useI18n } from '../i18n'
 import { buildChildTree, flattenChildTree, type DerivedChildNode } from '../utils/child-tree'
 import { formatBytes } from '../utils/format'
-import { packageGroupName, parseUrls as parseCapturedUrls, truncateUrl as shortenUrl } from '../utils/link-grabber'
+import {
+  isMagnetUri,
+  isTorrentFileUri,
+  packageGroupName,
+  parseUrls as parseCapturedUrls,
+  torrentFilePath,
+  torrentFileUriFromPath,
+  truncateUrl as shortenUrl,
+} from '../utils/link-grabber'
 import CapturedResultsPanel from './CapturedResultsPanel.vue'
 import LinkInputPanel from './LinkInputPanel.vue'
 import LinkGrabberActionsBar from './LinkGrabberActionsBar.vue'
@@ -356,6 +365,12 @@ function showImportError(message: string): void {
   lastError.value = message
 }
 
+async function pickTorrentFile(): Promise<void> {
+  const path = await window.api.torrents.pickTorrentFile().catch(() => null)
+  if (!path) return
+  appendImportedLinks([torrentFileUriFromPath(path)])
+}
+
 function nextFrame(): Promise<void> {
   return new Promise((resolve) => {
     window.requestAnimationFrame(() => resolve())
@@ -411,6 +426,16 @@ async function detectProviders(): Promise<void> {
 
       const row = rows.value[index]
       if (!row) {
+        continue
+      }
+
+      if (isMagnetUri(row.url) || isTorrentFileUri(row.url)) {
+        rows.value[index].module = { id: 'torrent', name: 'Torrent', icon: 'pi-share-alt', color: '#8b5cf6' }
+        rows.value[index].info = { name: row.displayName, size: 0, isFolder: false }
+        rows.value[index].loading = false
+        rows.value[index].selected = true
+        rows.value[index].availability = 'online'
+        processed += 1
         continue
       }
 
@@ -592,6 +617,15 @@ async function addAll(): Promise<void> {
 
   for (const entry of entries) {
     try {
+      if (entry.module.id === 'torrent') {
+        const source = isTorrentFileUri(entry.url) ? torrentFilePath(entry.url) : entry.url
+        await window.api.torrents.add(source, destByEntry.get(entry) ?? entry.destDir, entry.torRequired ?? false)
+        addedCount += 1
+        addQueueDone.value = addedCount
+        await nextFrame()
+        continue
+      }
+
       const download = await window.api.downloads.add(
         entry.url,
         entry.module.id,

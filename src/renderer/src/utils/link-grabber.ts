@@ -6,6 +6,32 @@
 const URL_CANDIDATE_RE =
   /(?:https?:\/\/\S+)|(?:(?:\d{1,3}(?:\.\d{1,3}){3}|(?:[a-z0-9-]+\.)+[a-z]{2,})(?::\d+)?\/\S*)/gi
 
+// magnet:?xt=urn:btih:... não bate no padrão acima (sem http/domínio) — casado
+// à parte pra virar torrent em vez de link de hoster.
+const MAGNET_RE = /magnet:\?xt=urn:btih:[a-z0-9]+(?:&\S*)?/gi
+
+// Pseudo-URI interna usada só no textarea de captura pra representar um
+// arquivo .torrent escolhido pelo picker nativo, sem inventar outro fluxo de
+// entrada — mesma caixa de texto, mesmo botão "Adicionar" (ver LinkGrabber.vue).
+export const TORRENT_FILE_PREFIX = 'torrentfile://'
+const TORRENT_FILE_RE = /torrentfile:\/\/\S+/gi
+
+export function isMagnetUri(url: string): boolean {
+  return /^magnet:\?xt=urn:btih:/i.test(url)
+}
+
+export function isTorrentFileUri(url: string): boolean {
+  return url.startsWith(TORRENT_FILE_PREFIX)
+}
+
+export function torrentFilePath(url: string): string {
+  return decodeURIComponent(url.slice(TORRENT_FILE_PREFIX.length))
+}
+
+export function torrentFileUriFromPath(path: string): string {
+  return `${TORRENT_FILE_PREFIX}${encodeURIComponent(path)}`
+}
+
 // Garante um esquema: prefixa http:// quando o candidato vem "cru". Usamos http://
 // (e não https://) porque servidores diretos por IP:porta costumam ser http; sites
 // que exigem https redirecionam sozinhos.
@@ -36,7 +62,14 @@ export function normalizeUrlCandidate(line: string): string {
 
 export function parseUrls(text: string): string[] {
   const seen = new Set<string>()
-  const matches = text.match(URL_CANDIDATE_RE) ?? []
+  for (const match of text.match(MAGNET_RE) ?? []) {
+    seen.add(match.trim())
+  }
+  for (const match of text.match(TORRENT_FILE_RE) ?? []) {
+    seen.add(match.trim())
+  }
+  const rest = text.replace(MAGNET_RE, ' ').replace(TORRENT_FILE_RE, ' ')
+  const matches = rest.match(URL_CANDIDATE_RE) ?? []
   for (const match of matches) {
     const url = normalizeUrlCandidate(match)
     if (url) seen.add(url)
@@ -45,6 +78,17 @@ export function parseUrls(text: string): string[] {
 }
 
 export function truncateUrl(url: string): string {
+  if (isMagnetUri(url)) {
+    const queryIndex = url.indexOf('?')
+    const dn = queryIndex >= 0 ? new URLSearchParams(url.slice(queryIndex + 1)).get('dn') : null
+    const name = dn?.trim() || 'Torrent (magnet)'
+    return name.length > 44 ? `${name.slice(0, 41)}...` : name
+  }
+  if (isTorrentFileUri(url)) {
+    const path = torrentFilePath(url)
+    const name = path.split(/[/\\]/).filter(Boolean).at(-1) || path
+    return name.length > 44 ? `${name.slice(0, 41)}...` : name
+  }
   try {
     const parsed = new URL(url)
     const last = parsed.pathname.split('/').filter(Boolean).at(-1) || parsed.hostname

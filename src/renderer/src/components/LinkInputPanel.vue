@@ -17,6 +17,13 @@
           @input="onInput"
         ></textarea>
       </div>
+      <div class="url-field-actions">
+        <button type="button" class="container-button" @click="emit('pick-torrent-file')">
+          <i class="pi pi-share-alt"></i>
+          Arquivo .torrent
+        </button>
+        <span class="container-hint">ou cole um link magnet: na caixa acima</span>
+      </div>
     </div>
   </div>
 </template>
@@ -36,6 +43,7 @@ const emit = defineEmits<{
   (e: 'imported-links', urls: string[]): void
   (e: 'imported-hashes', hashes: Array<{ filename: string; value: string }>): void
   (e: 'import-error', message: string): void
+  (e: 'pick-torrent-file'): void
 }>()
 
 const { t } = useI18n()
@@ -132,6 +140,12 @@ function onInput(event: Event): void {
   min-width: 0;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.url-field-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .field-label {

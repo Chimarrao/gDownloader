@@ -58,6 +58,16 @@ const ICONS: Record<string, ProviderIcon> = {
       <path d="M11 26h14" stroke="white" stroke-width="2.2" stroke-linecap="round"/>
     </svg>`,
   },
+  torrent: {
+    color: '#8b5cf6',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <rect width="36" height="36" rx="8" fill="#8b5cf6"/>
+      <circle cx="18" cy="10" r="3" fill="white"/>
+      <circle cx="10" cy="26" r="3" fill="white"/>
+      <circle cx="26" cy="26" r="3" fill="white"/>
+      <path d="M18 13v7M15.5 19l-4 5M20.5 19l4 5" stroke="white" stroke-width="2" stroke-linecap="round"/>
+    </svg>`,
+  },
   googledrive: {
     color: '#4285F4',
     svg: googledriveSvg,
