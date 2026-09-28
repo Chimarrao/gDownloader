@@ -5232,7 +5232,7 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 
 /* ── Progress track ─────────────────────────────────────────── */
 .progress-track {
-  height: 5px;
+  height: 7px;
   flex-shrink: 0;
   background: var(--surface-section);
   border-radius: 999px;
@@ -5248,6 +5248,9 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   min-width: 2px;
   max-width: 100%;
   will-change: width;
+  /* Item 8 (Direção A): mais presença visual sem mudar a altura da linha —
+     evita mexer nas contas de virtualização da lista. */
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.18);
 }
 
 .progress-shimmer {
@@ -5506,7 +5509,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .meta-eta {
-  color: var(--text-secondary, var(--text-muted));
+  /* Item 8 (Direção A): só aparece durante o download ativo (v-if no
+     template), então pode ter o mesmo destaque do meta-speed — reforça que
+     é estado "ao vivo", não metadado estático como o tamanho. */
+  color: var(--accent-color);
+  font-weight: 600;
+  border-color: color-mix(in srgb, var(--accent-color) 30%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
 }
 
 .meta-time,
