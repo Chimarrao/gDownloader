@@ -401,7 +401,10 @@
           v-memo="rowMemoKey(item)"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id), 'package-child-row': !!item.packageId }]"
-          draggable="true"
+          :draggable="dragArmedId === item.id"
+          @mousedown="armRowDrag(item, $event)"
+          @mouseup="disarmRowDrag"
+          @mouseleave="disarmRowDrag"
           @dragstart="startPackageDrag(item, $event)"
           @dragend="endPackageDrag"
           @contextmenu.prevent="openContextMenu(item, $event)"
@@ -3010,6 +3013,32 @@ function startPackageDrag(item: DownloadItem, event: DragEvent): void {
 function endPackageDrag(): void {
   draggedPackageItemId.value = null
   packageDropTargetId.value = null
+  disarmRowDrag()
+}
+
+// A linha inteira precisa ser draggable="true" pro recurso de arrastar pra um
+// pacote, mas isso deixa QUALQUER clique simples sujeito a virar um
+// dragstart nativo do HTML5 (mousedown + qualquer micro-movimento, comum em
+// trackpad) — no macOS isso disparava uma rajada de eventos internos do
+// AppKit (NSDraggingSession) que fazia a janela inteira, até a barra
+// lateral, piscar em branco por um frame ou dois. Corrigido "armando" o
+// arraste só depois de segurar o clique 150ms: um clique normal solta antes
+// disso e nunca chega a ficar draggable de verdade.
+let rowDragArmTimer: number | null = null
+const dragArmedId = ref<string | null>(null)
+function armRowDrag(item: DownloadItem, event: MouseEvent): void {
+  if (event.button !== 0) return
+  if (rowDragArmTimer !== null) window.clearTimeout(rowDragArmTimer)
+  rowDragArmTimer = window.setTimeout(() => {
+    dragArmedId.value = item.id
+  }, 150)
+}
+function disarmRowDrag(): void {
+  if (rowDragArmTimer !== null) {
+    window.clearTimeout(rowDragArmTimer)
+    rowDragArmTimer = null
+  }
+  dragArmedId.value = null
 }
 
 function draggedDownloadId(event: DragEvent): string | null {
@@ -3837,6 +3866,7 @@ function rowMemoKey(item: DownloadItem): unknown[] {
     flashingIds.value.has(item.id),
     isExpanded(item.id),
     isDetailExpanded(item.id),
+    dragArmedId.value === item.id,
     singleConnectionDownloads.value.has(item.id),
     captchaSolvedIds.value.has(item.id),
     stageLabels.value[item.id],
