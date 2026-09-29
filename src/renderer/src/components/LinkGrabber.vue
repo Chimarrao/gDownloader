@@ -245,7 +245,15 @@ const selectedCount = computed(() =>
 // diferente (ex.: /Volumes/YUMI), então o aviso considera o disco real de cada um,
 // não apenas o diretório de saída global.
 const captureDiskFreeByDir = ref<Record<string, number>>({})
+// Token de sequência: com 20+ links resolvendo em paralelo (4 workers), cada
+// linha que termina disparava um novo refreshCaptureDiskFree() — chamadas de
+// IPC concorrentes podiam voltar fora de ordem e uma resposta MAIS VELHA
+// sobrescrevia uma mais nova, fazendo o aviso de "espaço insuficiente" piscar
+// ligado/desligado sem parar até o lote inteiro terminar de carregar. Só a
+// chamada mais recente pode gravar o resultado.
+let diskFreeToken = 0
 async function refreshCaptureDiskFree(): Promise<void> {
+  const token = ++diskFreeToken
   const dirs = new Set<string>()
   for (const entry of selectedEntries.value) {
     dirs.add(entry.destDir || defaultOutputDir())
@@ -261,6 +269,7 @@ async function refreshCaptureDiskFree(): Promise<void> {
       next[dir] = disk?.freeBytes ?? 0
     }),
   )
+  if (token !== diskFreeToken) return
   captureDiskFreeByDir.value = next
 }
 const totalSelectedBytes = computed(() =>
@@ -280,9 +289,13 @@ const capacityShortfall = computed(() => {
   }
   return shortfall
 })
+let diskFreeDebounceTimer: number | null = null
 watch(
   () => selectedEntries.value.map((entry) => `${entry.destDir}:${entry.size}`).join('|'),
-  () => void refreshCaptureDiskFree(),
+  () => {
+    if (diskFreeDebounceTimer !== null) window.clearTimeout(diskFreeDebounceTimer)
+    diskFreeDebounceTimer = window.setTimeout(() => void refreshCaptureDiskFree(), 250)
+  },
 )
 const availableCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectableUnitCount(row), 0))
 const selectedUnitCount = computed(() => rows.value.reduce((sum, row) => sum + rowSelectedUnitCount(row), 0))
