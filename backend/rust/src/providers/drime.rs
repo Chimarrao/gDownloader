@@ -11,26 +11,36 @@ pub struct DrimeProvider;
 
 impl DrimeProvider {
     pub fn matches(url: &str) -> bool {
-        host_matches(url, &["app.drime.cloud"])
-            && matches!(path_segments(url).as_slice(), [first, second, _hash, ..] if first == "drive" && second == "s")
+        if host_matches(url, &["app.drime.cloud"]) {
+            return matches!(path_segments(url).as_slice(), [first, second, _hash, ..] if first == "drive" && second == "s");
+        }
+        // dri.me/<hash> é o link curto do Drime (mesmo compartilhamento, só sem o
+        // prefixo /drive/s/ do domínio longo) — mesma API por baixo.
+        if host_matches(url, &["dri.me", "www.dri.me"]) {
+            return matches!(path_segments(url).as_slice(), [_hash, ..]);
+        }
+        false
     }
 
     fn extract_share_hash(url: &str) -> Option<String> {
-        let pos = url.find("/drive/s/")?;
-        let after = &url[pos + 9..];
-        let hash = after
-            .split('?')
-            .next()?
-            .split('#')
-            .next()?
-            .split('/')
-            .next()?
-            .trim();
-        if hash.is_empty() {
-            None
-        } else {
-            Some(hash.to_string())
+        if let Some(pos) = url.find("/drive/s/") {
+            let after = &url[pos + 9..];
+            let hash = after
+                .split('?')
+                .next()?
+                .split('#')
+                .next()?
+                .split('/')
+                .next()?
+                .trim();
+            return if hash.is_empty() { None } else { Some(hash.to_string()) };
         }
+        if host_matches(url, &["dri.me", "www.dri.me"]) {
+            let hash = path_segments(url).into_iter().next()?;
+            let hash = hash.trim();
+            return if hash.is_empty() { None } else { Some(hash.to_string()) };
+        }
+        None
     }
 
     async fn fetch_share_page(client: &reqwest::Client, share_hash: &str, page: usize) -> Result<Value> {
@@ -373,5 +383,49 @@ impl Provider for DrimeProvider {
             file.flush().await?;
             Ok(downloaded)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DrimeProvider;
+
+    #[test]
+    fn matches_long_share_url() {
+        assert!(DrimeProvider::matches(
+            "https://app.drime.cloud/drive/s/abc123XYZ?foo=bar"
+        ));
+    }
+
+    #[test]
+    fn matches_short_dri_me_url() {
+        assert!(DrimeProvider::matches(
+            "https://dri.me/g93uoWoSvnOqtUIkRs9mOfvlxKe6ZJ"
+        ));
+        assert!(DrimeProvider::matches(
+            "https://www.dri.me/g93uoWoSvnOqtUIkRs9mOfvlxKe6ZJ"
+        ));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_hosts() {
+        assert!(!DrimeProvider::matches("https://mega.nz/file/abc"));
+        assert!(!DrimeProvider::matches("https://drime.cloud/drive/s/abc"));
+    }
+
+    #[test]
+    fn extracts_hash_from_long_url() {
+        assert_eq!(
+            DrimeProvider::extract_share_hash("https://app.drime.cloud/drive/s/abc123XYZ?foo=bar"),
+            Some("abc123XYZ".to_string())
+        );
+    }
+
+    #[test]
+    fn extracts_hash_from_short_dri_me_url() {
+        assert_eq!(
+            DrimeProvider::extract_share_hash("https://dri.me/g93uoWoSvnOqtUIkRs9mOfvlxKe6ZJ"),
+            Some("g93uoWoSvnOqtUIkRs9mOfvlxKe6ZJ".to_string())
+        );
     }
 }
