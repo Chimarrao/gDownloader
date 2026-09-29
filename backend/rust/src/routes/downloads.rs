@@ -499,6 +499,43 @@ fn unique_destination(dest_dir: &str, filename: &str) -> (String, String) {
     (candidate_name, candidate_path.to_string_lossy().to_string())
 }
 
+// Como unique_destination(), mas também evita colidir com downloads de OUTRAS
+// fontes já na fila (in-memory) cujo dest_path ainda não existe no disco —
+// caso de pastas com o mesmo título vindas de links diferentes (ex.: vários
+// compartilhamentos Drime chamados "DBZ"), adicionadas em lote antes de
+// qualquer uma delas ter criado a pasta de verdade.
+async fn unique_destination_avoiding_in_flight(
+    state: &AppState,
+    dest_dir: &str,
+    filename: &str,
+    identity_key: &str,
+) -> (String, String) {
+    let mut candidate_name = filename.to_string();
+    let mut candidate_path = PathBuf::from(dest_dir);
+    candidate_path.push(&candidate_name);
+    let mut candidate_str = candidate_path.to_string_lossy().to_string();
+
+    let mut index = 2;
+    loop {
+        let taken = candidate_path.exists() || {
+            let map = state.downloads.lock().await;
+            map.values().any(|download| {
+                download.dest_path == candidate_str && download.identity_key != identity_key
+            })
+        };
+        if !taken {
+            break;
+        }
+        candidate_name = suffix_filename(filename, &format!("_{index}"));
+        candidate_path = PathBuf::from(dest_dir);
+        candidate_path.push(&candidate_name);
+        candidate_str = candidate_path.to_string_lossy().to_string();
+        index += 1;
+    }
+
+    (candidate_name, candidate_str)
+}
+
 fn duplicate_sha256(expected_hash: &Option<ExpectedHash>) -> Option<String> {
     expected_hash.as_ref().and_then(|hash| {
         if matches!(hash.algorithm, HashAlgorithm::Sha256) {
@@ -761,6 +798,27 @@ pub async fn add_download_internal(
         dest_dir.trim_end_matches('/'),
         file_info.filename
     );
+
+    // Duas fontes DIFERENTES (identity_key distinto) podem resolver pro mesmo
+    // título — ex.: vários links Drime cujas pastas se chamam "DBZ" — daí o
+    // mesmo dest_path pra downloads não relacionados, e os arquivos de um
+    // sobrescrevem os do outro em disco. unique_destination() (mais abaixo) só
+    // reagia a duplicata de CONTEÚDO (duplicate_action == "rename") e checava
+    // só o disco, o que não pega colisão entre pastas ainda não criadas
+    // (lote de adds sequenciais, nenhuma baixou nada ainda). Aqui resolve
+    // sempre, checando disco E os outros downloads já na fila.
+    let collides_with_other_source = {
+        let map = state.downloads.lock().await;
+        map.values().any(|download| {
+            download.dest_path == dest_path && download.identity_key != identity_key
+        })
+    };
+    if collides_with_other_source {
+        let (renamed_filename, renamed_path) =
+            unique_destination_avoiding_in_flight(&state, &dest_dir, &file_info.filename, &identity_key).await;
+        file_info.filename = renamed_filename;
+        dest_path = renamed_path;
+    }
 
     {
         let map = state.downloads.lock().await;
