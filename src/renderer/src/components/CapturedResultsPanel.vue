@@ -101,24 +101,31 @@
             :checked="filterHosts.includes(host)"
             @change="toggleHostFilter(host)"
           />
-          <span>{{ host }}</span>
+          <span>{{ moduleDisplayName(host) }}</span>
         </label>
       </div>
     </div>
 
     <VirtualRows
       class="captured-list"
-      :items="filteredRows"
-      key-field="url"
+      :items="renderEntries"
+      key-field="key"
       :item-height="112"
       :overscan="8"
       max-height="100%"
     >
-      <template #default="{ item: row }">
+      <template #default="{ item: entry }">
+      <div v-if="entry.kind === 'header'" class="capture-group-header">
+        <i class="pi pi-folder"></i>
+        <span class="capture-group-name">{{ entry.group.name }}</span>
+        <span class="capture-group-count">{{ entry.group.rows.length }} arquivos</span>
+      </div>
       <div
+        v-else
         class="captured-row"
-        :class="{ unavailable: !row.module || row.error }"
+        :class="{ unavailable: !entry.row.module || entry.row.error, 'in-group': !!rowPreviewGroup(entry.row) }"
       >
+        <template v-for="row in [entry.row]" :key="row.url">
         <div class="row-main">
           <label class="row-check">
               <input
@@ -195,7 +202,7 @@
               </span>
             </div>
             <div class="row-sub">
-              <span>{{ row.module?.name ?? t('linkGrabberUnsupported') }}</span>
+              <span>{{ row.module ? moduleDisplayName(row.module.name) : t('linkGrabberUnsupported') }}</span>
               <template v-if="row.info?.channelName">
                 <span>·</span>
                 <span class="row-channel">
@@ -286,6 +293,24 @@
               </label>
             </div>
             <div class="row-actions-bottom">
+              <button
+                v-if="rowPreviewGroup(row)"
+                class="row-action-btn group-action-btn"
+                title="Remover deste grupo"
+                @click="emit('remove-from-group', row)"
+              >
+                <i class="pi pi-times-circle"></i>
+                Tirar do grupo
+              </button>
+              <select
+                v-else-if="joinableGroupsFor(row).length > 0"
+                class="group-join-select"
+                title="Adicionar este link a um grupo já formado"
+                @change="onJoinGroup(row, $event)"
+              >
+                <option value="" selected>+ Grupo</option>
+                <option v-for="g in joinableGroupsFor(row)" :key="g.key" :value="g.key">{{ g.name }}</option>
+              </select>
               <button
                 v-if="(supportsChildSelection(row) && (row.info?.children?.length ?? 0) > 0) || row.sourceUrls.length > 1"
                 class="row-action-btn expand-btn"
@@ -494,6 +519,7 @@
             </VirtualRows>
           </div>
         </div>
+        </template>
       </div>
       </template>
     </VirtualRows>
@@ -530,7 +556,7 @@ import { getFileTypeAppIcon } from '../assets/file-type-icons'
 import { getProviderIcon } from '../assets/provider-icons'
 import type { DerivedChildNode } from '../utils/child-tree'
 import VirtualRows from './VirtualRows.vue'
-import type { CapturedRow, SelectableChild } from './link-grabber-model'
+import type { CapturedRow, PreviewGroup, SelectableChild } from './link-grabber-model'
 import { effectiveSize } from '../utils/display-size'
 import { formatMediaDuration } from '../utils/format'
 import torIconSvg from '../assets/tor.svg?raw'
@@ -624,6 +650,14 @@ const props = defineProps({
     type: Function as PropType<(url: string) => string>,
     required: true,
   },
+  rowPreviewGroup: {
+    type: Function as PropType<(row: CapturedRow) => PreviewGroup | null>,
+    required: true,
+  },
+  joinableGroupsFor: {
+    type: Function as PropType<(row: CapturedRow) => PreviewGroup[]>,
+    required: true,
+  },
 })
 
 function primaryAppIcon(filename: string) {
@@ -649,6 +683,8 @@ const emit = defineEmits<{
   (e: 'choose-destination', row: CapturedRow): void
   (e: 'rename-row', payload: { row: CapturedRow; name: string }): void
   (e: 'filtered-change', urls: string[]): void
+  (e: 'remove-from-group', row: CapturedRow): void
+  (e: 'add-to-group', payload: { row: CapturedRow; groupKey: string }): void
 }>()
 
 const { t } = useI18n()
@@ -660,6 +696,10 @@ const copiedUrl = ref<string | null>(null)
 
 function effectiveName(row: CapturedRow): string {
   return row.customName || row.info?.name || row.displayName
+}
+
+function moduleDisplayName(name: string): string {
+  return name.toLowerCase() === 'direct http' ? 'Download direto' : name
 }
 
 function startRename(row: CapturedRow): void {
@@ -750,6 +790,38 @@ const filteredRows = computed(() => {
   })
 })
 
+// Achata a lista filtrada intercalando um "cabeçalho" antes de cada grupo com
+//2+ membros (ver PreviewGroup no LinkGrabber) — os membros do grupo ficam
+// contíguos sob o cabeçalho, na ordem em que aparecem na lista filtrada,
+// mesmo que a busca/filtro os tenha deixado não-adjacentes originalmente.
+interface RenderEntry {
+  key: string
+  kind: 'header' | 'row'
+  group?: PreviewGroup
+  row?: CapturedRow
+}
+const renderEntries = computed<RenderEntry[]>(() => {
+  const list = filteredRows.value
+  const emitted = new Set<string>()
+  const out: RenderEntry[] = []
+  for (const row of list) {
+    const group = props.rowPreviewGroup(row)
+    if (!group) {
+      out.push({ key: row.url, kind: 'row', row })
+      continue
+    }
+    if (emitted.has(group.key)) continue
+    emitted.add(group.key)
+    out.push({ key: `header:${group.key}`, kind: 'header', group })
+    for (const memberRow of list) {
+      if (props.rowPreviewGroup(memberRow) === group) {
+        out.push({ key: memberRow.url, kind: 'row', row: memberRow })
+      }
+    }
+  }
+  return out
+})
+
 // Debounce do 'filtered-change': ao processar muitos links de uma vez (ex.: 60), o
 // filteredRows muda a cada linha e emitir toda hora fazia o capturador piscar.
 let filteredChangeTimer: ReturnType<typeof setTimeout> | null = null
@@ -834,6 +906,13 @@ function onToggleAll(event: Event): void {
 
 function onToggleRow(row: CapturedRow, event: Event): void {
   emit('toggle-row', { row, checked: checkboxValue(event) })
+}
+
+function onJoinGroup(row: CapturedRow, event: Event): void {
+  const groupKey = (event.target as HTMLSelectElement).value
+  if (!groupKey) return
+  emit('add-to-group', { row, groupKey })
+  ;(event.target as HTMLSelectElement).value = ''
 }
 
 function onToggleChild(row: CapturedRow, child: SelectableChild, event: Event): void {
@@ -1073,6 +1152,59 @@ function suffixFps(source: string, label: string): string {
 
 .captured-row.unavailable {
   opacity: 0.74;
+}
+
+.captured-row.in-group {
+  border-left: 2px solid var(--accent-color);
+  margin-left: 10px;
+}
+
+.capture-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 0 14px;
+  color: var(--accent-color);
+  font-size: 12px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+  border-radius: 10px;
+}
+
+.capture-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-group-count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.group-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.group-action-btn:hover {
+  color: var(--accent-color);
+}
+
+.group-join-select {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  max-width: 110px;
 }
 
 .row-main {

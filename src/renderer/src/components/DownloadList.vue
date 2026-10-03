@@ -3915,6 +3915,7 @@ function isExtractableArchive(filePath: string): boolean {
 
 // ── Display helpers ────────────────────────────────────────
 function moduleLabel(moduleId: string): string {
+  if (moduleId.toLowerCase() === 'direct http') return 'Download direto'
   return modulesById.value[moduleId]?.name ?? moduleId
 }
 
@@ -5815,7 +5816,7 @@ button.meta-path {
 /* ── Lista tabular ─────────────────────────────────────────── */
 .download-table-header {
   display: grid;
-  grid-template-columns: 30px 52px minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) var(--download-table-actions-width);
+  grid-template-columns: 8px 52px minmax(220px, 2.2fr) minmax(105px, 0.9fr) minmax(135px, 1.15fr) minmax(92px, 0.75fr) minmax(118px, 0.95fr) minmax(112px, 0.9fr) var(--download-table-actions-width);
   column-gap: 8px;
   align-items: center;
   min-height: 38px;
@@ -5839,7 +5840,7 @@ button.meta-path {
 
 .download-card {
   display: grid;
-  grid-template-columns: 30px 52px minmax(0, 1fr);
+  grid-template-columns: 8px 52px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 56px;
@@ -6755,7 +6756,7 @@ button.meta-path {
      filhas, já que usam literalmente o mesmo grid interno (.package-parent-data
      abaixo espelha .item-body). Tentar igualar os dois grids "na mão" nunca
      alinhava de verdade (subpixel/gap acumulado entre níveis diferentes). */
-  grid-template-columns: 30px 52px minmax(0, 1fr);
+  grid-template-columns: 8px 52px minmax(0, 1fr);
   align-items: center;
   column-gap: 8px;
   min-height: 50px;
@@ -6950,7 +6951,7 @@ button.meta-path {
   }
 
   .package-parent-row {
-    grid-template-columns: 24px 44px minmax(0, 1fr);
+    grid-template-columns: 7px 44px minmax(0, 1fr);
     padding: 6px 10px;
   }
 

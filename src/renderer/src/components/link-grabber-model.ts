@@ -15,6 +15,12 @@ export interface RowFileInfo extends Omit<FileInfo, 'children'> {
   children?: SelectableChild[]
 }
 
+export interface PreviewGroup {
+  key: string
+  name: string
+  rows: CapturedRow[]
+}
+
 export interface CapturedRow {
   url: string
   displayName: string
@@ -51,5 +57,11 @@ export interface CapturedRow {
   // Kill switch por download: se marcado, o download nunca inicia (nem continua)
   // sem um circuito Tor ativo — não cai pra conexão direta silenciosamente.
   torRequired?: boolean
+  // Ajuste manual do agrupamento automático por nome-base (packageGroupName),
+  // já na tela de Captura, antes de mandar pra fila:
+  // undefined = segue a detecção automática · null = removido do grupo pelo
+  // usuário (nunca agrupa, mesmo com nome-base batendo) · string = colocado
+  // manualmente num grupo existente (a chave desse grupo).
+  manualGroupKey?: string | null
 }
 

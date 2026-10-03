@@ -48,6 +48,8 @@
       :is-folder-node-indeterminate="isFolderNodeIndeterminate"
       :fmt-bytes="fmtBytes"
       :truncate-url="truncateUrl"
+      :row-preview-group="rowPreviewGroup"
+      :joinable-groups-for="joinableGroupsFor"
       @toggle-all="toggleAllChecked"
       @toggle-row="toggleRowChecked"
       @toggle-child="toggleChildChecked"
@@ -60,6 +62,8 @@
       @choose-destination="chooseRowDestination"
       @rename-row="onRenameRow"
       @filtered-change="visibleFilteredUrls = new Set($event)"
+      @remove-from-group="removeFromGroup"
+      @add-to-group="({ row, groupKey }) => addToGroup(row, groupKey)"
     />
 
     <p v-if="capacityShortfall > 0" class="capacity-warn">
@@ -104,7 +108,7 @@ import {
 import CapturedResultsPanel from './CapturedResultsPanel.vue'
 import LinkInputPanel from './LinkInputPanel.vue'
 import LinkGrabberActionsBar from './LinkGrabberActionsBar.vue'
-import type { CapturedRow, ModuleSummary, RowFileInfo, SelectableChild } from './link-grabber-model'
+import type { CapturedRow, ModuleSummary, PreviewGroup, RowFileInfo, SelectableChild } from './link-grabber-model'
 
 const props = defineProps<{
   incomingUrl?: string
@@ -564,18 +568,82 @@ interface AutoPackageGroup {
   entries: QueueEntry[]
 }
 
-// Agrupa por nome-base de modo case-insensitive. Isso também cobre pastas Mega
-// cujo nome é igual (por exemplo "fugindo", "Fugindo") e que não têm sufixo
-// multipart no título.
-function computeAutoPackageGroups(entries: QueueEntry[]): Map<string, AutoPackageGroup> {
-  const groups = new Map<string, AutoPackageGroup>()
-  for (const entry of entries) {
-    const base = packageGroupName(entry.title)
+function effectiveRowName(row: CapturedRow): string {
+  return row.customName || row.info?.name || row.displayName
+}
+
+// Nome-base + chave de agrupamento (minúscula) de UMA linha, já considerando
+// ajuste manual do usuário (ver CapturedRow.manualGroupKey): null = removido
+// do grupo de propósito; string = colocado manualmente num grupo existente;
+// undefined = segue a detecção automática por nome-base (packageGroupName).
+function autoGroupBaseName(row: CapturedRow): string {
+  return packageGroupName(effectiveRowName(row))
+}
+function rowGroupKey(row: CapturedRow): string | null {
+  if (row.manualGroupKey === null) return null
+  if (typeof row.manualGroupKey === 'string') return row.manualGroupKey
+  const base = autoGroupBaseName(row)
+  return base.length >= 4 ? base.toLowerCase() : null
+}
+
+// Prévia do agrupamento automático já na tela de Captura (antes de "Adicionar"),
+// pra o usuário poder tirar/colocar linhas do grupo antes de mandar pra fila —
+// a MESMA chave/nome aqui é usada depois em computeAutoPackageGroups() pra criar
+// o pacote de verdade, então o que o usuário vê aqui é exatamente o que vai ser
+// criado.
+const previewGroups = computed<PreviewGroup[]>(() => {
+  const displayNames = new Map<string, string>()
+  for (const row of rows.value) {
+    if (row.manualGroupKey !== undefined) continue
+    const base = autoGroupBaseName(row)
     if (base.length < 4) continue
     const key = base.toLowerCase()
+    if (!displayNames.has(key)) displayNames.set(key, sanitizeFolderName(base))
+  }
+
+  const groups = new Map<string, PreviewGroup>()
+  for (const row of rows.value) {
+    const key = rowGroupKey(row)
+    if (!key) continue
+    const group = groups.get(key)
+    if (group) group.rows.push(row)
+    else groups.set(key, { key, name: displayNames.get(key) ?? sanitizeFolderName(key), rows: [row] })
+  }
+  return [...groups.values()].filter((group) => group.rows.length >= 2)
+})
+const previewGroupByKey = computed(() => new Map(previewGroups.value.map((group) => [group.key, group])))
+// Linha faz parte de algum grupo com 2+ membros (a "prévia" real)?
+function rowPreviewGroup(row: CapturedRow): PreviewGroup | null {
+  const key = rowGroupKey(row)
+  return key ? previewGroupByKey.value.get(key) ?? null : null
+}
+// Grupos que esta linha PODERIA entrar manualmente (todo grupo existente do
+// qual ela ainda não é membro) — usado pelo botão "Adicionar ao grupo".
+function joinableGroupsFor(row: CapturedRow): PreviewGroup[] {
+  const current = rowPreviewGroup(row)
+  return previewGroups.value.filter((group) => group !== current)
+}
+function removeFromGroup(row: CapturedRow): void {
+  row.manualGroupKey = null
+}
+function addToGroup(row: CapturedRow, groupKey: string): void {
+  row.manualGroupKey = groupKey
+}
+
+// Agrupa por nome-base de modo case-insensitive, respeitando o ajuste manual
+// feito na prévia da Captura. Isso também cobre pastas Mega cujo nome é igual
+// (por exemplo "fugindo", "Fugindo") e que não têm sufixo multipart no título.
+function computeAutoPackageGroups(entries: QueueEntry[]): Map<string, AutoPackageGroup> {
+  const rowsByUrl = new Map(rows.value.map((row) => [row.url, row]))
+  const groups = new Map<string, AutoPackageGroup>()
+  for (const entry of entries) {
+    const row = rowsByUrl.get(entry.url)
+    const key = row ? rowGroupKey(row) : null
+    if (!key) continue
+    const name = row ? (previewGroupByKey.value.get(key)?.name ?? sanitizeFolderName(autoGroupBaseName(row))) : sanitizeFolderName(key)
     const group = groups.get(key)
     if (group) group.entries.push(entry)
-    else groups.set(key, { name: sanitizeFolderName(base), entries: [entry] })
+    else groups.set(key, { name, entries: [entry] })
   }
   for (const [key, group] of groups) {
     if (group.entries.length < 2) groups.delete(key)
@@ -652,7 +720,20 @@ async function addAll(): Promise<void> {
         entry.torRequired
       )
       const packageId = packageByEntry.get(entry)
-      if (packageId) await window.api.packages.assign(packageId, download.id)
+      if (packageId) {
+        // Assign separado do add: uma falha aqui (transiente) não pode marcar
+        // o item inteiro como "erro ao adicionar" — o download já foi criado
+        // com sucesso, só o agrupamento no pacote que falhou. Uma retentativa
+        // cobre o caso comum (corrida com a criação do pacote ainda não
+        // visível pro assign na sequência imediata).
+        try {
+          await window.api.packages.assign(packageId, download.id)
+        } catch {
+          await window.api.packages.assign(packageId, download.id).catch((err) => {
+            console.warn('Falha ao agrupar no pacote automático', download.id, packageId, err)
+          })
+        }
+      }
       addedCount += 1
       addQueueDone.value = addedCount
       await nextFrame()
