@@ -937,10 +937,15 @@ pub async fn add_download_internal(
         thumbnail_data: None,
         channel_name: file_info.channel_name,
         channel_thumbnail_url: file_info.channel_thumbnail_url,
-        // Padrão ligado: se o download bater rate-limit e o Tor estiver
-        // disponível, usa um circuito isolado (com rotação) automaticamente em
-        // vez de ficar reusando a mesma rota/IP já bloqueado pelo host.
-        auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(true),
+        // Padrão DESLIGADO: Tor nunca liga sozinho sem ação explícita do
+        // usuário (regra permanente do projeto). O frontend não expõe
+        // nenhum campo pra escolher isso na hora de adicionar, então
+        // req.auto_tor_on_limit vinha sempre None aqui — com unwrap_or(true)
+        // TODO download silenciosamente ficava elegível pra rotear via Tor
+        // assim que batesse rate-limit, sem o usuário nunca ter marcado nada.
+        // Ligar continua possível por download via toggle manual na lista
+        // ("Usar Tor ao atingir limite" no menu de contexto).
+        auto_tor_on_limit: req.auto_tor_on_limit.unwrap_or(false),
         tor_required: req.tor_required.unwrap_or(false),
     };
 
