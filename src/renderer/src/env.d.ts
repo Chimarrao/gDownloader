@@ -145,6 +145,7 @@ interface RendererApi {
     setAutoTor: (id: string, enabled: boolean) => Promise<void>;
     setTorRequired: (id: string, enabled: boolean) => Promise<void>;
     setSpeedLimit: (id: string, speedLimitKib: number) => Promise<void>;
+    setParallelParts: (id: string, parallelParts: number) => Promise<void>;
     pauseAll: () => Promise<{ paused: number }>;
     resumeAll: () => Promise<{ resumed: number }>;
     move: (id: string, destDir: string) => Promise<void>;

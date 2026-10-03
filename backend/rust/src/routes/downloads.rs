@@ -49,6 +49,11 @@ pub struct SpeedLimitRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ParallelPartsRequest {
+    pub parallel_parts: u32,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MoveRequest {
     /// Nova pasta de destino do arquivo (o nome do arquivo é preservado).
     pub dest_dir: String,
@@ -1670,6 +1675,83 @@ pub async fn update_download_speed_limit(
 
     persist_download_snapshot(&state, &id).await;
     record_download_event(&state, &id, "speed_limit", &format!("Limite individual alterado para {} KiB/s", req.speed_limit_kib));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Altera o número de partes/conexões paralelas de UM download específico.
+///
+/// Ao contrário do limite de velocidade (um valor atômico lido a cada iteração do
+/// loop de streaming, aplicado ao vivo), `parallel_parts` só é lido UMA VEZ, bem
+/// no início de `run_download_inner`, antes do loop de tentativas — mudar o valor
+/// no mapa/banco sozinho não tem efeito numa task já em execução.
+///
+/// `active_tasks` guarda o handle da task INTERNA de cada tentativa (o
+/// `tokio::spawn` dentro do loop que chama `provider.download_with_context`),
+/// não da `run_download_inner` inteira. Abortar essa task interna sozinha NÃO
+/// basta: o branch `Err(_)` do loop externo que trata esse abort só decide
+/// ENCERRAR de vez a `run_download_inner` (liberando `running_downloads`, que é
+/// o que permite uma respawn de verdade ler o valor novo) quando o status do
+/// download está `Paused` ou `Cancelled` naquele instante — qualquer outro
+/// status (inclusive `Pending`, a primeira versão desta função usava isso e não
+/// funcionava) cai no branch de retry comum, que recomeça a MESMA invocação da
+/// task externa, com `parallel_parts` ainda preso ao valor antigo. Por isso o
+/// status tem que virar `Paused` ANTES do abort (replica pause_one()), e só
+/// depois de confirmar que a task externa realmente retornou
+/// (`running_downloads` sem mais este id) é que viramos `Pending` e
+/// reagendamos — aí sim a nova tentativa nasce lendo o valor atualizado.
+pub async fn update_download_parallel_parts(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ParallelPartsRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+    let parallel_parts = req.parallel_parts.max(1);
+    let was_active = {
+        let mut map = state.downloads.lock().await;
+        let download = map.get_mut(&id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new("Download não encontrado")),
+            )
+        })?;
+        download.parallel_parts = parallel_parts;
+        matches!(download.status, DownloadStatus::Downloading | DownloadStatus::Verifying)
+    };
+
+    if was_active {
+        if !pause_one(&state, &id, "Pausado automaticamente para aplicar nova contagem de partes paralelas").await {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new("Download não encontrado")),
+            ));
+        }
+
+        // Espera a run_download_inner ANTIGA realmente retornar (até 3s, checando
+        // a cada 50ms) antes de reagendar — senão a respawn via
+        // schedule_pending_downloads é ignorada pelo guard anti-dupla-execução em
+        // run_download() (ou, pior, a task antiga ainda viva sobrescreve o status
+        // de volta pra Downloading na próxima iteração dela).
+        for _ in 0..60 {
+            if !state.running_downloads.lock().await.contains(&id) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let mut map = state.downloads.lock().await;
+        if let Some(d) = map.get_mut(&id) {
+            d.status = DownloadStatus::Pending;
+            d.speed_bps = 0;
+            d.eta_secs = 0;
+            d.retry_at = None;
+            d.error = None;
+        }
+    }
+
+    persist_download_snapshot(&state, &id).await;
+    record_download_event(&state, &id, "parallel_parts", &format!("Partes paralelas alteradas para {parallel_parts}"));
+    if was_active {
+        schedule_pending_downloads(state.clone()).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

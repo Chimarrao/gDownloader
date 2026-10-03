@@ -555,6 +555,19 @@ const api = {
       });
     },
 
+    // Mudar o número de conexões paralelas de um download já na fila/ativo.
+    // Ao contrário do limite de velocidade, isso exige reiniciar a tentativa
+    // atual no backend (o valor só é lido no início de cada tentativa) — se
+    // o download estiver baixando, ele é pausado e retomado automaticamente,
+    // preservando os bytes já escritos em disco.
+    setParallelParts: async (id: string, parallelParts: number) => {
+      await fetchBackend(`/downloads/${id}/parallel-parts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ parallel_parts: parallelParts }),
+      });
+    },
+
     pauseAll: async (): Promise<{ paused: number }> => {
       const resp = await fetchBackend("/downloads/pause-all", {
         method: "POST",

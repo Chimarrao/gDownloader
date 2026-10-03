@@ -201,6 +201,7 @@ pub fn create_router_with_state(state: ws::AppState) -> axum::Router {
         .route("/downloads/:id/force", post(routes::downloads::force_download))
         .route("/downloads/:id/priority", post(routes::downloads::update_download_priority))
         .route("/downloads/:id/speed-limit", post(routes::downloads::update_download_speed_limit))
+        .route("/downloads/:id/parallel-parts", post(routes::downloads::update_download_parallel_parts))
         .route("/downloads/:id/move", post(routes::downloads::move_download))
         .route("/downloads/:id/remove", delete(routes::downloads::remove_download))
         .route("/downloads/:id/remove-with-files", delete(routes::downloads::remove_download_with_files))

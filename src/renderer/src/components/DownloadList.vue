@@ -1198,6 +1198,22 @@
           <button class="speed-apply" @click="applySpeedLimit">Aplicar</button>
         </div>
         <p class="speed-hint">Aplica em tempo real ao download em andamento. Use 0 para sem limite.</p>
+
+        <div class="speed-modal-divider"></div>
+        <span class="speed-modal-subtitle"><i class="pi pi-sitemap"></i> Partes paralelas (conexões)</span>
+        <div class="speed-custom">
+          <input
+            v-model.number="speedLimitModal.parallelParts"
+            type="number"
+            min="1"
+            max="16"
+            step="1"
+            class="speed-input"
+            @keyup.enter="applyParallelParts"
+          />
+          <button class="speed-apply" @click="applyParallelParts">Aplicar</button>
+        </div>
+        <p class="speed-hint">Reinicia a tentativa atual para valer (preserva o progresso já baixado). Alguns hosts limitam a banda total por IP — mais conexões nem sempre aceleram.</p>
       </div>
     </div>
 
@@ -1434,7 +1450,8 @@ const speedLimitModal = ref<{
   amount: number
   unit: 'kb' | 'mb'
   title: string
-}>({ visible: false, targetIds: [], amount: 0, unit: 'mb', title: '' })
+  parallelParts: number
+}>({ visible: false, targetIds: [], amount: 0, unit: 'mb', title: '', parallelParts: 1 })
 
 const defaultColumns = ['status', 'name', 'size', 'progress', 'speed', 'eta', 'host', 'package', 'added', 'completed', 'hash']
 const visibleColumns = ref<string[]>([...defaultColumns])
@@ -3551,6 +3568,7 @@ function setContextSpeedLimit(): void {
     amount: currentKib === 0 ? 0 : useMb ? currentKib / 1024 : currentKib,
     unit: useMb ? 'mb' : 'kb',
     title: targets.length > 1 ? `${targets.length} downloads selecionados` : targets[0].title || 'Download',
+    parallelParts: targets[0].parallelParts ?? 1,
   }
   closeContextMenu()
 }
@@ -3572,6 +3590,19 @@ async function applySpeedLimit(): Promise<void> {
   speedLimitModal.value.visible = false
   for (const id of targetIds) {
     await window.api.downloads.setSpeedLimit(id, kib).catch(() => null)
+  }
+  await hydrate()
+}
+
+// Diferente do limite de velocidade (aplica ao vivo), mudar as partes
+// paralelas reinicia a tentativa atual no backend pra valer — se o download
+// estiver baixando, ele pausa/retoma sozinho, preservando os bytes já
+// escritos (ver comentário em update_download_parallel_parts no backend).
+async function applyParallelParts(): Promise<void> {
+  const { targetIds, parallelParts } = speedLimitModal.value
+  const parts = Math.max(1, Math.round(Number(parallelParts) || 1))
+  for (const id of targetIds) {
+    await window.api.downloads.setParallelParts(id, parts).catch(() => null)
   }
   await hydrate()
 }
@@ -6581,6 +6612,21 @@ button.meta-path {
   margin: 0;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.speed-modal-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+.speed-modal-subtitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 /* ── Captcha modal ──────────────────────────────────────────── */
