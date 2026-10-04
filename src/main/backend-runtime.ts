@@ -95,6 +95,10 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
     return port
   }
 
+  function getPid(): number | null {
+    return backend?.pid ?? null
+  }
+
   function markQuitting(): void {
     appIsQuitting = true
   }
@@ -236,6 +240,7 @@ export function createBackendRuntime(options: BackendRuntimeOptions) {
 
   return {
     getPort,
+    getPid,
     markQuitting,
     start,
     stop,
@@ -254,6 +259,9 @@ export function createGoRuntime(options: BackendRuntimeOptions) {
 
   function getPort(): number | null {
     return port
+  }
+  function getPid(): number | null {
+    return backend?.pid ?? null
   }
   function markQuitting(): void {
     appIsQuitting = true
@@ -387,6 +395,7 @@ export function createGoRuntime(options: BackendRuntimeOptions) {
 
   return {
     getPort,
+    getPid,
     markQuitting,
     start,
     stop,

@@ -95,6 +95,67 @@ const legacyHistoryPaths = [
 
 let previousCpuSample: { idle: number; total: number } | null = null;
 
+// Uso de CPU/RAM do PRÓPRIO gDownloader (Electron + backend Rust + sidecar
+// Go), não do sistema inteiro — complementa systemMetricsSnapshot() na barra
+// de status. Electron expõe seus próprios processos (main/renderer/GPU/
+// utility) via app.getAppMetrics(); Rust e Go são processos externos
+// (spawn()), então sua RAM/CPU só dá pra pegar perguntando ao SO via `ps`
+// (não existe em Windows — nesse caso a contribuição deles fica 0, só o
+// Electron entra na conta).
+async function psRssCpuForPid(pid: number): Promise<{ rssKb: number; cpuPercent: number } | null> {
+  if (process.platform === "win32") return null;
+  return new Promise((resolve) => {
+    const ps = spawn("ps", ["-o", "rss=,%cpu=", "-p", String(pid)]);
+    let out = "";
+    ps.stdout?.on("data", (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    ps.on("error", () => resolve(null));
+    ps.on("close", () => {
+      const parts = out.trim().split(/\s+/);
+      if (parts.length < 2) {
+        resolve(null);
+        return;
+      }
+      const rssKb = Number(parts[0]);
+      const cpuPercent = Number(parts[1]);
+      resolve(
+        Number.isFinite(rssKb) && Number.isFinite(cpuPercent)
+          ? { rssKb, cpuPercent }
+          : null,
+      );
+    });
+  });
+}
+
+async function appMetricsSnapshot(): Promise<{
+  appMemoryUsed: number;
+  appCpuPercent: number;
+}> {
+  let memoryBytes = 0;
+  let cpuPercent = 0;
+
+  for (const metric of app.getAppMetrics()) {
+    memoryBytes += metric.memory.workingSetSize * 1024;
+    cpuPercent += metric.cpu.percentCPUUsage;
+  }
+
+  const backendPid = backendRuntime.getPid();
+  const goPid = goRuntime.getPid();
+  const results = await Promise.all(
+    [backendPid, goPid]
+      .filter((pid): pid is number => pid !== null)
+      .map((pid) => psRssCpuForPid(pid)),
+  );
+  for (const result of results) {
+    if (!result) continue;
+    memoryBytes += result.rssKb * 1024;
+    cpuPercent += result.cpuPercent;
+  }
+
+  return { appMemoryUsed: memoryBytes, appCpuPercent: cpuPercent };
+}
+
 function systemMetricsSnapshot(): {
   memoryUsed: number;
   memoryTotal: number;
@@ -2048,7 +2109,10 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle("system:metrics", () => systemMetricsSnapshot());
+  ipcMain.handle("system:metrics", async () => ({
+    ...systemMetricsSnapshot(),
+    ...(await appMetricsSnapshot()),
+  }));
 
   ipcMain.handle("cache:stats", async () => localCacheStats());
   ipcMain.handle("cache:clear", async (_event, ids: string[]) =>

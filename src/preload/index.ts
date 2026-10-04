@@ -847,6 +847,8 @@ const api = {
       memoryUsed: number;
       memoryTotal: number;
       cpuPercent: number;
+      appMemoryUsed: number;
+      appCpuPercent: number;
     }> => ipcRenderer.invoke("system:metrics"),
   },
   logs: {

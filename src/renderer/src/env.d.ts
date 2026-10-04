@@ -193,6 +193,10 @@ interface RendererApi {
       memoryUsed: number;
       memoryTotal: number;
       cpuPercent: number;
+      // Uso do PRÓPRIO gDownloader (Electron + backend Rust + sidecar Go),
+      // não do sistema inteiro.
+      appMemoryUsed: number;
+      appCpuPercent: number;
     }>;
   };
   logs: {

@@ -429,14 +429,19 @@
         </section>
       </main>
       <footer class="status-bar">
-        <span class="status-item">
+        <span class="status-item" title="RAM usada pelo gDownloader (Electron + backend Rust + sidecar Go) / RAM total do sistema">
           <i class="pi pi-server"></i>
-          RAM: {{ formatBytes(systemMetrics.memoryUsed) }} /
-          {{ formatBytes(systemMetrics.memoryTotal) }}
+          RAM: {{ formatBytes(systemMetrics.appMemoryUsed) }}
+          <span class="status-item-muted">(app)</span> ·
+          {{ formatBytes(systemMetrics.memoryUsed) }} / {{ formatBytes(systemMetrics.memoryTotal) }}
+          <span class="status-item-muted">(sistema)</span>
         </span>
-        <span class="status-item">
+        <span class="status-item" title="CPU usada pelo gDownloader / CPU total do sistema">
           <i class="pi pi-microchip"></i>
-          CPU: {{ systemMetrics.cpuPercent.toFixed(0) }}%
+          CPU: {{ systemMetrics.appCpuPercent.toFixed(0) }}%
+          <span class="status-item-muted">(app)</span> ·
+          {{ systemMetrics.cpuPercent.toFixed(0) }}%
+          <span class="status-item-muted">(sistema)</span>
         </span>
         <span class="status-item">
           <i class="pi pi-database"></i>
@@ -511,6 +516,8 @@ const systemMetrics = ref({
   cpuPercent: 0,
   ioReadBps: 0,
   ioWriteBps: 0,
+  appMemoryUsed: 0,
+  appCpuPercent: 0,
 });
 const clipboardIncomingUrl = ref("");
 const showOnboarding = ref(false);
@@ -853,6 +860,8 @@ async function refreshSystemMetrics(): Promise<void> {
   if (!metrics) return;
   systemMetrics.value = {
     ...metrics,
+    appMemoryUsed: metrics.appMemoryUsed ?? 0,
+    appCpuPercent: metrics.appCpuPercent ?? 0,
     ioReadBps: disks.reduce((sum, disk) => sum + (disk.readBps ?? 0), 0),
     ioWriteBps: disks.reduce((sum, disk) => sum + (disk.writeBps ?? 0), 0),
   };
@@ -1209,6 +1218,11 @@ async function onDownloadComplete(
   display: inline-flex;
   align-items: center;
   gap: 7px;
+}
+
+.status-item-muted {
+  color: var(--text-muted);
+  font-size: 10.5px;
 }
 
 .status-dot {
@@ -2111,13 +2125,14 @@ async function onDownloadComplete(
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
   width: 100%;
   padding: 10px 12px;
   border: none;
-  border-radius: 9px;
+  border-radius: 10px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -2125,13 +2140,15 @@ async function onDownloadComplete(
   text-align: left;
   transition:
     color 0.15s ease,
-    background 0.15s ease;
+    background 0.15s ease,
+    transform 0.12s ease;
 }
 
 .nav-item i {
   font-size: 16px;
   width: 18px;
   text-align: center;
+  transition: transform 0.15s ease;
 }
 
 .nav-item:hover {
@@ -2139,10 +2156,30 @@ async function onDownloadComplete(
   background: color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
+.nav-item:active {
+  transform: scale(0.98);
+}
+
 .nav-item.active {
   color: var(--accent-color);
-  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
-  font-weight: 600;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-color) 16%, transparent), color-mix(in srgb, var(--accent-color) 6%, transparent));
+  font-weight: 650;
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-color);
+}
+
+.nav-item.active i {
+  transform: scale(1.05);
 }
 
 .nav-badge {

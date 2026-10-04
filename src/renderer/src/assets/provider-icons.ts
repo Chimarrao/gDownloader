@@ -59,13 +59,16 @@ const ICONS: Record<string, ProviderIcon> = {
     </svg>`,
   },
   torrent: {
+    // Ímã em ferradura (vermelho + pontas prateadas) — leitura instantânea de
+    // "magnet link" pra quem já usou qualquer cliente de torrent (uTorrent,
+    // qBittorrent, Transmission etc. usam o mesmo símbolo pra essa categoria).
+    // O ícone antigo (3 bolinhas + linhas) não comunicava nada por si só.
     color: '#8b5cf6',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
       <rect width="36" height="36" rx="8" fill="#8b5cf6"/>
-      <circle cx="18" cy="10" r="3" fill="white"/>
-      <circle cx="10" cy="26" r="3" fill="white"/>
-      <circle cx="26" cy="26" r="3" fill="white"/>
-      <path d="M18 13v7M15.5 19l-4 5M20.5 19l4 5" stroke="white" stroke-width="2" stroke-linecap="round"/>
+      <path d="M11 7h5v11.5a2.5 2.5 0 0 0 5 0V7h5v11.5a7.5 7.5 0 0 1-15 0V7z" fill="#e8352c" stroke="#5b21b6" stroke-width="0.6"/>
+      <rect x="11" y="7" width="5" height="4.2" rx="0.6" fill="#f1f5f9"/>
+      <rect x="20" y="7" width="5" height="4.2" rx="0.6" fill="#f1f5f9"/>
     </svg>`,
   },
   googledrive: {
