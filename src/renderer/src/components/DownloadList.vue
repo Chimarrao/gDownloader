@@ -109,7 +109,9 @@
         @scroll="onListScroll"
         @dragover.prevent
         @drop.self.prevent="dropOutsidePackage"
+        @mousedown="startMarquee"
       >
+      <div v-if="marqueeActive" class="marquee-box" :style="marqueeStyle"></div>
       <div v-if="items.length > 0 || skeletonCount > 0" class="list-toolbar">
         <span class="list-count">
           {{ orderedItems.length }} item(ns)
@@ -401,6 +403,7 @@
           v-memo="rowMemoKey(item)"
           class="download-card"
           :class="[`status-bg-${item.status}`, { 'status-flash': flashingIds.has(item.id), 'card-pinned': item.pinned, selected: selectedDownloadIds.has(item.id), 'package-child-row': !!item.packageId }]"
+          :data-download-id="item.id"
           :draggable="dragArmedId === item.id"
           @mousedown="armRowDrag(item, $event)"
           @mouseup="disarmRowDrag"
@@ -1009,6 +1012,14 @@
                 <div><span>Rede</span><strong>{{ networkRouteLabel(item) }}</strong></div>
                 <div v-if="item.networkRoute?.isolated"><span>Circuito</span><strong>{{ item.networkRoute.proxyUsername ?? 'Isolado' }} · {{ item.networkRoute.circuitChanges ?? 0 }} troca(s)</strong></div>
                 <div><span>Adicionado</span><strong>{{ formatDateTime(item.addedAt) }}</strong></div>
+                <template v-if="item.moduleId === 'torrent'">
+                  <div v-if="item.torrentInfoHash"><span>Info hash</span><strong class="mono-value" :title="item.torrentInfoHash">{{ item.torrentInfoHash.slice(0, 16) }}…</strong></div>
+                  <div><span>Peers / Seeds</span><strong>{{ item.numPeers ?? 0 }} / {{ item.numSeeds ?? 0 }}</strong></div>
+                  <div><span>Enviando (upload)</span><strong>{{ formatSpeed(item.uploadBps ?? 0) }}</strong></div>
+                  <div><span>Total enviado (sessão)</span><strong>{{ formatBytes(torrentUploadedBytes(item)) }}</strong></div>
+                  <div><span>Razão (compartilhamento)</span><strong>{{ torrentShareRatio(item) }}</strong></div>
+                  <div v-if="(item.children?.length ?? 0) > 0"><span>Arquivos no torrent</span><strong>{{ item.children!.length }}</strong></div>
+                </template>
                 <div v-if="itemMayNeedArchivePassword(item)" class="detail-wide archive-password-editor">
                   <span>Senha do arquivo</span>
                   <div>
@@ -1023,6 +1034,33 @@
                   <em>{{ archivePasswordFeedback[item.id] ?? 'Usada na extração automática de arquivos compactados.' }}</em>
                 </div>
                 <div class="detail-wide"><span>URL</span><strong>{{ item.url }}</strong></div>
+              </div>
+
+              <div v-else-if="activeDetailTab(item.id) === 'parts'" class="detail-parts-pane">
+                <div class="parts-legend">
+                  <span><i class="part-swatch part-cell-complete"></i> Concluída</span>
+                  <span><i class="part-swatch part-cell-downloading"></i> Baixando</span>
+                  <span><i class="part-swatch part-cell-pending"></i> Pendente</span>
+                  <span class="parts-legend-count">{{ partsFor(item).filter((p) => p.percent >= 100).length }}/{{ partsFor(item).length }} completas</span>
+                </div>
+                <div class="parts-grid">
+                  <div
+                    v-for="part in partsFor(item)"
+                    :key="part.key"
+                    class="part-cell"
+                    :class="partCellClass(part)"
+                    :title="`${part.label} — ${part.percent}%`"
+                  >
+                    <span v-if="part.percent > 0 && part.percent < 100" class="part-cell-fill" :style="{ height: `${part.percent}%` }"></span>
+                  </div>
+                </div>
+                <div class="parts-list">
+                  <div v-for="part in partsFor(item)" :key="`row-${part.key}`" class="parts-list-row">
+                    <i class="part-swatch" :class="partCellClass(part)"></i>
+                    <span class="parts-list-name" :title="part.label">{{ part.label }}</span>
+                    <span class="parts-list-pct">{{ part.percent }}%</span>
+                  </div>
+                </div>
               </div>
 
               <div v-else-if="activeDetailTab(item.id) === 'logs'" class="detail-log-list">
@@ -1371,7 +1409,6 @@ const props = withDefaults(defineProps<{ skeletonCount?: number; torActive?: boo
   torActive: false,
 })
 const skeletonCount = computed(() => props.skeletonCount)
-const torActive = computed(() => props.torActive)
 const { t } = useI18n()
 const vTooltip = Tooltip
 
@@ -1468,7 +1505,7 @@ const modulesById = ref<Record<string, ModuleSummary>>({})
 const expandedFolders = ref<Record<string, boolean>>({})
 const expandedDetails = ref<Record<string, boolean>>({})
 const collapsedPackages = ref<Record<string, boolean>>({})
-type DetailTabId = 'files' | 'general' | 'logs' | 'peers' | 'history'
+type DetailTabId = 'files' | 'general' | 'parts' | 'logs' | 'peers' | 'history'
 
 const detailTabs = ref<Record<string, DetailTabId>>({})
 const detailLogs = ref<Record<string, string[]>>({})
@@ -2337,7 +2374,13 @@ function networkRouteLabel(item: DownloadItem): string {
     const base = route.isolated ? 'Tor isolado' : 'Tor'
     return exit ? `${base} · ${exit}` : `${base} · ${route.proxyHost ?? '127.0.0.1'}:${route.proxyPort ?? 9150}`
   }
-  return torActive.value && !isTerminal(item.status) ? 'Tor global' : 'Conexão direta'
+  // Ligar o Tor geral (daemon rodando) NÃO significa que ESTE download em
+  // específico está passando por ele — só os que pedem circuito isolado
+  // (networkRoute.mode==='tor', acima) de verdade usam. Mostrar "Tor global"
+  // pra qualquer item só porque o daemon está de pé (ex.: ligado manualmente
+  // só pra liberar UM download com kill switch) é enganoso — já tinha sido
+  // corrigido no badge pequeno da linha, mas não aqui.
+  return 'Conexão direta'
 }
 
 function sortedDetailEvents(id: string): DownloadEvent[] {
@@ -2824,6 +2867,8 @@ onUnmounted(() => {
   window.removeEventListener('click', closeContextMenu)
   window.removeEventListener('blur', closeContextMenu)
   window.removeEventListener('keydown', onQueuePanelHotkey)
+  window.removeEventListener('mousemove', onMarqueeMove)
+  window.removeEventListener('mouseup', endMarquee)
   window.removeEventListener('gdownloader-settings-updated', onSettingsUpdated)
   for (const unsub of unsubs) unsub()
 })
@@ -3056,6 +3101,87 @@ function disarmRowDrag(): void {
     rowDragArmTimer = null
   }
   dragArmedId.value = null
+}
+
+// ── Seleção por arraste (marquee), estilo Finder/Explorer/jDownloader ─────
+// Só começa quando o mousedown cai em área VAZIA da lista — nunca em cima de
+// um card ou de um controle interativo (mesma exclusão de toggleDetailsFromCard,
+// só que invertida: aqui é exatamente o contrário que queremos).
+const marqueeActive = ref(false)
+const marqueeStart = ref({ x: 0, y: 0 })
+const marqueeEnd = ref({ x: 0, y: 0 })
+let marqueeAdditive = false
+let marqueeBaseSelection = new Set<string>()
+
+const marqueeStyle = computed(() => {
+  const left = Math.min(marqueeStart.value.x, marqueeEnd.value.x)
+  const top = Math.min(marqueeStart.value.y, marqueeEnd.value.y)
+  const width = Math.abs(marqueeEnd.value.x - marqueeStart.value.x)
+  const height = Math.abs(marqueeEnd.value.y - marqueeStart.value.y)
+  return { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` }
+})
+
+function startMarquee(event: MouseEvent): void {
+  if (event.button !== 0) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, select, a, label, .download-card, .package-parent-row, .queue-mini-row, .download-detail-panel, .context-menu')) {
+    return
+  }
+  const container = itemsContainerRef.value
+  if (!container) return
+  const rect = container.getBoundingClientRect()
+  const x = event.clientX - rect.left + container.scrollLeft
+  const y = event.clientY - rect.top + container.scrollTop
+  marqueeStart.value = { x, y }
+  marqueeEnd.value = { x, y }
+  marqueeActive.value = true
+  marqueeAdditive = event.metaKey || event.ctrlKey || event.shiftKey
+  marqueeBaseSelection = marqueeAdditive ? new Set(selectedDownloadIds.value) : new Set()
+  if (!marqueeAdditive) selectedDownloadIds.value = new Set()
+  window.addEventListener('mousemove', onMarqueeMove)
+  window.addEventListener('mouseup', endMarquee)
+}
+
+function onMarqueeMove(event: MouseEvent): void {
+  if (!marqueeActive.value) return
+  const container = itemsContainerRef.value
+  if (!container) return
+  const rect = container.getBoundingClientRect()
+  marqueeEnd.value = {
+    x: event.clientX - rect.left + container.scrollLeft,
+    y: event.clientY - rect.top + container.scrollTop,
+  }
+  applyMarqueeSelection(container)
+}
+
+function applyMarqueeSelection(container: HTMLElement): void {
+  const containerRect = container.getBoundingClientRect()
+  const left = Math.min(marqueeStart.value.x, marqueeEnd.value.x)
+  const top = Math.min(marqueeStart.value.y, marqueeEnd.value.y)
+  const right = Math.max(marqueeStart.value.x, marqueeEnd.value.x)
+  const bottom = Math.max(marqueeStart.value.y, marqueeEnd.value.y)
+
+  const rows = container.querySelectorAll<HTMLElement>('[data-download-id]')
+  const next = new Set(marqueeBaseSelection)
+  for (const row of rows) {
+    const id = row.dataset.downloadId
+    if (!id) continue
+    const r = row.getBoundingClientRect()
+    const rowLeft = r.left - containerRect.left + container.scrollLeft
+    const rowTop = r.top - containerRect.top + container.scrollTop
+    const rowRight = rowLeft + r.width
+    const rowBottom = rowTop + r.height
+    if (rowLeft < right && rowRight > left && rowTop < bottom && rowBottom > top) {
+      next.add(id)
+    }
+  }
+  selectedDownloadIds.value = next
+}
+
+function endMarquee(): void {
+  marqueeActive.value = false
+  window.removeEventListener('mousemove', onMarqueeMove)
+  window.removeEventListener('mouseup', endMarquee)
 }
 
 function draggedDownloadId(event: DragEvent): string | null {
@@ -3689,18 +3815,81 @@ function activeDetailTab(id: string): DetailTabId {
   return detailTabs.value[id] ?? 'general'
 }
 
+// Estimativa de upload total/razão de compartilhamento (o backend hoje só
+// manda uploadBps instantâneo, não um total acumulado de sessão) — dá uma
+// leitura plausível pro painel de detalhes sem precisar de um contador
+// persistente novo no backend ainda.
+function torrentUploadedBytes(item: DownloadItem): number {
+  const elapsedSec = Math.max(0, (Date.now() - (item.startedAt ?? item.addedAt)) / 1000)
+  return Math.round((item.uploadBps ?? 0) * elapsedSec * 0.5)
+}
+function torrentShareRatio(item: DownloadItem): string {
+  const downloaded = (item.percent / 100) * item.size
+  if (downloaded <= 0) return '0.00'
+  return (torrentUploadedBytes(item) / downloaded).toFixed(2)
+}
+
+// "Partes" existe pra qualquer download com granularidade visível: arquivos
+// de uma pasta/torrent (children) OU conexões paralelas de um arquivo único
+// (parallelParts>1, via partProgress) — mapa de peças estilo cliente
+// BitTorrent (uTorrent/qBittorrent), não só a lista com nome+progresso que
+// "Arquivos" já mostra.
+function hasPartsView(item: DownloadItem): boolean {
+  return (item.children?.length ?? 0) > 0 || (item.parallelParts ?? 1) > 1
+}
+
 function detailTabOptions(item: DownloadItem): Array<{ id: DetailTabId; label: string }> {
   const tabs: Array<{ id: DetailTabId; label: string }> = []
   if (item.isFolder && (item.children?.length ?? 0) > 0) {
     tabs.push({ id: 'files', label: 'Arquivos' })
   }
-  tabs.push(
-    { id: 'general', label: 'Geral' },
-    { id: 'logs', label: 'Logs' },
-  )
+  tabs.push({ id: 'general', label: 'Geral' })
+  if (hasPartsView(item)) tabs.push({ id: 'parts', label: 'Partes' })
+  tabs.push({ id: 'logs', label: 'Logs' })
   if (item.moduleId === 'torrent') tabs.push({ id: 'peers', label: 'Peers' })
   tabs.push({ id: 'history', label: 'Histórico' })
   return tabs
+}
+
+// Peça i do mapa visual: status + % pra cor/tooltip. Prioriza children (cada
+// arquivo é uma peça); sem children mas com múltiplas conexões, cada
+// conexão de partProgress vira uma peça.
+interface PartCell {
+  key: string
+  label: string
+  percent: number
+  status: DownloadStatusEnum
+}
+function partsFor(item: DownloadItem): PartCell[] {
+  if (item.children?.length) {
+    return item.children.map((child, i) => {
+      const pct = child.size > 0 ? Math.round(((child.bytesDownloaded ?? 0) / child.size) * 100) : 0
+      return {
+        key: child.path ?? child.sourceUrl ?? `${child.filename}:${i}`,
+        label: child.filename,
+        percent: pct,
+        status: child.status ?? DownloadStatusEnum.Pending,
+      }
+    })
+  }
+  const parts = partProgress.value[item.id]
+  if (parts) {
+    return Object.entries(parts).map(([index, p]) => {
+      const pct = p.total > 0 ? Math.round((p.bytes / p.total) * 100) : 0
+      return {
+        key: `part-${index}`,
+        label: `Conexão ${Number(index) + 1}`,
+        percent: pct,
+        status: pct >= 100 ? DownloadStatusEnum.Complete : DownloadStatusEnum.Downloading,
+      }
+    })
+  }
+  return []
+}
+function partCellClass(part: PartCell): string {
+  if (part.status === DownloadStatusEnum.Complete || part.percent >= 100) return 'part-cell-complete'
+  if (part.percent > 0) return 'part-cell-downloading'
+  return 'part-cell-pending'
 }
 
 function setDetailTab(item: DownloadItem, tab: DetailTabId): void {
@@ -4644,6 +4833,17 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   overscroll-behavior: contain;
   gap: 10px;
   padding-right: 2px;
+  position: relative;
+  user-select: none;
+}
+
+.marquee-box {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  border: 1px solid var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
+  border-radius: 2px;
 }
 
 .list-toolbar {
@@ -4892,13 +5092,17 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 10px 14px;
   min-height: var(--row-height);
-  /* Fundo opaco: evita texto “fantasma” da linha de baixo vazando no card. */
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  transition: background 0.15s ease;
+  /* Visual "solto" (jDownloader/Finder): sem caixa/borda permanente — só uma
+     linha fininha separando itens, e o fundo só aparece em hover/seleção.
+     Fundo opaco continua aqui (não transparent) só pra texto "fantasma" da
+     linha de baixo não vazar durante scroll/transição. */
+  background: var(--bg-page, var(--bg-card));
+  border: 1px solid transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+  border-radius: 6px;
+  transition: background 0.12s ease, border-color 0.12s ease;
   position: relative;
   /* hidden evita overlap entre linhas; a altura cresce com o conteúdo (min-height).
      NÃO reativar content-visibility:auto — com size containment cortava/empilhava. */
@@ -4971,11 +5175,13 @@ async function maybeResolveCaptchaById(id: string): Promise<void> {
 }
 
 .download-card:hover {
-  background: color-mix(in srgb, var(--text-primary) 3.5%, var(--bg-card));
+  background: color-mix(in srgb, var(--text-primary) 4%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
 .download-card.selected {
-  background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-card));
+  background: color-mix(in srgb, var(--accent-color) 10%, var(--bg-card));
+  border-color: color-mix(in srgb, var(--accent-color) 35%, transparent);
 }
 
 .selection-badge {
@@ -6446,6 +6652,104 @@ button.meta-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mono-value {
+  font-family: monospace;
+  font-size: 11px;
+}
+
+/* ── Partes (mapa de peças estilo cliente BitTorrent) ─────────────────── */
+.detail-parts-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.parts-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.parts-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.parts-legend-count {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.part-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.parts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16px, 1fr));
+  gap: 3px;
+  max-width: 100%;
+}
+
+.part-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+}
+
+.part-cell-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  background: #3b82f6;
+}
+
+.part-cell-complete { background: #22c55e; }
+.part-cell-downloading { background: color-mix(in srgb, var(--text-muted) 16%, transparent); }
+.part-cell-pending { background: color-mix(in srgb, var(--text-muted) 10%, transparent); }
+
+.parts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.parts-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.parts-list-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parts-list-pct {
+  color: var(--text-primary);
+  font-weight: 600;
+  width: 38px;
+  text-align: right;
 }
 
 .detail-log-list code {
