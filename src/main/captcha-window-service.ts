@@ -1,12 +1,13 @@
 import { BrowserWindow, shell } from 'electron'
 import { configureHosterSession, configureHosterWindow, delay } from './browser-helper-common'
+import { tryAutoSolveHcaptcha, tryAutoSolveRecaptcha } from './captcha-audio-autosolve'
 import { logMain } from './debug-log'
 
 const CAPTCHA_PARTITION = 'persist:captcha-helper'
 const KATFILE_PARTITION = 'persist:katfile'
 export const BROWSER_SESSION_READY_TOKEN = '__gdownloader_browser_session_ready__'
 
-type CaptchaProvider = 'rapidgator' | 'katfile' | 'unknown'
+type CaptchaProvider = 'rapidgator' | 'katfile' | 'brupload' | 'unknown'
 
 export interface ManualCaptchaRequest {
   provider?: string
@@ -26,6 +27,8 @@ function normalizeProvider(raw: string | undefined): CaptchaProvider {
       return 'rapidgator'
     case 'katfile':
       return 'katfile'
+    case 'brupload':
+      return 'brupload'
     default:
       return 'unknown'
   }
@@ -277,16 +280,25 @@ async function advanceKatfileIfSolved(win: BrowserWindow): Promise<boolean> {
   )) as boolean
 }
 
+async function prepareBruploadPage(win: BrowserWindow): Promise<void> {
+  await clickLikeHuman(win, '#method_free, input[name="method_free"]').catch(() => false)
+}
+
 async function prepareProviderPage(win: BrowserWindow, request: ManualCaptchaRequest): Promise<void> {
   const provider = normalizeProvider(request.provider)
   if (provider === 'katfile') {
     await delay(700)
     await prepareKatfilePage(win)
   }
+  if (provider === 'brupload') {
+    await delay(700)
+    await prepareBruploadPage(win)
+    await delay(1200) // espera o POST do "Download Gratuito" voltar com o captcha renderizado
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-export function createCaptchaWindowService() {
+export function createCaptchaWindowService(userDataPath: string) {
   async function solve(request: ManualCaptchaRequest): Promise<string | null> {
     const startUrl = request.pageUrl || request.sourceUrl || ''
     if (!startUrl) {
@@ -320,6 +332,33 @@ export function createCaptchaWindowService() {
 
     await win.loadURL(safeUrl)
     await prepareProviderPage(win, request).catch(() => undefined)
+
+    // Tenta resolver sozinho pelo desafio de áudio ANTES de mostrar a janela
+    // pro usuário — local, sem API paga (ver captcha-audio-autosolve.ts). Se
+    // falhar em qualquer passo, cai pro fluxo manual de sempre, sem quebrar nada.
+    try {
+      const autoSolved =
+        (await tryAutoSolveRecaptcha(win, userDataPath).catch(() => false))
+        || (await tryAutoSolveHcaptcha(win, userDataPath).catch(() => false))
+      if (autoSolved) {
+        const state = await readCaptchaState(win).catch(() => null)
+        if (state?.token) {
+          logMain('captcha-window', 'Token resolvido automaticamente via áudio', {
+            provider: request.provider,
+            pageUrl: request.pageUrl,
+          })
+          if (!win.isDestroyed()) {
+            win.close()
+          }
+          return state.token
+        }
+      }
+    } catch (err) {
+      logMain('captcha-window', 'Auto-solve por áudio falhou, caindo pro manual', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
     await focusCaptchaSurface(win).catch(() => undefined)
     win.show()
     win.focus()

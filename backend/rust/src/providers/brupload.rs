@@ -235,6 +235,16 @@ impl BruploadProvider {
         if message.is_empty() { None } else { Some(message) }
     }
 
+    /// "You can download files up to X Mb only. Upgrade your account..." —
+    /// limite de tamanho da conta gratuita. É permanente (o arquivo nunca vai
+    /// caber nesse limite sozinho), mas antes caía no branch genérico e ficava
+    /// sendo reagendado como "falha temporária" pra sempre (visto na prática:
+    /// 90+ tentativas no mesmo arquivo, nunca progredindo).
+    fn is_size_limit_message(message: &str) -> bool {
+        let lower = message.to_lowercase();
+        lower.contains("download files up to") && lower.contains("only")
+    }
+
     fn extract_wait_seconds(html: &str) -> Option<u64> {
         [
             r#"class="seconds">\s*(\d+)\s*<"#,
@@ -412,6 +422,9 @@ impl BruploadProvider {
             .await?;
 
         if let Some(message) = Self::extract_error(&download1_html) {
+            if Self::is_size_limit_message(&message) {
+                return Err(premium_required_error("BRUpload", &message));
+            }
             return Err(anyhow!("BRUpload bloqueou o download gratuito: {message}"));
         }
 
@@ -452,6 +465,9 @@ impl BruploadProvider {
         let download2_html = response.error_for_status()?.text().await?;
 
         if let Some(message) = Self::extract_error(&download2_html) {
+            if Self::is_size_limit_message(&message) {
+                return Err(premium_required_error("BRUpload", &message));
+            }
             return Err(anyhow!("BRUpload rejeitou o download: {message}"));
         }
 

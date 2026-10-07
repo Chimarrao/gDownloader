@@ -706,7 +706,7 @@ const teraboxService = createTeraboxService({
 const akiraboxService = createAkiraboxService({
   solveCaptcha: solveCaptchaWithNopecha,
 });
-const captchaWindowService = createCaptchaWindowService();
+const captchaWindowService = createCaptchaWindowService(app.getPath("userData"));
 // Katfile will be re-wired after turnstileService is ready (needs circular dep avoidance)
 let katfileService: ReturnType<typeof createKatfileService> =
   createKatfileService() as never;
