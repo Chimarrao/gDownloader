@@ -79,6 +79,13 @@ const ICONS: Record<string, ProviderIcon> = {
     color: '#0a66d9',
     svg: onedriveSvg,
   },
+  pcloud: {
+    color: '#4FC3D9',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">
+      <path d="M11 27c-3.31 0-6-2.69-6-6 0-3.02 2.24-5.52 5.14-5.93C10.77 10.9 14.53 8 19 8c4.68 0 8.57 3.2 9.4 7.52C31.56 16.01 34 18.78 34 22c0 3.31-2.69 5-6 5H11z" fill="#4FC3D9"/>
+      <text x="18.5" y="23.5" font-family="Arial, Helvetica, sans-serif" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="middle">P</text>
+    </svg>`,
+  },
   terabox: {
     color: '#0ea5e9',
     svg: teraboxSvg,
@@ -144,6 +151,7 @@ function normalizeProviderKey(moduleId: string): string {
     gdrive: 'googledrive',
     drivegooglecom: 'googledrive',
     onedrive: 'onedrive',
+    pcloud: 'pcloud',
     terabox: 'terabox',
     rapidgator: 'rapidgator',
     brupload: 'brupload',

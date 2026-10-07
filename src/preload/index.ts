@@ -49,6 +49,7 @@ async function fetchBackend(
     "/providers",
     "/detect",
     "/intercept",
+    "/capture-state",
   ];
   // /file-info é migrado mas para YouTube faz fallback se Go der erro de sessão
   const isGoRoute = goRoutes.some(
@@ -358,6 +359,29 @@ const api = {
 
     isLoggedIn: async (moduleId: string) =>
       ipcRenderer.invoke("auth:isLoggedIn", moduleId),
+  },
+
+  // --- Capturador de Links (persistência do texto colado) ---
+  captureState: {
+    load: async (): Promise<string> => {
+      try {
+        const resp = await fetchBackend("/capture-state");
+        if (!resp.ok) return "";
+        const body = await resp.json();
+        return typeof body?.text === "string" ? body.text : "";
+      } catch {
+        return "";
+      }
+    },
+    save: async (text: string): Promise<void> => {
+      try {
+        await fetchBackend("/capture-state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+      } catch {}
+    },
   },
 
   // --- Downloads ---

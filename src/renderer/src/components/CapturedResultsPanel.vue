@@ -273,7 +273,8 @@
                 :class="{
                   'is-loading': row.loading,
                   'is-online': !row.loading && !row.error && !!row.module,
-                  'is-error': !!row.error,
+                  'is-error': !!row.error && row.availability !== 'no-space',
+                  'is-no-space': row.availability === 'no-space',
                   'is-folder': row.info?.isFolder,
                 }"
               >
@@ -869,6 +870,9 @@ function rowBadgeLabel(row: CapturedRow): string {
   if (row.availability === 'offline') {
     return t('linkGrabberStatusOffline')
   }
+  if (row.availability === 'no-space') {
+    return t('linkGrabberStatusNoSpace')
+  }
   if (row.error) {
     return t('error')
   }
@@ -892,6 +896,7 @@ function selectedQualityLabel(row: CapturedRow): string {
 function availabilityLabel(row: CapturedRow): string {
   if (row.availability === 'online') return t('linkGrabberAvailabilityOnline')
   if (row.availability === 'offline') return t('linkGrabberAvailabilityOffline')
+  if (row.availability === 'no-space') return t('linkGrabberAvailabilityNoSpace')
   if (row.loading) return t('linkGrabberAvailabilityChecking')
   return t('linkGrabberAvailabilityUnknown')
 }
@@ -1382,6 +1387,11 @@ function suffixFps(source: string, label: string): string {
 .row-badge.is-error {
   background: rgba(239, 83, 80, 0.12);
   color: #d64541;
+}
+
+.row-badge.is-no-space {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
 }
 
 .row-badge.is-known {

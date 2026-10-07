@@ -437,6 +437,25 @@ func SaveRawSettings(db *sql.DB, key string, raw json.RawMessage) error {
 	return err
 }
 
+// GetKV/SetKV — acesso genérico à app_kv pra estado simples (ex.: texto bruto
+// do Capturador de Links) que não precisa de tabela própria.
+func GetKV(db *sql.DB, key string) (string, bool, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM app_kv WHERE key=?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+func SetKV(db *sql.DB, key, value string) error {
+	_, err := db.Exec(`INSERT INTO app_kv(key,value,updated_at) VALUES(?,?,strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`, key, value)
+	return err
+}
+
 func ReplaceHistoryRaw(db *sql.DB, raw json.RawMessage) error {
 	var items []models.HistoryItem
 	if err := json.Unmarshal(raw, &items); err != nil {

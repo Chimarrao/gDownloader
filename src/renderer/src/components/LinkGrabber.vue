@@ -159,7 +159,11 @@ const selectedEntries = computed<QueueEntry[]>(() => {
     if (visibleFilteredUrls.value && !visibleFilteredUrls.value.has(row.url)) {
       continue
     }
-    if (!row.module || row.loading || row.error || !row.info) {
+    // Falta de espaço em disco é só um aviso, não bloqueia o download — o
+    // usuário pode querer baixar mesmo assim (ex.: vai liberar espaço depois,
+    // ou vai mudar a pasta de destino manualmente antes de terminar).
+    const blockingError = row.error && row.availability !== 'no-space'
+    if (!row.module || row.loading || blockingError || !row.info) {
       continue
     }
 
@@ -326,6 +330,27 @@ onMounted(async () => {
   for (const row of rows.value) {
     row.destDir ||= defaultOutputDir()
   }
+  // Recarrega os links colados antes de um restart (persistidos no SQLite via
+  // Go) — a própria atribuição abaixo dispara o watch(urlsInput) existente e
+  // resolve os providers normalmente, sem baixar nada.
+  restoringCaptureState = true
+  const persisted = await window.api.captureState.load().catch(() => '')
+  if (persisted) {
+    urlsInput.value = persisted
+  }
+  restoringCaptureState = false
+})
+
+// Evita um save→load→save espúrio enquanto o texto persistido ainda está
+// sendo aplicado de volta no textarea no mount.
+let restoringCaptureState = false
+let captureStateSaveTimer: number | null = null
+watch(urlsInput, (text) => {
+  if (restoringCaptureState) return
+  if (captureStateSaveTimer !== null) window.clearTimeout(captureStateSaveTimer)
+  captureStateSaveTimer = window.setTimeout(() => {
+    void window.api.captureState.save(text)
+  }, 400)
 })
 
 onUnmounted(() => {
@@ -763,8 +788,12 @@ async function applyDiskAvailability(row: CapturedRow): Promise<void> {
   const disk = await window.api.system.diskSpace(outputDir).catch(() => null)
   if (!disk) return
   if (info.size > disk.freeBytes) {
-    row.selected = false
-    row.availability = 'offline'
+    // Não desmarca e não bloqueia o download — é só um aviso. O usuário pode
+    // querer baixar mesmo assim (vai liberar espaço depois, vai trocar a
+    // pasta de destino, etc). Estado próprio (não 'offline'): o link/pasta
+    // está acessível, só não cabe no disco agora — rotular como "offline" é
+    // enganoso (sugere link quebrado quando na verdade é só falta de espaço).
+    row.availability = 'no-space'
     row.error = `Espaço insuficiente em disco: precisa de ${fmtBytes(info.size)}, disponível ${fmtBytes(disk.freeBytes)}.`
   } else if (row.error.startsWith('Espaço insuficiente em disco')) {
     row.error = ''
@@ -1050,7 +1079,7 @@ function selectableChildrenFromNode(node: DerivedChildNode<SelectableChild>): Se
 }
 
 function rowSelectableUnitCount(row: CapturedRow): number {
-  if (!row.module || row.loading || row.error) {
+  if (!row.module || row.loading || (row.error && row.availability !== 'no-space')) {
     return 0
   }
   if (isYouTubeFormatRow(row)) {

@@ -14,6 +14,7 @@ import (
 	"github.com/rs/cors"
 
 	"gdownloader-go/internal/captcha"
+	"gdownloader-go/internal/capturestate"
 	"gdownloader-go/internal/config"
 	"gdownloader-go/internal/db"
 	"gdownloader-go/internal/hashverify"
@@ -22,6 +23,8 @@ import (
 	"gdownloader-go/internal/integrity"
 	"gdownloader-go/internal/links"
 	"gdownloader-go/internal/migrations"
+	"gdownloader-go/internal/onedriveengine"
+	"gdownloader-go/internal/pcloudengine"
 	"gdownloader-go/internal/packages"
 	"gdownloader-go/internal/providers"
 	"gdownloader-go/internal/proxyintercept"
@@ -79,6 +82,21 @@ func main() {
 	torrentEngine.LoadPersisted()
 	config.SetTorrentEngine(torrentEngine)
 
+	// Motores de download que rodam de verdade no Go (rede->disco, com
+	// retomada) — início da migração gradual dos provedores pro Go. Listener
+	// próprio em porta fixa (127.0.0.1:48653), compartilhado por TODOS os
+	// motores de nuvem, só pro Rust chamar via loopback; evita o problema de
+	// descoberta de porta dinâmica entre os dois sidecars.
+	cloudEngineMux := http.NewServeMux()
+	onedriveengine.RegisterRoutes(cloudEngineMux)
+	pcloudengine.RegisterRoutes(cloudEngineMux)
+	go func() {
+		addr := fmt.Sprintf("127.0.0.1:%d", onedriveengine.EnginePort)
+		if err := http.ListenAndServe(addr, cloudEngineMux); err != nil {
+			log.Printf("motores de nuvem: falha ao subir listener em %s: %v", addr, err)
+		}
+	}()
+
 	r := mux.NewRouter()
 
 	// Health — portado de routes/health.rs:7
@@ -97,6 +115,18 @@ func main() {
 
 	// Links — portado de routes/links.rs (import-container .dlc/.ccf/.rsdf)
 	r.HandleFunc("/links/import-container", links.Handler).Methods("POST")
+
+	// Capturador de Links — persiste o texto bruto colado no app_kv (SQLite)
+	r.HandleFunc("/capture-state", func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "GET":
+			capturestate.Get(w, req, database)
+		case "PUT":
+			capturestate.Save(w, req, database)
+		default:
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+	}).Methods("GET", "PUT")
 
 	// Packages — portado de routes/packages.rs
 	r.HandleFunc("/packages", func(w http.ResponseWriter, req *http.Request) {

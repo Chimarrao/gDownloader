@@ -165,6 +165,8 @@ pub mod mediafire;
 pub mod mega;
 pub mod gofile;
 pub mod pixeldrain;
+pub mod onedrive_business;
+pub mod pcloud;
 pub mod sharepoint;
 pub mod terabox;
 pub mod transferit;
@@ -1074,6 +1076,7 @@ pub fn provider_id_from_name(name: &str) -> &'static str {
         "Internet Archive" => "internetarchive",
         "YouTube" => "youtube",
         "OneDrive" => "onedrive",
+        "pCloud" => "pcloud",
         "Direct HTTP" => "direct_http",
         _ => "unknown",
     }
@@ -1113,8 +1116,19 @@ pub fn detect_provider(url: &str) -> Option<Box<dyn Provider>> {
     if youtube::YouTubeProvider::matches(url) {
         return Some(Box::new(youtube::YouTubeProvider));
     }
+    // Precisa vir ANTES do SharePointProvider genérico abaixo: aquele casa
+    // qualquer host "*.sharepoint.com" indiscriminadamente (inclusive o
+    // formato de link de compartilhamento /:f:/ que só este provider sabe
+    // tratar de verdade — o genérico tentaria download=1 na URL crua e
+    // falharia com UNSUPPORTED).
+    if onedrive_business::OneDriveBusinessProvider::matches(url) {
+        return Some(Box::new(onedrive_business::OneDriveBusinessProvider));
+    }
     if sharepoint::SharePointProvider::matches(url) {
         return Some(Box::new(sharepoint::SharePointProvider));
+    }
+    if pcloud::PCloudProvider::matches(url) {
+        return Some(Box::new(pcloud::PCloudProvider));
     }
     if gdrive::GDriveProvider::matches(url) {
         return Some(Box::new(gdrive::GDriveProvider));

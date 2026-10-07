@@ -114,6 +114,10 @@ interface RendererApi {
     ) => Promise<CachedFileInfoSnapshot | null>;
     isLoggedIn: (moduleId: string) => Promise<boolean>;
   };
+  captureState: {
+    load: () => Promise<string>;
+    save: (text: string) => Promise<void>;
+  };
   auth: {
     isLoggedIn: (moduleId: string) => Promise<boolean>;
     login: (moduleId: string, params: Record<string, string>) => Promise<void>;

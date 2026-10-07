@@ -28,7 +28,7 @@ export interface CapturedRow {
   info: RowFileInfo | null
   loading: boolean
   error: string
-  availability: 'checking' | 'online' | 'offline' | 'unknown'
+  availability: 'checking' | 'online' | 'offline' | 'unknown' | 'no-space'
   cachedInfo: boolean
   selected: boolean
   expanded: boolean

@@ -4,7 +4,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::models::FileInfo;
-use super::{apply_speed_limit, host_matches, unsupported_error, ProgressUpdate, Provider, ProviderDefaults};
+use super::{apply_speed_limit, host_matches, ProgressUpdate, Provider, ProviderDefaults};
 
 pub struct SharePointProvider;
 
@@ -18,12 +18,22 @@ impl SharePointProvider {
                 .unwrap_or(false)
     }
 
+    // Mensagem específica pra quem cola a URL de navegação crua
+    // (.../_layouts/15/onedrive.aspx?id=...): essa URL exige uma sessão já
+    // autenticada no navegador e nunca funciona sem ela (confirmado: 302 pra
+    // Authenticate.aspx mesmo com user-agent de navegador real). O link que
+    // funciona sem login é o de COMPARTILHAMENTO (botão "Compartilhar" no
+    // OneDrive/SharePoint), no formato .../:f:/g/personal/<usuario>/<token>.
     fn auth_required_error() -> anyhow::Error {
-        unsupported_error("OneDrive/SharePoint")
+        anyhow!(
+            "UNSUPPORTED:OneDrive/SharePoint:Este link exige login (é a URL de navegação, não a de compartilhamento). \
+             Abra o item no OneDrive/SharePoint, clique em \"Compartilhar\" e cole aqui o link gerado \
+             (formato .../:f:/g/personal/... ou .../:x:/g/personal/...)."
+        )
     }
 
     fn direct_download_error() -> anyhow::Error {
-        unsupported_error("OneDrive/SharePoint")
+        Self::auth_required_error()
     }
 
     fn build_download_url(url: &str) -> Result<reqwest::Url> {
