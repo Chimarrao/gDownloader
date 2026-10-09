@@ -1,7 +1,8 @@
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { createReadStream, statSync } from 'fs'
+import { createReadStream, readFileSync, statSync } from 'fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import { networkInterfaces } from 'os'
+import { extname, join } from 'path'
 
 import type { PersistedSettings } from '../shared/types'
 import { logMain } from './debug-log'
@@ -37,6 +38,7 @@ export interface RemoteAccessSession {
 
 interface RemoteAccessServerOptions {
   getRustPort: () => number | null
+  getGoPort: () => number | null
   getSettings: () => PersistedSettings
   persistSettings: (settings: PersistedSettings) => Promise<void>
 }
@@ -149,12 +151,80 @@ function jsonResponse(res: ServerResponse, status: number, payload: unknown): vo
   res.end(JSON.stringify(payload))
 }
 
-function htmlResponse(res: ServerResponse, body: string): void {
-  res.writeHead(200, {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cache-Control': 'no-store',
-  })
-  res.end(body)
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+}
+
+// Serve o build real do app Vue (out/renderer) pro cliente remoto — mesma UI
+// do desktop, não uma página mobile separada mantida à parte. Em dev, em vez
+// do build estático (que ficaria desatualizado a cada mudança), repassa pro
+// próprio servidor de dev do Vite — o mesmo bundle com HMR que o Electron
+// carrega localmente.
+async function serveFrontend(res: ServerResponse, pathname: string): Promise<void> {
+  const viteDevUrl = process.env.ELECTRON_RENDERER_URL
+  if (viteDevUrl) {
+    try {
+      const upstream = await fetch(`${viteDevUrl}${pathname === '/' ? '/' : pathname}`)
+      const body = Buffer.from(await upstream.arrayBuffer())
+      res.writeHead(upstream.status, {
+        'Content-Type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+        'Cache-Control': 'no-store',
+      })
+      res.end(body)
+    } catch (error) {
+      jsonResponse(res, 502, {
+        error: `Servidor de dev do Vite indisponível: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    }
+    return
+  }
+
+  const rendererRoot = join(__dirname, '../renderer')
+  const requested = pathname === '/' ? '/index.html' : pathname
+  const fullPath = join(rendererRoot, requested)
+  // Guarda contra path traversal (ex.: "/../../etc/passwd").
+  if (!fullPath.startsWith(rendererRoot)) {
+    jsonResponse(res, 403, { error: 'Caminho inválido' })
+    return
+  }
+
+  try {
+    const stat = statSync(fullPath)
+    if (!stat.isFile()) throw new Error('not a file')
+    const contentType = MIME_TYPES[extname(fullPath)] ?? 'application/octet-stream'
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      // index.html nunca cacheia (sempre busca a versão nova); assets com
+      // hash no nome (gerados pelo Vite) podem cachear pra sempre.
+      'Cache-Control': requested === '/index.html' ? 'no-store' : 'public, max-age=31536000, immutable',
+    })
+    createReadStream(fullPath).pipe(res)
+  } catch {
+    // Sem vue-router (SPA de aba única via v-if) — qualquer caminho desconhecido
+    // ainda deve devolver o index.html, não 404.
+    try {
+      const html = readFileSync(join(rendererRoot, 'index.html'), 'utf8')
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+      res.end(html)
+    } catch {
+      jsonResponse(res, 404, {
+        error: 'Build do app (out/renderer) não encontrado. Rode "npm run build" antes de usar o acesso remoto em produção.',
+      })
+    }
+  }
 }
 
 function noContent(res: ServerResponse): void {
@@ -326,6 +396,33 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     return fetch(`http://127.0.0.1:${rustPort}${path}`, init)
   }
 
+  // Alguns caminhos (ex.: /capture-state) só existem no sidecar Go — mesmo
+  // allowlist de rotas migradas que o preload usa no app principal
+  // (src/preload/index.ts, goRoutes), só que decidido aqui no servidor em vez
+  // do cliente.
+  const GO_ONLY_PREFIXES = ['/capture-state']
+  async function goFetch(path: string, init?: RequestInit): Promise<Response> {
+    const goPort = options.getGoPort()
+    if (!goPort) {
+      throw new Error('Backend Go ainda não está disponível')
+    }
+    return fetch(`http://127.0.0.1:${goPort}${path}`, init)
+  }
+  async function backendFetchAny(path: string, init?: RequestInit): Promise<Response> {
+    if (GO_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+      return goFetch(path, init)
+    }
+    return backendFetch(path, init)
+  }
+  async function backendJsonAny<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await backendFetchAny(path, init)
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
+      throw new Error(body.error ?? `HTTP ${response.status}`)
+    }
+    return response.json() as Promise<T>
+  }
+
   async function backendJson<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await backendFetch(path, init)
     if (!response.ok) {
@@ -422,7 +519,8 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     }
   }
 
-  async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
+  async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const pathname = url.pathname
     if (req.method === 'GET' && pathname === '/api/state') {
       const [downloads, settings, packages, stats] = await Promise.all([
         backendJson<DownloadRow[]>('/downloads').catch(() => []),
@@ -491,6 +589,64 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
       return
     }
 
+    // Detecção de provedor + prévia de arquivo/pasta — só LEITURA, sem
+    // superfície de configuração, seguro pro cliente remoto.
+    if (req.method === 'GET' && pathname === '/api/modules/detect') {
+      const target = url.searchParams.get('url') ?? ''
+      const result = await backendJsonAny<unknown>(`/detect?url=${encodeURIComponent(target)}`).catch(() => null)
+      jsonResponse(res, 200, result)
+      return
+    }
+    if (req.method === 'GET' && pathname === '/api/modules/file-info') {
+      const target = url.searchParams.get('url') ?? ''
+      try {
+        const result = await backendJsonAny<unknown>(`/file-info?url=${encodeURIComponent(target)}`)
+        jsonResponse(res, 200, result)
+      } catch (error) {
+        jsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+    if (req.method === 'GET' && pathname === '/api/modules/cached-file-info') {
+      const target = url.searchParams.get('url') ?? ''
+      const result = await backendJsonAny<unknown>(`/file-info/cache?url=${encodeURIComponent(target)}`).catch(() => null)
+      jsonResponse(res, 200, result)
+      return
+    }
+
+    // Texto bruto do Capturador de Links — mesma rota do app principal, só
+    // repassando pro Go (único dono desse estado).
+    if (pathname === '/api/capture-state') {
+      if (req.method === 'GET') {
+        const result = await backendJsonAny<unknown>('/capture-state').catch(() => ({ text: '' }))
+        jsonResponse(res, 200, result)
+        return
+      }
+      if (req.method === 'PUT') {
+        const body = await readBody(req)
+        await backendFetchAny('/capture-state', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).catch(() => undefined)
+        jsonResponse(res, 200, { ok: true })
+        return
+      }
+    }
+
+    if (req.method === 'GET' && pathname === '/api/system/disk-space') {
+      const target = url.searchParams.get('path') ?? ''
+      const result = await backendJson<unknown>(`/system/disk?path=${encodeURIComponent(target)}`).catch(() => null)
+      jsonResponse(res, 200, result)
+      return
+    }
+
+    if (req.method === 'GET' && pathname === '/api/providers') {
+      const result = await backendJsonAny<unknown>('/providers').catch(() => [])
+      jsonResponse(res, 200, result)
+      return
+    }
+
     if (req.method === 'GET' && pathname === '/api/sessions') {
       jsonResponse(res, 200, activeSessions(sessionFromRequest(req)?.id))
       return
@@ -510,21 +666,51 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
     }
 
     if (req.method === 'POST' && pathname === '/api/downloads') {
-      const payload = await readBody(req) as { url?: string; destDir?: string; duplicateAction?: string }
+      const payload = await readBody(req) as {
+        url?: string
+        destDir?: string
+        duplicateAction?: string
+        selectedChildren?: string[]
+        expectedHash?: { algorithm: string; value: string }
+        filename?: string
+        torRequired?: boolean
+        parallelParts?: number
+      }
       const current = options.getSettings()
-      await backendJson('/downloads', {
+      try {
+        const created = await backendJson<unknown>('/downloads', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: payload.url,
+            dest_dir: payload.destDir || current.outputDir,
+            filename: payload.filename?.trim() || undefined,
+            max_retries: current.infiniteRetries
+              ? 4294967295
+              : Math.max(0, Number(current.maxRetriesPerDownload ?? 1) - 1),
+            speed_limit_kib: 0,
+            parallel_parts: payload.parallelParts ?? current.parallelPartsPerDownload ?? 1,
+            selected_children: payload.selectedChildren,
+            expected_hash: payload.expectedHash,
+            duplicate_action: payload.duplicateAction || current.duplicateAction || 'ask',
+            tor_required: payload.torRequired ?? false,
+          }),
+        })
+        jsonResponse(res, 201, created)
+      } catch (error) {
+        jsonResponse(res, 409, { error: error instanceof Error ? error.message : String(error) })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/api/downloads/known-urls') {
+      const payload = await readBody(req) as { urls?: string[] }
+      const result = await backendJson<{ known?: Record<string, unknown> }>('/downloads/known-urls', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: payload.url,
-          dest_dir: payload.destDir || current.outputDir,
-          max_retries: current.maxRetriesPerDownload ?? 3,
-          speed_limit_kib: current.speedLimitKib ?? 0,
-          parallel_parts: current.parallelPartsPerDownload ?? 4,
-          duplicate_action: payload.duplicateAction || current.duplicateAction || 'ask',
-        }),
-      })
-      jsonResponse(res, 201, { ok: true })
+        body: JSON.stringify({ urls: payload.urls ?? [] }),
+      }).catch(() => ({ known: {} }))
+      jsonResponse(res, 200, result.known ?? {})
       return
     }
 
@@ -607,12 +793,12 @@ export function createRemoteAccessServer(options: RemoteAccessServerOptions) {
       }
 
       if (url.pathname.startsWith('/api/')) {
-        await handleApi(req, res, url.pathname)
+        await handleApi(req, res, url)
         return
       }
 
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-        htmlResponse(res, remoteHtml())
+      if (req.method === 'GET') {
+        await serveFrontend(res, url.pathname)
         return
       }
 
@@ -735,187 +921,3 @@ function clampInt(value: unknown, fallback: number, min: number, max: number): n
   return Math.min(max, Math.max(min, n))
 }
 
-function remoteHtml(): string {
-  return `<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>gDownloader Local</title>
-  <style>
-    :root { color-scheme: light dark; --bg:#f6f7fb; --surface:#fff; --text:#162033; --muted:#68748a; --line:#d9dee8; --accent:#2563eb; --danger:#dc2626; --ok:#16a34a; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#10131a; --surface:#181d27; --text:#eef2ff; --muted:#9ba7bd; --line:#293141; --accent:#60a5fa; --danger:#fb7185; --ok:#34d399; } }
-    * { box-sizing:border-box; }
-    body { margin:0; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
-    header { position:sticky; top:0; z-index:2; background:var(--surface); border-bottom:1px solid var(--line); padding:14px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    h1 { margin:0; font-size:18px; }
-    main { max-width:1040px; margin:0 auto; padding:16px; display:grid; gap:14px; }
-    .tabs { display:flex; gap:8px; }
-    button, input, select { font:inherit; }
-    button { border:1px solid var(--line); background:var(--surface); color:var(--text); border-radius:8px; padding:8px 10px; cursor:pointer; }
-    button.primary { background:var(--accent); color:white; border-color:var(--accent); }
-    button.danger { color:var(--danger); }
-    button:disabled { opacity:.55; cursor:not-allowed; }
-    .card { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:14px; }
-    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-    .grid { display:grid; gap:10px; }
-    .settings-grid { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
-    label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
-    input, select { width:100%; border:1px solid var(--line); background:var(--surface); color:var(--text); border-radius:8px; padding:9px 10px; }
-    .download { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center; padding:12px; border:1px solid var(--line); border-radius:8px; }
-    .name { font-weight:700; word-break:break-word; }
-    .meta { color:var(--muted); font-size:12px; margin-top:4px; display:flex; gap:8px; flex-wrap:wrap; }
-    .bar { height:7px; background:color-mix(in srgb, var(--line), transparent 25%); border-radius:99px; overflow:hidden; margin-top:9px; }
-    .fill { height:100%; background:var(--accent); width:0; }
-    .status-complete .fill { background:var(--ok); }
-    .status-error .fill, .status-corrupted .fill, .status-disk_full .fill { background:var(--danger); }
-    .actions { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
-    .device-dl { display:inline-flex; align-items:center; justify-content:center; gap:4px; background:var(--accent); color:#fff; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600; text-decoration:none; border:none; cursor:pointer; }
-    .device-dl:hover { filter:brightness(1.06); }
-    .hidden { display:none; }
-    .empty { color:var(--muted); text-align:center; padding:26px; }
-    .toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:var(--text); color:var(--surface); padding:10px 14px; border-radius:8px; opacity:0; pointer-events:none; transition:.2s; }
-    .toast.show { opacity:1; }
-    @media (max-width: 720px) {
-      header { padding:12px; }
-      h1 { font-size:16px; }
-      main { padding:10px; gap:10px; }
-      .tabs { display:grid; grid-template-columns: repeat(3, 1fr); gap:6px; }
-      .tabs button { padding:9px 6px; }
-      .card { padding:12px; }
-      .download { grid-template-columns:1fr; padding:11px; }
-      .actions { justify-content:flex-start; display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); }
-      .actions button, .actions .device-dl { width:100%; min-height:38px; box-sizing:border-box; }
-      .device-dl { grid-column:1 / -1; }
-      .meta { gap:6px; }
-      .settings-grid { grid-template-columns:1fr; }
-      input, select, button { min-height:40px; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>gDownloader Local</h1>
-    <button id="refresh">Atualizar</button>
-  </header>
-  <main>
-    <nav class="tabs">
-      <button class="tab primary" data-tab="downloads">Fila</button>
-      <button class="tab" data-tab="add">Adicionar</button>
-      <button class="tab" data-tab="settings">Configurações</button>
-    </nav>
-    <section id="downloads" class="panel grid"></section>
-    <section id="add" class="panel card hidden">
-      <form id="addForm" class="grid">
-        <label>URL<input id="downloadUrl" required placeholder="https://..." /></label>
-        <label>Pasta de destino<input id="destDir" placeholder="Usar pasta padrão" /></label>
-        <button class="primary" type="submit">Adicionar à fila</button>
-      </form>
-    </section>
-    <section id="settings" class="panel card hidden">
-      <form id="settingsForm" class="grid settings-grid"></form>
-      <div class="toolbar" style="margin-top:12px">
-        <button class="primary" type="button" id="saveSettings">Salvar configurações</button>
-      </div>
-    </section>
-  </main>
-  <div id="toast" class="toast"></div>
-  <script>
-    const state = { downloads: [], settings: {} };
-    const panels = [...document.querySelectorAll('.panel')];
-    const tabs = [...document.querySelectorAll('.tab')];
-    const toast = document.getElementById('toast');
-    function showToast(text) { toast.textContent = text; toast.classList.add('show'); setTimeout(() => toast.classList.remove('show'), 2200); }
-    function fmtBytes(v) { if (!v) return '0 B'; const u=['B','KB','MB','GB','TB']; let i=0,n=v; while(n>=1024&&i<u.length-1){n/=1024;i++} return n.toFixed(i?1:0)+' '+u[i]; }
-    function pct(d) { return d.size > 0 ? Math.min(100, Math.floor(((d.bytes_downloaded || 0) / d.size) * 100)) : 0; }
-    async function api(path, options) {
-      const res = await fetch(path, options);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: 'HTTP ' + res.status }));
-        throw new Error(body.error || ('HTTP ' + res.status));
-      }
-      if (res.status === 204) return null;
-      return res.json();
-    }
-    function renderDownloads() {
-      const root = document.getElementById('downloads');
-      if (!state.downloads.length) {
-        root.innerHTML = '<div class="card empty">Nenhum download na fila.</div>';
-        return;
-      }
-      root.innerHTML = state.downloads.map(d => {
-        const progress = pct(d);
-        const active = ['downloading','paused','pending','rate_limited','waiting_captcha','error','corrupted'].includes(d.status);
-        return '<article class="download status-' + d.status + '">' +
-          '<div><div class="name">' + escapeHtml(d.filename || d.title || d.url) + '</div>' +
-          '<div class="meta"><span>' + escapeHtml(d.provider || 'provider') + '</span><span>' + d.status + '</span><span>' + fmtBytes(d.bytes_downloaded || 0) + ' / ' + fmtBytes(d.size || 0) + '</span><span>' + fmtBytes(d.speed_bps || 0) + '/s</span></div>' +
-          '<div class="bar"><div class="fill" style="width:' + progress + '%"></div></div></div>' +
-          '<div class="actions">' +
-          (d.status === 'complete' ? '<a class="device-dl" href="/api/downloads/' + encodeURIComponent(d.id) + '/file" download>⬇ Este dispositivo</a>' : '') +
-          '<button data-action="pause" data-id="' + d.id + '">Pausar</button>' +
-          '<button data-action="resume" data-id="' + d.id + '">Retomar</button>' +
-          '<button data-action="force" data-id="' + d.id + '">Forçar</button>' +
-          '<button data-action="retry" data-id="' + d.id + '">Retry</button>' +
-          '<button class="danger" data-action="remove" data-id="' + d.id + '" ' + (active ? '' : '') + '>Remover</button>' +
-          '</div></article>';
-      }).join('');
-    }
-    function renderSettings() {
-      const s = state.settings || {};
-      document.getElementById('settingsForm').innerHTML = [
-        '<p style="color:var(--muted);font-size:12px;margin:0 0 8px">Só preferências de fila. Acesso remoto, proxy e pastas do sistema ficam só no app principal.</p>',
-        field('maxConcurrentDownloads', 'Downloads simultâneos', s.maxConcurrentDownloads || 3, 'number'),
-        field('speedLimitKib', 'Limite KB/s', s.speedLimitKib || 0, 'number'),
-        field('maxRetriesPerDownload', 'Máximo de tentativas', s.maxRetriesPerDownload || 3, 'number'),
-        select('duplicateAction', 'Duplicatas', s.duplicateAction || 'ask', [['ask','Perguntar'],['skip','Ignorar'],['rename','Renomear'],['always_download','Baixar mesmo assim']]),
-        checkbox('nativeNotification', 'Notificações nativas', !!s.nativeNotification)
-      ].join('');
-    }
-    function field(id, label, value, type='text') { return '<label>' + label + '<input id="cfg_' + id + '" type="' + type + '" value="' + escapeAttr(value) + '"></label>'; }
-    function checkbox(id, label, checked) { return '<label>' + label + '<select id="cfg_' + id + '"><option value="true" ' + (checked?'selected':'') + '>Ativo</option><option value="false" ' + (!checked?'selected':'') + '>Inativo</option></select></label>'; }
-    function select(id, label, value, options) { return '<label>' + label + '<select id="cfg_' + id + '">' + options.map(([v,l]) => '<option value="' + v + '" ' + (v===value?'selected':'') + '>' + l + '</option>').join('') + '</select></label>'; }
-    function escapeHtml(v) { return String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
-    function escapeAttr(v) { return escapeHtml(v).replace(/"/g, '&quot;'); }
-    async function load() {
-      const data = await api('/api/state');
-      state.downloads = data.downloads || [];
-      state.settings = data.settings || {};
-      renderDownloads();
-      if (document.getElementById('settings').classList.contains('hidden')) renderSettings();
-    }
-    document.addEventListener('click', async (event) => {
-      const target = event.target;
-      if (target.matches('.tab')) {
-        tabs.forEach(t => t.classList.toggle('primary', t === target));
-        panels.forEach(p => p.classList.toggle('hidden', p.id !== target.dataset.tab));
-        if (target.dataset.tab === 'settings') renderSettings();
-      }
-      if (target.dataset.action) {
-        await api('/api/downloads/' + target.dataset.id + '/' + target.dataset.action, { method:'POST' }).catch(e => showToast(e.message));
-        await load();
-      }
-    });
-    document.getElementById('refresh').onclick = () => load().catch(e => showToast(e.message));
-    document.getElementById('addForm').onsubmit = async (event) => {
-      event.preventDefault();
-      await api('/api/downloads', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ url: downloadUrl.value, destDir: destDir.value }) }).then(() => showToast('Adicionado')).catch(e => showToast(e.message));
-      downloadUrl.value = '';
-      await load();
-    };
-    document.getElementById('saveSettings').onclick = async () => {
-      const patch = {
-        maxConcurrentDownloads: Number(cfg_maxConcurrentDownloads.value),
-        speedLimitKib: Number(cfg_speedLimitKib.value),
-        maxRetriesPerDownload: Number(cfg_maxRetriesPerDownload.value),
-        duplicateAction: cfg_duplicateAction.value,
-        nativeNotification: cfg_nativeNotification.value === 'true'
-      };
-      await api('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch) }).then(() => showToast('Configurações salvas')).catch(e => showToast(e.message));
-      await load();
-    };
-    load().catch(e => showToast(e.message));
-    setInterval(load, 2500);
-  </script>
-</body>
-</html>`
-}

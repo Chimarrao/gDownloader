@@ -440,6 +440,7 @@ const storage = createAppStorage({
 
 const remoteAccessServer = createRemoteAccessServer({
   getRustPort: () => rustPort,
+  getGoPort: () => goPort,
   getSettings: () => storage.getPublicSettings(),
   persistSettings: async (settings) => {
     await storage.persistPublicSettings(settings);
