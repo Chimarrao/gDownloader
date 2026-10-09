@@ -4727,12 +4727,13 @@ fn has_server_reported_wait(message: &str) -> bool {
 // a cota inteira antes de qualquer um progredir de verdade, e o próprio
 // bloqueio some de novo sem ninguém ter baixado nada. Limitar a 1 por vez dá
 // chance de pelo menos um progredir enquanto a janela está aberta.
-fn provider_parallel_limit(provider: &str) -> Option<usize> {
-    if provider.eq_ignore_ascii_case("mega") {
-        Some(1)
-    } else {
-        None
-    }
+// Mega permite múltiplos downloads simultâneos no mesmo IP sem problema — o
+// cap de 1 (introduzido em 20/09) foi removido a pedido do usuário: quando a
+// cota por IP estoura mesmo assim, o rate-limit normal (com o tempo real que
+// o Mega manda no header) já cobre o backoff; cabe ao usuário ativar o Tor
+// manualmente se quiser continuar baixando em paralelo sem esperar a cota.
+fn provider_parallel_limit(_provider: &str) -> Option<usize> {
+    None
 }
 
 fn parse_premium_required_error(message: &str) -> Option<String> {
@@ -5269,11 +5270,15 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_has_no_hard_provider_cap_except_mega() {
+    fn scheduler_has_no_hard_provider_cap() {
         // Usuário pediu explicitamente: o limite configurado (ex.: 10) vale por
-        // inteiro, sem nenhum provider capando sozinho em 1 conexão simultânea —
-        // EXCETO o Mega, reintroduzido depois (visto ao vivo: cota curta por IP,
-        // 4 downloads simultâneos consumiam a janela inteira sem nenhum progredir).
+        // inteiro, sem nenhum provider capando sozinho em 1 conexão simultânea.
+        // O Mega teve um cap de 1 reintroduzido em 20/09 (cota curta por IP,
+        // 4 downloads simultâneos consumiam a janela inteira sem nenhum
+        // progredir) e removido de novo em 07/10 a pedido do usuário — o Mega
+        // aceita múltiplos downloads no mesmo IP sem problema; quando estoura a
+        // cota, o rate-limit normal cobre o backoff e cabe ao usuário ativar o
+        // Tor manualmente se quiser continuar em paralelo.
         let active = std::collections::HashMap::from([(String::from("Mega"), 1usize)]);
         let selected = select_downloads_to_start(
             vec![
@@ -5285,10 +5290,8 @@ mod tests {
             3,
         );
 
-        // Mega já está em 1 (no limite) — "a" e "b" ficam de fora; BRFiles não
-        // tem cap e entra normalmente.
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["c".to_string()]);
+        assert_eq!(ids, vec!["c".to_string(), "a".to_string(), "b".to_string()]);
     }
 
     #[test]
@@ -5304,16 +5307,16 @@ mod tests {
             2,
         );
 
-        // Mega (cap=1) pega só "b" (o primeiro por fairness/FIFO); "c" fica de
-        // fora pelo cap, e o slot restante vai pro BRFiles sem cap.
+        // Mega sem cap: "b" e "c" entram os dois, preenchendo os 2 slots
+        // disponíveis (fairness/FIFO) — "a" fica de fora porque o slot acabou.
         let ids = selected.into_iter().map(|item| item.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(ids, vec!["b".to_string(), "c".to_string()]);
     }
 
     #[test]
-    fn mega_has_hard_provider_cap_of_one() {
-        assert_eq!(provider_parallel_limit("Mega"), Some(1));
-        assert_eq!(provider_parallel_limit("mega"), Some(1));
+    fn mega_has_no_hard_provider_cap() {
+        assert_eq!(provider_parallel_limit("Mega"), None);
+        assert_eq!(provider_parallel_limit("mega"), None);
         assert_eq!(provider_parallel_limit("MediaFire"), None);
     }
 
